@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { INSTANCES_DIR, INSTANCE_ID_RE, instanceConfigFile, instanceDir, instanceServerDir, instanceStateFile } from '../core/paths.ts';
-import { atomicWriteJsonWithBackupSync, atomicWriteFileSync, readJsonSync, dirSizeSync } from '../core/fsx.ts';
+import { atomicWriteJsonWithBackupSync, atomicWriteFileSync, readJsonSync, dirSizeSync, dirSizeAsync } from '../core/fsx.ts';
 import { bad, conflict, notFound } from '../core/errors.ts';
 import { createLogger } from '../core/logger.ts';
 import { loadConfig } from '../config.ts';
@@ -402,6 +402,27 @@ export function deleteInstance(id: string, purge: boolean): void {
     logger.warn(`世界 ${id} 已彻底删除`);
   } else {
     markDeleted(id);
+  }
+}
+
+export async function instanceSizeAsync(id: string): Promise<{ total: number; server: number; backups: number }> {
+  const dir = instanceDir(id);
+  const serverPath = await realServerPath(id);
+  const [total, server, backups] = await Promise.all([
+    dirSizeAsync(dir, { followSymlinks: true }),
+    dirSizeAsync(serverPath),
+    dirSizeAsync(path.join(dir, 'backups')),
+  ]);
+  return { total, server, backups };
+}
+
+async function realServerPath(id: string): Promise<string> {
+  const p = instanceServerDir(id);
+  try {
+    const { promises: fsp } = await import('node:fs');
+    return await fsp.realpath(p);
+  } catch {
+    return p;
   }
 }
 

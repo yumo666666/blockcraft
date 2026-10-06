@@ -12,8 +12,9 @@ echo "[boot] $(date '+%F %T') 启动 BlockCraft"
 bash bin/start.sh || echo "[boot] 面板启动失败，见 data/logs/panel.out"
 
 # 2) 看门狗（每 60 秒巡检：面板掉线、FRP 通道掉线、世界自启与卡住自愈）
-if [ -f data/logs/watchdog.pid ] && kill -0 "$(cat data/logs/watchdog.pid)" 2>/dev/null; then
-  echo "[boot] 看门狗已经在运行"
+WD=$(bash "$(dirname "$0")/proc-find.sh" node "server/src/watchdog.ts" | head -1)
+if [ -n "$WD" ]; then
+  echo "[boot] 看门狗已经在运行（PID $WD）"
 else
   setsid nohup node server/src/watchdog.ts >> data/logs/watchdog.out 2>&1 < /dev/null &
   echo $! > data/logs/watchdog.pid

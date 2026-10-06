@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 /**
@@ -159,4 +160,60 @@ export function listFilesSync(dir: string, filter?: (name: string) => boolean): 
     }
   }
   return out;
+}
+
+/**
+ * dirSizeSync 的异步版：大目录（几万文件、GB 级）用同步版会把事件循环卡住，
+ * 表现出来就是「面板偶发不响应、看门狗误判面板挂了」。请求路径上一律用这个。
+ */
+export async function dirSizeAsync(dir: string, opts: { maxFiles?: number; followSymlinks?: boolean } = {}): Promise<number> {
+  const maxFiles = opts.maxFiles ?? 200000;
+  const follow = opts.followSymlinks ?? false;
+  const seen = new Set<string>();
+  const visitedDirs = new Set<string>();
+  let total = 0;
+  let count = 0;
+  const stack: string[] = [dir];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    if (follow) {
+      let real = cur;
+      try {
+        real = await fsp.realpath(cur);
+      } catch {
+        /* ignore */
+      }
+      if (visitedDirs.has(real)) continue;
+      visitedDirs.add(real);
+    }
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fsp.readdir(cur, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (++count > maxFiles) return total;
+      const full = path.join(cur, e.name);
+      let st: fs.Stats;
+      try {
+        st = follow ? await fsp.stat(full) : await fsp.lstat(full);
+      } catch {
+        continue;
+      }
+      if (!follow && st.isSymbolicLink()) continue;
+      if (st.isDirectory()) stack.push(full);
+      else if (st.isFile()) {
+        const key = `${st.dev}:${st.ino}`;
+        if (st.nlink > 1) {
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        total += st.blocks * 512;
+      }
+    }
+    // 让出事件循环，保证面板在扫描期间仍能响应其它请求
+    await new Promise((r) => setImmediate(r));
+  }
+  return total;
 }

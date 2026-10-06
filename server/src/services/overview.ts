@@ -34,12 +34,38 @@ export function invalidateModCount(id: string): void {
   modCountCache.delete(id);
 }
 
+/**
+ * 世界占用：缓存 60 秒 + 单飞（同一实例同时只算一次）+ 异步扫描。
+ * 请求路径上绝不阻塞事件循环 —— 否则大世界会把面板卡到看门狗以为它挂了。
+ */
+const sizeInFlight = new Map<string, Promise<number>>();
+
+export async function dirSizeCachedAsync(id: string): Promise<number> {
+  const hit = sizeCache.get(id);
+  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  const running = sizeInFlight.get(id);
+  if (running) return hit?.value ?? 0;
+  const job = (async () => {
+    try {
+      const sizes = await I.instanceSizeAsync(id);
+      sizeCache.set(id, { at: Date.now(), value: sizes.total });
+      return sizes.total;
+    } catch {
+      return hit?.value ?? 0;
+    } finally {
+      sizeInFlight.delete(id);
+    }
+  })();
+  sizeInFlight.set(id, job);
+  return hit?.value ?? job;
+}
+
+/** 同步版保留给「存储」页的汇总用，但它只读缓存，不主动做重活 */
 export function dirSizeCached(id: string): number {
   const hit = sizeCache.get(id);
-  if (hit && Date.now() - hit.at < TTL) return hit.value;
-  const value = I.instanceSize(id).total;
-  sizeCache.set(id, { at: Date.now(), value });
-  return value;
+  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  if (!sizeInFlight.has(id)) void dirSizeCachedAsync(id);
+  return hit?.value ?? 0;
 }
 
 export async function summarize(id: string): Promise<InstanceSummary> {
@@ -75,7 +101,7 @@ export async function summarize(id: string): Promise<InstanceSummary> {
     players: state.players || st.players,
     maxPlayers: cfg.maxPlayers,
     modCount: countMods(id),
-    diskUsage: dirSizeCached(id),
+    diskUsage: await dirSizeCachedAsync(id),
     lastBackup,
     intentionalStop: state.intentionalStop,
     createdAt: cfg.createdAt ?? cfg.created,

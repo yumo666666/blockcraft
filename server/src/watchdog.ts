@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { DATA_DIR, PROJECT_ROOT } from './core/paths.ts';
 
 const INTERVAL = Number(process.env.BC_WATCHDOG_INTERVAL || 60) * 1000;
@@ -108,14 +109,44 @@ interface Summary {
 
 const stuckSince = new Map<string, number>();
 
+let consecutivePingFailures = 0;
+
+/** 端口上到底有没有人在监听（面板可能在忙，但没死） */
+function portAlive(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(2000);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => resolve(false));
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.connect(port, '127.0.0.1');
+  });
+}
+
 async function tick(): Promise<void> {
-  // 1) 面板
+  // 1) 面板：必须连续两次 ping 失败 **且** 端口真的没人监听，才认为它挂了。
+  //    只凭一次超时就拉起，会在面板短暂繁忙时糊出一个重复进程（实测踩到）。
   const ping = await api<{ ok: boolean }>('GET', '/api/ping');
   if (!ping?.ok) {
+    consecutivePingFailures += 1;
+    const { port } = panelConfig();
+    const alive = await portAlive(port);
+    if (consecutivePingFailures < 2 || alive) {
+      log(`面板这一次没响应（第 ${consecutivePingFailures} 次，端口${alive ? '仍有人监听' : '已空'}），再观察一轮`);
+      return;
+    }
     startPanel();
+    consecutivePingFailures = 0;
     await new Promise((r) => setTimeout(r, 15000));
     return;
   }
+  consecutivePingFailures = 0;
   if (!cookie) await login();
 
   // 2) FRP 通道

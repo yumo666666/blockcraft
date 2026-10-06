@@ -116,10 +116,23 @@ export function registerInstanceRoutes(app: Express): void {
     const id = requireId(req.params.id);
     const before = I.getConfig(id);
     const patch = req.body as Partial<typeof before>;
-    const restartKeys = ['port', 'rconPort', 'memoryMb', 'javaMajor', 'mc', 'loader', 'loaderVersion'];
-    const needsRestart = restartKeys.some((k) => patch[k as keyof typeof patch] !== undefined && patch[k as keyof typeof patch] !== before[k as keyof typeof before]);
+    // 这两组必须分开：
+    //   PROP_KEYS   → 要落到 server.properties，否则只改了 config.json，服务端用的还是旧值（实测踩到）
+    //   RESTART_KEYS→ 需要重启才生效的（含上面这组）
+    const PROP_KEYS = [
+      'motd', 'maxPlayers', 'port', 'rconPort', 'onlineMode', 'whiteList', 'levelSeed', 'levelName',
+      'gamemode', 'difficulty', 'pvp', 'hardcore', 'allowNether', 'spawnMonsters', 'spawnAnimals',
+      'spawnNpcs', 'generateStructures', 'enableCommandBlock', 'viewDistance', 'simulationDistance',
+    ] as const;
+    const RESTART_KEYS = [...PROP_KEYS, 'memoryMb', 'minMemoryMb', 'jvmExtra', 'mc', 'loader', 'loaderVersion', 'javaMajor', 'javaPath'] as const;
+    const changed = (k: string) =>
+      (patch as Record<string, unknown>)[k] !== undefined &&
+      JSON.stringify((patch as Record<string, unknown>)[k]) !== JSON.stringify((before as unknown as Record<string, unknown>)[k]);
+    const propsChanged = PROP_KEYS.some(changed);
+    const needsRestart = RESTART_KEYS.some(changed);
     const next = I.saveConfig(id, patch);
-    if (needsRestart) I.writeProperties(id);
+    // 只要动了 properties 相关的项就重写（幂等、很便宜），不再只在「需重启」时才写
+    if (propsChanged) I.writeProperties(id);
     if (sup.isRunning(id) && before.gamerules !== next.gamerules) await sup.applyGamerules(id).catch(() => undefined);
     if (sup.isRunning(id) && before.port !== next.port) throw conflict('世界正在运行，改端口请先停服');
     if (patch.frp) await frp.syncWorlds();

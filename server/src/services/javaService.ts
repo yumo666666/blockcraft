@@ -62,9 +62,11 @@ function probeJava(bin: string): JavaRuntime | null {
 }
 
 let cache: JavaRuntime[] | null = null;
+let cacheAt = 0;
 
 export function listJava(force = false): JavaRuntime[] {
   if (cache && !force) return cache;
+  if (cache && force && Date.now() - cacheAt < 30_000) return cache;
   const found = new Map<number, JavaRuntime>();
   const check = (bin: string) => {
     if (!fs.existsSync(bin)) return;
@@ -88,6 +90,7 @@ export function listJava(force = false): JavaRuntime[] {
     check(path.join(dir, 'bin', 'java'));
   }
   cache = [...found.values()].sort((a, b) => a.major - b.major);
+  cacheAt = Date.now();
   return cache;
 }
 
@@ -182,7 +185,17 @@ export async function downloadJava(major: number): Promise<JavaRuntime> {
 }
 
 /** 环境自检用：本机 Java 概览 */
-export function javaSummary(): { installed: { major: number; path: string }[]; managed: boolean } {
-  const all = listJava(true);
-  return { installed: all.map((j) => ({ major: j.major, path: j.path })), managed: all.some((j) => j.source === 'managed') };
+let summaryCache: { at: number; value: { installed: { major: number; path: string }[]; managed: boolean } } | null = null;
+
+/**
+ * 环境自检用的 Java 概览。
+ * 注意：探测要 spawn `java -version`（同步、每个约 300ms），**不能每个请求都刷**，
+ * 否则 /api/panel 会把事件循环卡住一秒以上，连看门狗都会以为面板挂了。
+ */
+export function javaSummary(force = false): { installed: { major: number; path: string }[]; managed: boolean } {
+  if (!force && summaryCache && Date.now() - summaryCache.at < 60_000) return summaryCache.value;
+  const all = listJava(force);
+  const value = { installed: all.map((j) => ({ major: j.major, path: j.path })), managed: all.some((j) => j.source === 'managed') };
+  summaryCache = { at: Date.now(), value };
+  return value;
 }

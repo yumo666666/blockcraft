@@ -147,6 +147,24 @@ instances/<世界id>/        每个世界一份，完全独立
 - **MOD 元数据从 jar 里读**，不信整合包清单里的标签。解析 `mods.toml` / `fabric.mod.json` / Jar-in-Jar，实测 344 个 MOD 的 modId 解析率 99.7%。
 - **运行中禁止改 MOD**：服务端跑着的时候删 jar，下次启动那些方块会变成未知方块。
 
+## 测试
+
+有两层验证：
+
+```bash
+# 类型检查（前后端都必须 0 错误）
+pnpm typecheck
+
+# 页面渲染测试：把**真实运行中的面板**的数据喂给每个页面，断言 DOM 里确实渲染出了真实内容
+BC_TOKEN=$(node -e "console.log(require('./data/panel.json').panel.token)") pnpm test
+```
+
+渲染测试需要面板已经在 8081 上跑着（可用 `BC_TEST_BASE` 改地址），它验证的是「世界名、端口、备份文件名、MOD 名、Java 版本」这些真实值有没有出现在页面上——
+比对着手写的假 fixture 断言有意义得多：假数据永远会通过。
+
+开发过程中这套测试抓出过真 bug，例如：改 MOTD / 最大玩家数只写进了 `config.json`、没写进 `server.properties`（配置静默不生效），
+以及重活（同步扫描 GB 级目录、每次请求 spawn 4 次 `java -version`）会阻塞事件循环，让看门狗误判面板挂掉。
+
 ## 开源与贡献
 
 MIT 许可。不内置任何 API Key 与第三方镜像，所有凭据由使用者自己填写。
@@ -154,7 +172,7 @@ MIT 许可。不内置任何 API Key 与第三方镜像，所有凭据由使用�
 提交前建议跑：
 
 ```bash
-pnpm typecheck && pnpm build
+pnpm typecheck && pnpm build && pnpm test
 ```
 
 ## 已知边界

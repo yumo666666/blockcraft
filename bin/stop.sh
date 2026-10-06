@@ -1,26 +1,36 @@
 #!/bin/bash
-# 停止面板（不会结束正在运行的世界）。若面板不响应，逐次重试拿 PID 再杀。
+# 停止面板（不会结束正在运行的世界）。
+# 关键：不依赖面板自己的 HTTP 接口 —— 面板卡住/端口被占时正需要停它，
+# 所以直接在 /proc 里按 cmdline 找进程。
 cd "$(dirname "$0")/.." || exit 1
+ROOT="$(pwd)"
 PORT="${BC_PORT:-$(python3 -c "import json;print(json.load(open('data/panel.json'))['panel']['port'])" 2>/dev/null || echo 8081)}"
-TOKEN=$(python3 -c "import json;print(json.load(open('data/panel.json'))['panel']['token'])" 2>/dev/null)
-for i in $(seq 1 12); do
-  PID=$(curl -s -m 2 "http://127.0.0.1:$PORT/api/system" -H "Cookie: bc_session=x" -b /tmp/bc.cookie 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['panel']['pid'])" 2>/dev/null)
-  if [ -z "$PID" ]; then
-    # 没登录态就再试一次带 token 的登录
-    curl -s -m 2 -c /tmp/bc.cookie -X POST "http://127.0.0.1:$PORT/api/login" -H 'Content-Type: application/json' -H 'X-Blockcraft: 1' -d "{\"token\":\"$TOKEN\"}" >/dev/null 2>&1
-    PID=$(curl -s -m 2 -b /tmp/bc.cookie "http://127.0.0.1:$PORT/api/system" 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['panel']['pid'])" 2>/dev/null)
-  fi
-  if [ -z "$PID" ]; then
-    curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/api/ping" || { echo "面板已停止（$PORT 已释放）"; exit 0; }
-    sleep 1
-    continue
-  fi
-  kill "$PID" 2>/dev/null && echo "已向面板发送 TERM（PID $PID）"
-  sleep 2
-  if ! curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/api/ping"; then
-    echo "面板已停止（$PORT 已释放）"
-    exit 0
-  fi
+
+# 只在 comm 确实是 node 的进程里找，避免匹配到当前这个 shell（踩过：脚本把自己 kill 了）
+find_panels() {
+  bash "$(dirname "$0")/proc-find.sh" node "server/src/index.ts"
+}
+
+PIDS=$(find_panels)
+if [ -z "$PIDS" ]; then
+  echo "没有在跑的面板进程（$PORT 空闲）"
+  exit 0
+fi
+echo "找到面板进程：$PIDS"
+for pid in $PIDS; do kill "$pid" 2>/dev/null && echo "  已发送 TERM → $pid"; done
+
+for i in $(seq 1 15); do
+  sleep 1
+  PIDS=$(find_panels)
+  [ -z "$PIDS" ] && break
+  if [ "$i" = "10" ]; then for pid in $PIDS; do kill -9 "$pid" 2>/dev/null && echo "  强制结束 → $pid"; done; fi
 done
-echo "警告：面板仍在运行，可能需要手动处理" >&2
-exit 1
+
+if [ -n "$(find_panels)" ]; then
+  echo "警告：面板仍未退出" >&2
+  exit 1
+fi
+if command -v curl >/dev/null && curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/api/ping"; then
+  echo "注意：$PORT 上还有别的服务在响应（可能不是本项目的面板）" >&2
+fi
+echo "面板已停止"
