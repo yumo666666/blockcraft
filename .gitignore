@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/
+instances/
+.secrets/
+*.log
+*.pid
+.DS_Store

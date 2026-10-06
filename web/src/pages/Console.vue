@@ -1,0 +1,576 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
+import { api, subscribe } from '../lib/api.ts';
+import { toast, toastError } from '../lib/toast.ts';
+import { fmtDuration, fmtTime, STATUS_TEXT, statusClass } from '../lib/format.ts';
+import type { ConsoleLine, InstanceDetail, ScheduleInfo } from '../lib/types.ts';
+
+const props = defineProps<{ id: string }>();
+const router = useRouter();
+
+/** 本地最多留多少行（服务端缓冲也是有限长度，两边都封顶才不会越看越卡） */
+const MAX_LINES = 3000;
+/** 重连等待时间 */
+const RETRY_MS = 1500;
+const WEEK = ['一', '二', '三', '四', '五', '六', '日'];
+const RUNNING_STATUS = ['running', 'starting', 'stopping', 'stuck'];
+
+const detail = ref<InstanceDetail | null>(null);
+const lines = ref<ConsoleLine[]>([]);
+const paused = ref(false);
+const pending = ref<ConsoleLine[]>([]);
+const autoScroll = ref(true);
+const filter = ref('');
+const consoleEl = ref<HTMLElement | null>(null);
+const streaming = ref('');
+
+const shortcuts = ref<string[]>([]);
+const cmd = ref('');
+const sending = ref(false);
+const history = ref<string[]>([]);
+
+const sched = ref<ScheduleInfo | null>(null);
+const startTimesText = ref('');
+const stopTimesText = ref('');
+const savingSchedule = ref(false);
+const testingWarn = ref(false);
+
+let offStream: (() => void) | null = null;
+let retryTimer: number | null = null;
+let pollTimer: number | null = null;
+let lastSeq = 0;
+let closed = false;
+
+const instance = computed(() => detail.value?.instance ?? null);
+const running = computed(() => (instance.value ? RUNNING_STATUS.includes(instance.value.status) : false));
+
+const filteredLines = computed(() => {
+  const kw = filter.value.trim().toLowerCase();
+  if (!kw) return lines.value;
+  return lines.value.filter((l) => l.text.toLowerCase().includes(kw));
+});
+
+function lineClass(text: string): string {
+  if (/ERROR|FATAL|Exception/.test(text)) return 'error';
+  if (/WARN/.test(text)) return 'warn';
+  if (text.startsWith('[面板]')) return 'panel';
+  return '';
+}
+
+function badgeClass(status: string): string {
+  switch (status) {
+    case 'running':
+      return 'badge-ok';
+    case 'starting':
+    case 'stopping':
+      return 'badge-warn';
+    case 'stuck':
+    case 'crashed':
+      return 'badge-danger';
+    default:
+      return 'badge-outline';
+  }
+}
+
+// ---------------------------------------------------------------- 日志
+
+async function scrollToBottom(): Promise<void> {
+  await nextTick();
+  const el = consoleEl.value;
+  if (el && autoScroll.value) el.scrollTop = el.scrollHeight;
+}
+
+function pushLine(row: ConsoleLine): void {
+  lines.value.push(row);
+  if (lines.value.length > MAX_LINES) lines.value.splice(0, lines.value.length - MAX_LINES);
+}
+
+/** 收到一批日志：按 seq 去重、排序，暂停时先存进待显示缓冲 */
+function receive(rows: ConsoleLine[]): void {
+  const fresh = rows.filter((r) => r.seq > lastSeq).sort((a, b) => a.seq - b.seq);
+  if (!fresh.length) return;
+  lastSeq = fresh[fresh.length - 1].seq;
+  if (streaming.value) streaming.value = '';
+  if (paused.value) {
+    for (const r of fresh) pending.value.push(r);
+    if (pending.value.length > MAX_LINES) pending.value.splice(0, pending.value.length - MAX_LINES);
+    return;
+  }
+  for (const r of fresh) pushLine(r);
+  void scrollToBottom();
+}
+
+/** 按 seq 拉一次（首次打开拉最近 300 行，断线后补拉断线期间的） */
+async function fetchConsole(): Promise<void> {
+  try {
+    const q = lastSeq > 0 ? `?since=${lastSeq}` : '';
+    const r = await api.get<{ lines: ConsoleLine[]; seq: number }>(`/api/instances/${props.id}/console${q}`);
+    if (r.lines?.length) {
+      receive(r.lines);
+    } else if (lastSeq > 0 && r.seq > lastSeq) {
+      // 服务端缓冲已经滚过这一段，追不回来了，只把游标对齐
+      lastSeq = r.seq;
+    }
+  } catch (err) {
+    toastError(err, '读取控制台日志失败');
+  }
+}
+
+function connect(): void {
+  offStream?.();
+  offStream = subscribe<ConsoleLine>(
+    `/api/instances/${props.id}/console/stream?since=${lastSeq}`,
+    (line) => receive([line]),
+    {
+      onError: () => {
+        streaming.value = '连接断开，正在重连…';
+        reconnect();
+      },
+    },
+  );
+}
+
+/** 断线：先停掉内置重连（它会带着旧 since 重连），再用最新 seq 补拉 + 重订阅 */
+function reconnect(): void {
+  offStream?.();
+  offStream = null;
+  if (closed || retryTimer) return;
+  retryTimer = window.setTimeout(() => {
+    retryTimer = null;
+    if (closed) return;
+    void fetchConsole().then(() => {
+      if (closed) return;
+      connect();
+    });
+  }, RETRY_MS);
+}
+
+function onConsoleScroll(): void {
+  const el = consoleEl.value;
+  if (!el) return;
+  // 手动往上滚就关掉自动滚动；滚回底部再打开
+  autoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+}
+
+function togglePause(): void {
+  paused.value = !paused.value;
+  if (!paused.value) {
+    for (const r of pending.value) pushLine(r);
+    pending.value = [];
+    void scrollToBottom();
+  }
+}
+
+// ---------------------------------------------------------------- 命令
+
+function remember(text: string): void {
+  history.value = [text, ...history.value.filter((h) => h !== text)].slice(0, 8);
+}
+
+async function send(text: string): Promise<void> {
+  const value = (text ?? '').trim();
+  if (!value || sending.value) return;
+  sending.value = true;
+  try {
+    // 命令与回显由服务端推进日志缓冲，SSE 会带回来，本地不重复插
+    await api.post<{ ok: boolean; output: string }>(`/api/instances/${props.id}/command`, { cmd: value });
+    cmd.value = '';
+    remember(value);
+    autoScroll.value = true;
+    void scrollToBottom();
+  } catch (err) {
+    toastError(err, '命令发送失败');
+  } finally {
+    sending.value = false;
+  }
+}
+
+// ---------------------------------------------------------------- 数据加载
+
+async function loadDetail(): Promise<void> {
+  try {
+    detail.value = await api.get<InstanceDetail>(`/api/instances/${props.id}`);
+  } catch (err) {
+    toastError(err, '读取世界信息失败');
+  }
+}
+
+async function loadShortcuts(): Promise<void> {
+  try {
+    const r = await api.get<{ shortcuts: string[] }>(`/api/instances/${props.id}/shortcuts`);
+    shortcuts.value = r.shortcuts ?? [];
+  } catch (err) {
+    toastError(err, '读取快捷命令失败');
+  }
+}
+
+function parseTimes(text: string): string[] {
+  return text
+    .split(/[,，\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+function fillTimes(r: ScheduleInfo): void {
+  startTimesText.value = (r.schedule.start.times ?? []).join(', ');
+  stopTimesText.value = (r.schedule.stop.times ?? []).join(', ');
+}
+
+async function loadSchedule(): Promise<void> {
+  try {
+    const r = await api.get<ScheduleInfo>(`/api/instances/${props.id}/schedule`);
+    sched.value = r;
+    fillTimes(r);
+  } catch (err) {
+    toastError(err, '读取定时设置失败');
+  }
+}
+
+function toggleDay(which: 'start' | 'stop', day: number): void {
+  const cur = sched.value;
+  if (!cur) return;
+  const days = cur.schedule[which].days;
+  const i = days.indexOf(day);
+  if (i >= 0) days.splice(i, 1);
+  else days.push(day);
+  days.sort((a, b) => a - b);
+}
+
+async function saveSchedule(): Promise<void> {
+  const cur = sched.value;
+  if (!cur) return;
+  savingSchedule.value = true;
+  try {
+    const payload = {
+      ...cur.schedule,
+      start: { ...cur.schedule.start, times: parseTimes(startTimesText.value) },
+      stop: { ...cur.schedule.stop, times: parseTimes(stopTimesText.value) },
+    };
+    const r = await api.put<{ ok: boolean; schedule: ScheduleInfo['schedule']; describe: string; nextStart: number | null; nextStop: number | null }>(
+      `/api/instances/${props.id}/schedule`,
+      payload,
+    );
+    sched.value = { ...cur, schedule: r.schedule, describe: r.describe, nextStart: r.nextStart, nextStop: r.nextStop };
+    fillTimes(sched.value);
+    toast('ok', '定时设置已保存', r.describe);
+  } catch (err) {
+    toastError(err, '保存定时设置失败');
+  } finally {
+    savingSchedule.value = false;
+  }
+}
+
+async function testWarn(): Promise<void> {
+  testingWarn.value = true;
+  try {
+    const minutes = Number(sched.value?.schedule.warnMinutes ?? 5);
+    const r = await api.post<{ ok: boolean; text: string }>(`/api/instances/${props.id}/schedule/test-warn`, { minutes });
+    toast('ok', '测试公告已发送', r.text);
+  } catch (err) {
+    toastError(err, '测试公告失败');
+  } finally {
+    testingWarn.value = false;
+  }
+}
+
+// ---------------------------------------------------------------- 生命周期
+
+function reset(): void {
+  offStream?.();
+  offStream = null;
+  if (retryTimer) {
+    window.clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  closed = false;
+  lastSeq = 0;
+  lines.value = [];
+  pending.value = [];
+  paused.value = false;
+  autoScroll.value = true;
+  filter.value = '';
+  streaming.value = '';
+  detail.value = null;
+  sched.value = null;
+}
+
+async function boot(): Promise<void> {
+  await Promise.all([loadDetail(), loadShortcuts(), loadSchedule()]);
+  await fetchConsole();
+  if (closed) return;
+  connect();
+}
+
+onMounted(async () => {
+  await boot();
+  if (closed) return;
+  pollTimer = window.setInterval(loadDetail, 8000);
+});
+
+onUnmounted(() => {
+  closed = true;
+  offStream?.();
+  offStream = null;
+  if (retryTimer) window.clearTimeout(retryTimer);
+  if (pollTimer) window.clearInterval(pollTimer);
+});
+
+// 同一个组件实例在不同世界之间跳转时要整套重来，否则会把上一个世界的日志留在屏幕上
+watch(
+  () => props.id,
+  async () => {
+    reset();
+    await boot();
+  },
+);
+</script>
+
+<template>
+  <div class="page col gap-4">
+    <!-- 头部：返回 + 世界名 + 状态 + 运行时长 + 在线人数 -->
+    <div class="row-between wrap gap-3">
+      <div class="row gap-3">
+        <button class="btn btn-ghost btn-sm" @click="router.push('/')">← 返回总览</button>
+        <div class="row gap-2">
+          <i class="dot" :class="instance ? statusClass(instance.status) : 'dot-idle'" />
+          <h1 class="ellipsis">{{ instance?.name ?? props.id }}</h1>
+        </div>
+        <span class="badge" :class="instance ? badgeClass(instance.status) : 'badge-outline'">
+          {{ instance ? STATUS_TEXT[instance.status] ?? instance.status : '读取中' }}
+        </span>
+      </div>
+      <div class="head-stats">
+        <div class="stat">
+          <span class="stat-label">运行时长</span>
+          <span class="stat-value">{{ instance && running ? fmtDuration(instance.uptime) : '—' }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">在线人数</span>
+          <span class="stat-value">{{ instance ? `${instance.players}/${instance.maxPlayers}` : '—' }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">端口</span>
+          <span class="stat-value mono">{{ instance?.port ?? '—' }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 左右两栏：左宽（日志）右窄（快捷命令） -->
+    <div class="console-grid">
+      <div class="card">
+        <div class="card-head">
+          <h2>🖥 控制台</h2>
+          <div class="row gap-2 wrap">
+            <span v-if="streaming" class="badge badge-warn">{{ streaming }}</span>
+            <span v-if="paused" class="badge badge-info">已暂停{{ pending.length ? ` · 待显示 ${pending.length}` : '' }}</span>
+            <label class="switch">
+              <input v-model="autoScroll" type="checkbox" />
+              <span class="switch-track" />
+              <span class="switch-text">自动滚动</span>
+            </label>
+            <button class="btn btn-sm" @click="togglePause">{{ paused ? '继续' : '暂停' }}</button>
+            <input v-model="filter" class="input filter-input" placeholder="过滤关键字" />
+          </div>
+        </div>
+        <div class="card-body">
+          <div ref="consoleEl" class="console" @scroll.passive="onConsoleScroll">
+            <div v-if="!filteredLines.length" class="console-empty">
+              {{ filter ? '没有匹配的日志行' : '还没有日志。世界启动后这里会实时输出。' }}
+            </div>
+            <div v-for="l in filteredLines" :key="l.seq" class="console-line" :class="lineClass(l.text)">{{ l.text }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col gap-4">
+        <div class="card">
+          <div class="card-head">
+            <h3>⚡ 快捷命令</h3>
+            <span class="text-3 small">{{ shortcuts.length }} 条</span>
+          </div>
+          <div class="card-body col gap-3">
+            <div v-if="shortcuts.length" class="chips">
+              <button v-for="s in shortcuts" :key="s" class="chip" :disabled="sending" @click="send(s)">{{ s }}</button>
+            </div>
+            <div v-else class="text-3 small">没有可用的快捷命令</div>
+
+            <div class="divider" />
+
+            <div class="cmd-input">
+              <input
+                v-model="cmd"
+                class="input grow"
+                placeholder="输入命令后回车"
+                :disabled="sending"
+                @keydown.enter="send(cmd)"
+              />
+              <button class="btn btn-primary" :disabled="sending || !cmd.trim()" @click="send(cmd)">
+                <span v-if="sending" class="spinner" style="border-top-color: #fff" />
+                发送
+              </button>
+            </div>
+            <div v-if="!running" class="text-3 small">世界没有在运行，命令会被拒绝，先去总览启动它。</div>
+
+            <div v-if="history.length" class="col gap-1">
+              <div class="field-label">最近用过（点击回填）</div>
+              <div class="chips">
+                <button v-for="h in history" :key="h" class="chip" @click="cmd = h">{{ h }}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 定时开服 / 停服 -->
+    <div class="card">
+      <div class="card-head">
+        <h2>⏰ 定时开服 / 停服</h2>
+        <span class="text-3 small ellipsis">{{ sched?.describe ?? '读取中…' }}</span>
+      </div>
+
+      <div v-if="sched" class="card-body col gap-4">
+        <div class="form-grid-2">
+          <!-- 开服 -->
+          <div class="col gap-3">
+            <label class="switch">
+              <input v-model="sched.schedule.start.enabled" type="checkbox" />
+              <span class="switch-track" />
+              <span class="switch-text">定时开服</span>
+            </label>
+            <div class="field">
+              <label class="field-label">开服时间点</label>
+              <input v-model="startTimesText" class="input mono" placeholder="08:00, 20:30" />
+              <span class="field-hint">24 小时制，多个时间点用逗号分隔</span>
+            </div>
+            <div class="field">
+              <label class="field-label">星期（都不选 = 每天）</label>
+              <div class="seg">
+                <button
+                  v-for="(w, i) in WEEK"
+                  :key="`s${w}`"
+                  :class="{ active: sched.schedule.start.days.includes(i + 1) }"
+                  @click="toggleDay('start', i + 1)"
+                >
+                  {{ w }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 停服 -->
+          <div class="col gap-3">
+            <label class="switch">
+              <input v-model="sched.schedule.stop.enabled" type="checkbox" />
+              <span class="switch-track" />
+              <span class="switch-text">定时停服</span>
+            </label>
+            <div class="field">
+              <label class="field-label">停服时间点</label>
+              <input v-model="stopTimesText" class="input mono" placeholder="23:30" />
+              <span class="field-hint">24 小时制，多个时间点用逗号分隔</span>
+            </div>
+            <div class="field">
+              <label class="field-label">星期（都不选 = 每天）</label>
+              <div class="seg">
+                <button
+                  v-for="(w, i) in WEEK"
+                  :key="`e${w}`"
+                  :class="{ active: sched.schedule.stop.days.includes(i + 1) }"
+                  @click="toggleDay('stop', i + 1)"
+                >
+                  {{ w }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider" />
+
+        <div class="form-grid">
+          <div class="field">
+            <label class="field-label">停服前几分钟公告</label>
+            <input v-model.number="sched.schedule.warnMinutes" class="input" type="number" min="0" max="120" />
+          </div>
+          <div class="field">
+            <label class="field-label">公告文案</label>
+            <input v-model="sched.schedule.warnText" class="input" placeholder="服务器将在 {n} 分钟后关闭" />
+            <span class="field-hint">用 {n} 表示剩余分钟数</span>
+          </div>
+          <div class="field">
+            <label class="field-label">自定义公告命令（可选）</label>
+            <input v-model="sched.schedule.warnCommand" class="input mono" placeholder="say 服务器将在 {n} 分钟后关闭" />
+            <span class="field-hint">留空则用 say 发送公告文案</span>
+          </div>
+        </div>
+
+        <div class="row gap-4 wrap">
+          <label class="switch">
+            <input v-model="sched.schedule.skipIfPlayers" type="checkbox" />
+            <span class="switch-track" />
+            <span class="switch-text">到点还有玩家在线就等最后一人下线</span>
+          </label>
+          <div class="row gap-2">
+            <span class="text-2 small">最多等</span>
+            <input v-model.number="sched.schedule.graceMinutes" class="input grace-input" type="number" min="0" max="720" />
+            <span class="text-2 small">分钟（0 = 一直等）</span>
+          </div>
+        </div>
+
+        <div class="divider" />
+
+        <div class="kv">
+          <div class="kv-row">
+            <span class="kv-key">下次开服</span>
+            <span class="kv-val">{{ fmtTime(sched.nextStart) }}</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">下次停服</span>
+            <span class="kv-val">{{ fmtTime(sched.nextStop) }}</span>
+          </div>
+          <div v-if="sched.pendingStop" class="kv-row">
+            <span class="kv-key">挂起中</span>
+            <span class="kv-val">已挂起，等最后一名玩家下线，最晚 {{ fmtTime(sched.pendingStop.deadline) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div v-else class="card-body">
+        <div class="row gap-2">
+          <span class="spinner" />
+          <span class="text-3">正在读取定时设置…</span>
+        </div>
+      </div>
+
+      <div v-if="sched" class="card-foot row gap-2">
+        <button class="btn btn-soft" :disabled="testingWarn" @click="testWarn">
+          <span v-if="testingWarn" class="spinner" />
+          立即测试公告
+        </button>
+        <div class="grow" />
+        <button class="btn btn-primary" :disabled="savingSchedule" @click="saveSchedule">
+          <span v-if="savingSchedule" class="spinner" style="border-top-color: #fff" />
+          保存定时设置
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+/* 只做栅格与宽度微调，视觉一律来自 base.css */
+.console-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 330px);
+  gap: var(--sp-4);
+  align-items: start;
+}
+@media (max-width: 940px) {
+  .console-grid { grid-template-columns: 1fr; }
+}
+.head-stats { display: flex; gap: var(--sp-5); }
+.filter-input { width: 150px; }
+.grace-input { width: 84px; }
+</style>

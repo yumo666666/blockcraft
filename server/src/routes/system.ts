@@ -1,0 +1,197 @@
+import type { Express, Request, Response } from 'express';
+import fs from 'node:fs';
+import { DATA_DIR, INSTANCES_DIR, PROJECT_ROOT } from '../core/paths.ts';
+import { dirSizeSync } from '../core/fsx.ts';
+import { loadConfig, publicConfig, saveConfig, randomToken } from '../config.ts';
+import { bad } from '../core/errors.ts';
+import { systemSnapshot, connectionAddresses } from '../services/systemService.ts';
+import { summarizeAll, countMods } from '../services/overview.ts';
+import { javaSummary, listJava, autoJava } from '../services/javaService.ts';
+import * as I from '../services/instanceService.ts';
+import { dirSizeCached } from '../services/overview.ts';
+
+export function registerSystemRoutes(app: Express): void {
+  app.get('/api/panel', (_req, res) => {
+    const cfg = loadConfig();
+    res.json({
+      config: publicConfig(cfg),
+      addresses: connectionAddresses(cfg.panel.port),
+      instanceDir: INSTANCES_DIR,
+      dataDir: DATA_DIR,
+      projectRoot: PROJECT_ROOT,
+      java: javaSummary(),
+    });
+  });
+
+  app.put('/api/panel', (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const patch: Record<string, unknown> = {};
+    if (body.panel) patch.panel = body.panel;
+    if (body.limits) patch.limits = body.limits;
+    if (body.ui) patch.ui = body.ui;
+    if (body.mirrors) patch.mirrors = body.mirrors;
+    if (body.portRanges) patch.portRanges = body.portRanges;
+    const next = saveConfig(patch);
+    res.json({ ok: true, config: publicConfig(next) });
+  });
+
+  app.post('/api/panel/token/reset', (_req, res) => {
+    const cfg = loadConfig();
+    const token = randomToken();
+    saveConfig({ panel: { ...cfg.panel, token } });
+    res.json({ ok: true, token });
+  });
+
+  app.get('/api/system', async (_req, res) => {
+    const cfg = loadConfig();
+    const [snap, instances] = await Promise.all([systemSnapshot(cfg.panel.port, DATA_DIR), summarizeAll()]);
+    res.json({
+      ...snap,
+      instances,
+      addresses: connectionAddresses(cfg.panel.port),
+      totals: {
+        running: instances.filter((i) => i.status === 'running' || i.status === 'starting').length,
+        instances: instances.length,
+        players: instances.reduce((a, i) => a + i.players, 0),
+        mods: instances.reduce((a, i) => a + i.modCount, 0),
+        instanceBytes: instances.reduce((a, i) => a + i.diskUsage, 0),
+        allocatedMemoryMb: instances.filter((i) => i.status !== 'stopped').reduce((a, i) => a + i.memoryMb, 0),
+      },
+    });
+  });
+
+  app.get('/api/system/stream', async (req: Request, res: Response) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    const cfg = loadConfig();
+    let closed = false;
+    req.on('close', () => {
+      closed = true;
+    });
+    const send = async () => {
+      if (closed) return;
+      try {
+        const snap = await systemSnapshot(cfg.panel.port, DATA_DIR);
+        const instances = await summarizeAll();
+        res.write(`data: ${JSON.stringify({ type: 'system', snap, instances })}\n\n`);
+      } catch {
+        /* ignore */
+      }
+    };
+    await send();
+    const timer = setInterval(send, 3000);
+    req.on('close', () => clearInterval(timer));
+  });
+
+  app.get('/api/system/storage', async (_req, res) => {
+    const ids = I.listInstanceIds();
+    const instances = ids.map((id) => ({
+      id,
+      name: (() => {
+        try {
+          return I.getConfig(id).name;
+        } catch {
+          return id;
+        }
+      })(),
+      bytes: dirSizeCached(id),
+      mods: countMods(id),
+    }));
+    let storeBytes = 0;
+    try {
+      storeBytes = dirSizeSync(DATA_DIR + '/store');
+    } catch {
+      storeBytes = 0;
+    }
+    let trashBytes = 0;
+    try {
+      trashBytes = dirSizeSync(DATA_DIR + '/trash');
+    } catch {
+      trashBytes = 0;
+    }
+    let logsBytes = 0;
+    try {
+      logsBytes = dirSizeSync(DATA_DIR + '/logs');
+    } catch {
+      logsBytes = 0;
+    }
+    res.json({
+      instances,
+      jdk: (() => {
+        try {
+          return dirSizeSync(DATA_DIR + '/jdk');
+        } catch {
+          return 0;
+        }
+      })(),
+      store: storeBytes,
+      trash: trashBytes,
+      logs: logsBytes,
+      total: instances.reduce((a, i) => a + i.bytes, 0) + storeBytes + trashBytes,
+    });
+  });
+
+  app.post('/api/system/storage/clean', (req, res) => {
+    const body = req.body as { target?: string };
+    const map: Record<string, string> = { trash: DATA_DIR + '/trash', logs: DATA_DIR + '/logs' };
+    const dir = map[body.target ?? ''];
+    if (!dir) {
+      res.status(400).json({ error: { code: 'BAD_INPUT', message: '只能清理回收站或日志目录' } });
+      return;
+    }
+    let freed = 0;
+    try {
+      freed = dirSizeSync(dir);
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      res.status(500).json({ error: { code: 'INTERNAL', message: String(err) } });
+      return;
+    }
+    res.json({ ok: true, freed });
+  });
+
+
+
+  /** 让面板自己退出（给启动脚本与升级操作用；不会结束正在运行的世界） */
+  app.post('/api/panel/shutdown', (_req, res) => {
+    res.json({ ok: true, message: '面板即将退出（不会结束正在运行的世界）' });
+    setTimeout(() => process.exit(0), 300);
+  });
+
+  app.get('/api/versions', async (_req, res) => {
+    const { minecraftVersions } = await import('../services/versionsService.ts');
+    const list = await minecraftVersions();
+    res.json({ versions: list.filter((v) => v.type === 'release'), all: list.length });
+  });
+
+  app.get('/api/loaders', async (req, res) => {
+    const mc = String(req.query.mc ?? '1.20.1');
+    const { loadersFor } = await import('../services/versionsService.ts');
+    res.json({ mc, loaders: await loadersFor(mc) });
+  });
+
+  app.get('/api/packs/inspect/:id', async (req, res) => {
+    const path = await import('node:path');
+    const fs = await import('node:fs');
+    const { STORE_DIR } = await import('../core/paths.ts');
+    const file = path.join(STORE_DIR, 'packs', path.basename(req.params.id));
+    if (!fs.existsSync(file)) throw bad('整合包不存在');
+    const { inspectPack } = await import('../services/packService.ts');
+    res.json(await inspectPack(file));
+  });
+
+  app.get('/api/java', (_req, res) => {
+    res.json({ installed: listJava(true) });
+  });
+
+  app.get('/api/java/resolve', (req, res) => {
+    const mc = String(req.query.mc ?? '1.20.1');
+    const loader = String(req.query.loader ?? 'forge') as never;
+    res.json(autoJava(mc, loader));
+  });
+}
