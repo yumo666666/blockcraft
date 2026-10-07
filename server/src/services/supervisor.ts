@@ -392,7 +392,18 @@ export function startTail(id: string): void {
       fs.closeSync(fd);
       offset = st.size;
       const buf = console_(id);
-      for (const line of `${raw.toString('utf8')}`.split(/\r?\n/)) buf.push(line);
+      const chunk = `${raw.toString('utf8')}`;
+      for (const line of chunk.split(/\r?\n/)) buf.push(line);
+      // 服务端报「Done」时立刻把状态落成 running：
+      // 启动等待是有超时的，重整合包加载动辄一两分钟（实测 123 秒），
+      // 超时之后如果没有这一步，state.json 会一直停在「启动中」。
+      if (/Done \([\d.]+s\)!/i.test(chunk)) {
+        const st = I.getState(id);
+        if (st.status === 'starting' || st.status === 'stopped') {
+          I.saveState(id, { status: 'running', phase: '服务端已就绪', progress: null, startedAt: st.startedAt || Date.now() / 1000 });
+          logger.info(`世界 ${id} 已就绪（从日志里看到 Done）`);
+        }
+      }
     } catch {
       /* 文件暂时读不到就下一轮再试 */
     }
