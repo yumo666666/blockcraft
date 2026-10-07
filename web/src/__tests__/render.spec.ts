@@ -243,3 +243,71 @@ describeIfPanel('控制台命令提示', () => {
     w.unmount();
   });
 });
+
+describe('世界配置弹窗', () => {
+  it('「随面板自动启动」在弹窗顶部一眼可见（不能藏在滚动区里）', async () => {
+    const w = await mountAt('/');
+    await waitFor(w, (t) => t.includes('显示端口'));
+    // 点世界卡片上的「配置」
+    const cfgBtn = w.findAll('button').find((b) => b.text().trim() === '配置');
+    expect(cfgBtn, '世界卡片上应该有配置按钮').toBeTruthy();
+    await cfgBtn!.trigger('click');
+    await waitFor(w, (t) => t.includes('常用开关') || t.includes('随面板自动启动'));
+
+    const quick = w.find('.quick-switches');
+    expect(quick.exists(), '配置弹窗顶部应该有常用开关区').toBe(true);
+    const quickText = quick.text();
+    expect(quickText).toContain('随面板自动启动');
+    expect(quickText).toContain('正版验证');
+    expect(quickText).toContain('白名单');
+
+    // 顺序要求：常用开关必须排在「基本」分组之前（也就是第一屏就能看到）
+    const body = w.find('.modal-body').text();
+    expect(body.indexOf('随面板自动启动')).toBeLessThan(body.indexOf('基本'));
+    expect(body.indexOf('随面板自动启动')).toBeLessThan(body.indexOf('MOTD'));
+    w.unmount();
+  });
+
+  it('世界卡片：autostart 为真时显示「自启」徽标，为假时不显示', async () => {
+    // 纯组件测试：不去改真实面板的状态（改后端数据会让测试之间互相干扰，实测会时好时坏）
+    const { default: WorldNote } = await import('../components/WorldNote.vue');
+    const base = {
+      id: 'unit-test',
+      name: '单元测试世界',
+      note: '',
+      color: '#e9e2d0',
+      mc: '1.20.1',
+      loader: 'fabric',
+      loaderVersion: '0.19.5',
+      port: 25565,
+      frpPort: 26000,
+      frpEnabled: true,
+      memoryMb: 2048,
+      minMemoryMb: 1024,
+      autostart: true,
+      status: 'stopped',
+      phase: '',
+      progress: null,
+      pid: null,
+      uptime: 0,
+      cpu: 0,
+      rss: 0,
+      players: 0,
+      maxPlayers: 20,
+      modCount: 0,
+      diskUsage: 0,
+      lastBackup: null,
+      intentionalStop: false,
+      createdAt: 0,
+      javaMajor: 17,
+    };
+    const on = mount(WorldNote, { props: { item: { ...base, autostart: true } } });
+    expect(on.find('.badge-accent').exists(), '开启自启时应有强调色徽标').toBe(true);
+    expect(on.text()).toContain('自启');
+    on.unmount();
+
+    const off = mount(WorldNote, { props: { item: { ...base, autostart: false } } });
+    expect(off.find('.badge-accent').exists(), '未开启时不该有自启徽标').toBe(false);
+    off.unmount();
+  });
+});

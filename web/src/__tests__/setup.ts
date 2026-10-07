@@ -9,7 +9,10 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const headers = new Headers(init?.headers ?? {});
   // 服务端要求写操作带这个标记，统一补上
   headers.set('X-Blockcraft', '1');
-  return originalFetch(input, { ...init, headers });
+  // happy-dom 会按 URL 缓存 GET 响应：测试里改了数据再读会拿到旧值，
+  // 表现为「同样的用例有时过有时不过」。一律禁用缓存。
+  headers.set('cache-control', 'no-cache');
+  return originalFetch(input, { ...init, headers, cache: 'no-store' });
 }) as typeof fetch;
 
 /** happy-dom 没有 EventSource，用空实现占位（SSE 逻辑在真实浏览器里才跑） */

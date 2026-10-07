@@ -165,6 +165,34 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
   <Modal v-if="open" :title="`${form?.name ?? ''} · 配置`" size="lg" @close="emit('close')">
     <div v-if="!form" class="row gap-2"><span class="spinner" /> 读取配置…</div>
     <div v-else class="col gap-5">
+      <!-- 常用开关放最上面：手机上往下滚才找得到的话，等于没有 -->
+      <section class="quick-switches">
+        <label class="switch quick-switch">
+          <input v-model="form.autostart" type="checkbox" />
+          <span class="switch-track" />
+          <span class="col" style="gap: 0">
+            <span class="switch-text" style="font-weight: 600">随面板自动启动</span>
+            <span class="text-3 small">DSH 起来后，看门狗自动把这个世界拉起来</span>
+          </span>
+        </label>
+        <label class="switch quick-switch">
+          <input v-model="form.onlineMode" type="checkbox" />
+          <span class="switch-track" />
+          <span class="col" style="gap: 0">
+            <span class="switch-text" style="font-weight: 600">正版验证</span>
+            <span class="text-3 small">关闭后玩家名可以随便填</span>
+          </span>
+        </label>
+        <label class="switch quick-switch">
+          <input v-model="form.whiteList" type="checkbox" />
+          <span class="switch-track" />
+          <span class="col" style="gap: 0">
+            <span class="switch-text" style="font-weight: 600">白名单</span>
+            <span class="text-3 small">只允许名单里的玩家进入</span>
+          </span>
+        </label>
+      </section>
+
       <div v-if="!installed" class="badge badge-warn">
         服务端文件不完整（缺 {{ missing.join('、') }}），启动会失败。可以点右下角「重新安装」。
       </div>
@@ -192,11 +220,6 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
           </div>
         </div>
         <div class="row gap-3 mt-3 wrap">
-          <label class="switch">
-            <input v-model="form.autostart" type="checkbox" />
-            <span class="switch-track" />
-            <span class="switch-text">随面板自动启动</span>
-          </label>
           <div class="row gap-2">
             <span class="text-3 small">便签颜色</span>
             <button
@@ -287,9 +310,8 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
           </div>
         </div>
         <div class="row gap-4 mt-3 wrap">
-          <label class="switch"><input v-model="form.onlineMode" type="checkbox" /><span class="switch-track" /><span class="switch-text">正版验证</span></label>
-          <label class="switch"><input v-model="form.whiteList" type="checkbox" /><span class="switch-track" /><span class="switch-text">开启白名单</span></label>
           <label class="switch"><input v-model="form.enableCommandBlock" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许命令方块</span></label>
+          <span class="text-3 small">正版验证 / 白名单在弹窗最上方的常用开关里</span>
         </div>
         <p class="text-3 small mt-2">关掉正版验证后，玩家名可以随便填；在公共网络里建议开白名单。</p>
       </section>
@@ -320,6 +342,18 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
 </template>
 
 <style scoped>
+/* 顶部常用开关：一眼可见、点得到 */
+.quick-switches {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+}
+.quick-switch { align-items: flex-start; }
+.quick-switch .switch-track { margin-top: 2px; }
 .cfg-section {
   padding: 14px 16px;
   border: 1px solid var(--border);

@@ -49,8 +49,9 @@ const loaderLabel = computed(() => {
             <i class="dot" :class="statusClass(item.status)" />
             <h2 class="ellipsis">{{ item.name }}</h2>
           </div>
-          <div class="text-3 small ellipsis mt-2">
-            {{ item.note || `${loaderLabel} · Minecraft ${item.mc}` }}
+          <div class="row gap-2 mt-2 wrap">
+            <span v-if="item.autostart" class="badge badge-accent" title="随面板自动启动">自启</span>
+            <span class="text-3 small ellipsis">{{ item.note || `${loaderLabel} · Minecraft ${item.mc}` }}</span>
           </div>
         </div>
         <span class="badge" :class="badgeClass">{{ STATUS_TEXT[item.status] ?? item.status }}</span>
