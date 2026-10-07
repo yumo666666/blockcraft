@@ -131,7 +131,7 @@ function portAlive(port: number): Promise<boolean> {
   });
 }
 
-async function tick(): Promise<void> {
+async function tick(firstTick = false): Promise<void> {
   // 1) 面板：必须连续两次 ping 失败 **且** 端口真的没人监听，才认为它挂了。
   //    只凭一次超时就拉起，会在面板短暂繁忙时糊出一个重复进程（实测踩到）。
   const ping = await api<{ ok: boolean }>('GET', '/api/ping');
@@ -182,10 +182,11 @@ async function tick(): Promise<void> {
     if (!inst.autostart) continue;
     if (inst.intentionalStop) continue; // 用户主动停的，不要自动拉起来
     if (inst.status !== 'stopped' && inst.status !== 'crashed') continue;
-    // 连续两次看到它没跑才动手，避开冷启动窗口
+    // 连续两次看到它没跑才动手，避开「面板还没认领已存在进程」的窗口。
+    // 但首次巡检（面板刚起来、reconcile 已经跑完）不必再等一轮，否则自启要多等 60 秒。
     const key = `miss:${inst.id}`;
     const seen = Number(process.env[key] ?? 0);
-    if (!seen) {
+    if (!seen && !firstTick) {
       process.env[key] = '1';
       continue;
     }
@@ -199,9 +200,11 @@ async function tick(): Promise<void> {
 async function main(): Promise<void> {
   log(`看门狗启动（间隔 ${INTERVAL / 1000} 秒）`);
   await new Promise((r) => setTimeout(r, GRACE_FIRST));
+  let firstTick = true;
   for (;;) {
     try {
-      await tick();
+      await tick(firstTick);
+      firstTick = false;
     } catch (err) {
       log(`轮询异常：${String(err)}`);
     }

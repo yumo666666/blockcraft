@@ -10,7 +10,9 @@ import { createLogger } from '../core/logger.ts';
 import { withLock } from '../core/lock.ts';
 import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile, writeLaunchScript } from '../launcher/index.ts';
 import { processStat } from './systemService.ts';
+import * as systemService from './systemService.ts';
 import { autoJava } from './javaService.ts';
+import * as frp from './frpService.ts';
 import * as I from './instanceService.ts';
 import type { InstanceConfig, InstanceState, InstanceStatus } from '../types.ts';
 
@@ -676,6 +678,49 @@ export function hasIntent(id: string): boolean {
 }
 
 /** 面板重启后的对账：把还在跑的进程接管回来 */
+/**
+ * 面板启动后自己把 autostart 的世界拉起来。
+ *
+ * 为什么不全交给看门狗：看门狗为了避开「面板冷启动时还没认领已存在进程」的窗口，
+ * 要求连续两次巡检（45 秒宽限 + 60 秒间隔）才动手 —— 实测从 DSH 启动到世界真的开始起
+ * 隔了 109 秒，用户会觉得「自启没生效」。看门狗留着做兜底（崩溃、卡死、被系统杀掉）。
+ *
+ * 按内存错开启动：几个整合包的 Xmx 加起来会超过物理内存，绝不能一起拉。
+ */
+export async function startAutostartWorlds(): Promise<void> {
+  const ids = I.listInstanceIds();
+  for (const id of ids) {
+    let cfg: ReturnType<typeof I.getConfig>;
+    let st: ReturnType<typeof I.getState>;
+    try {
+      cfg = I.getConfig(id);
+      st = I.getState(id);
+    } catch {
+      continue;
+    }
+    if (!cfg.autostart) continue;
+    if (st.status === 'running' || st.status === 'starting' || st.status === 'stopping') continue;
+    // 内存不够就先不起，交给看门狗下一轮再试，别把机器压死
+    const avail = systemService.memoryInfo().availableMb;
+    if (avail < cfg.memoryMb * 1.15) {
+      logger.warn(
+        `autostart 跳过 ${id}：可用内存 ${avail}MB，装不下 ${cfg.memoryMb}MB 的堆（看门狗稍后会再试）`,
+      );
+      continue;
+    }
+    logger.info(`autostart 拉起 ${id}（可用内存 ${avail}MB / 需要 ${cfg.memoryMb}MB）`);
+    try {
+      const r = await start(id, { wait: false });
+      if (!r.ok) logger.warn(`autostart 拉起 ${id} 失败：${r.error ?? '未知'}`);
+      await frp.syncWorlds().catch(() => undefined);
+    } catch (err) {
+      logger.warn(`autostart 拉起 ${id} 异常`, String(err));
+    }
+    // 错开：等上一个把内存吃住再起下一个
+    await new Promise((r) => setTimeout(r, 15000));
+  }
+}
+
 export function reconcile(): void {
   /*
    * 面板每次启动都清掉「用户主动停止」这个意图。

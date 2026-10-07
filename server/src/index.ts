@@ -196,6 +196,10 @@ export function boot(): void {
 
   // ---- 启动对账：把面板外还在跑的世界接管回来，并清理幽灵端口登记
   sup.reconcile();
+  // 面板一起来就按 autostart 拉起世界：比等看门狗（45 秒宽限 + 连续两次巡检）快得多
+  setTimeout(() => {
+    void sup.startAutostartWorlds().catch((err) => logger.warn('autostart 执行异常', String(err)));
+  }, 3000);
   ports.reconcile(new Set(I.listInstanceIds()));
   createJob({ id: 'boot', kind: 'install', title: '面板启动', instanceId: null, status: 'done', stages: [], lines: [`面板启动于 ${new Date().toLocaleString('zh-CN')}`], progress: 100, error: null, startedAt: Date.now(), endedAt: Date.now() }).catch(() => undefined);
 
