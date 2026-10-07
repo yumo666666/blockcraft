@@ -6,6 +6,7 @@ import { toast, toastError } from '../lib/toast.ts';
 import { fmtDuration, fmtTime, STATUS_TEXT, statusClass } from '../lib/format.ts';
 import type { ConsoleLine, InstanceDetail, ScheduleInfo } from '../lib/types.ts';
 import { applySuggestion, suggest, type Suggestion } from '../lib/commands.ts';
+import { ANNOUNCE_COLORS, DEFAULT_ANNOUNCE_COLOR, buildAnnounce, previewAnnounce } from '../lib/announce.ts';
 
 const props = defineProps<{ id: string }>();
 const router = useRouter();
@@ -124,6 +125,14 @@ function onCmdKeydown(e: KeyboardEvent): void {
   }
 }
 
+async function sendAnnounce(): Promise<void> {
+  const text = announce.value.trim();
+  if (!text) return;
+  // 内容里的引号/反斜杠由 buildAnnounce 负责转义，这里只管发
+  await send(buildAnnounce(text, announceColor.value));
+  announce.value = '';
+}
+
 /** 点快捷命令：需要参数的只填前缀并把光标放好，不需要的直接发 */
 function useShortcut(s: Shortcut): void {
   if (s.needsArg) {
@@ -134,6 +143,14 @@ function useShortcut(s: Shortcut): void {
   }
   void send(s.cmd);
 }
+
+/** 发公告：颜色 + 内容，拼成 tellraw 发给全服 */
+const announce = ref('');
+const announceColor = ref(DEFAULT_ANNOUNCE_COLOR);
+/** 预览用：所选颜色的实际色值（和游戏里那几种颜色一致） */
+const announceHex = computed(
+  () => ANNOUNCE_COLORS.find((c) => c.id === announceColor.value)?.hex ?? '#ffffff',
+);
 
 const sched = ref<ScheduleInfo | null>(null);
 const startTimesText = ref('');
@@ -548,6 +565,53 @@ watch(
             <span class="text-3 small">{{ shortcuts.length }} 条 · 按组排</span>
           </div>
           <div class="card-body col gap-3">
+            <!-- 发公告：带颜色 -->
+            <div class="col gap-2 announce-box">
+              <div class="row-between wrap gap-2">
+                <span class="chip-group-label">📢 发公告</span>
+                <span class="text-3 small">选颜色 → 填内容 → 下面就是游戏里的效果</span>
+              </div>
+
+              <div class="row gap-1 wrap">
+                <button
+                  v-for="c in ANNOUNCE_COLORS"
+                  :key="c.id"
+                  class="color-pick"
+                  :class="{ active: announceColor === c.id }"
+                  :style="{ color: c.hex }"
+                  @click="announceColor = c.id"
+                >
+                  <span class="color-dot" :style="{ background: c.hex }" />
+                  {{ c.label }}
+                </button>
+              </div>
+
+              <div class="cmd-input">
+                <input
+                  v-model="announce"
+                  data-test="announce"
+                  class="input grow"
+                  placeholder="公告内容，回车发送给全服"
+                  :disabled="sending"
+                  @keydown.enter="sendAnnounce"
+                />
+                <button class="btn btn-primary" :disabled="sending || !announce.trim()" @click="sendAnnounce">
+                  公告
+                </button>
+              </div>
+
+              <!-- 可视化预览：按 MC 聊天框的样子渲染，颜色所见即所得 -->
+              <div class="announce-preview" data-test="announce-preview">
+                <span class="ap-tag">[公告]</span>
+                <span class="ap-text" :style="{ color: announceHex }">
+                  {{ announce.trim() || '在这里预览公告效果' }}
+                </span>
+              </div>
+              <div class="text-3 small mono ellipsis">实际发送：{{ previewAnnounce(announce || '（公告内容）', announceColor) }}</div>
+            </div>
+
+            <div class="divider" />
+
             <div v-if="shortcutGroups.length" class="col gap-3">
               <div v-for="g in shortcutGroups" :key="g.group" class="col gap-1">
                 <div class="chip-group-label">{{ g.group }}</div>

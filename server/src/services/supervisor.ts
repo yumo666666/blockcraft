@@ -738,13 +738,21 @@ export async function startAutostartWorlds(): Promise<void> {
     }
     if (!cfg.autostart) continue;
     if (st.status === 'running' || st.status === 'starting' || st.status === 'stopping') continue;
-    // 内存不够就先不起，交给看门狗下一轮再试，别把机器压死
+    /*
+     * 内存门槛。原来是一刀切要求 available >= Xmx×1.15，太保守：
+     * 实测这台机器空闲时可用内存常年就在 4.1~4.6G，而 Xmx 4096 的世界稳态 RSS 只有 3.6G 左右，
+     * 结果「自动启动」几乎永远起不来（世界一直停着，对用户来说比慢一点更糟）。
+     * 现在分三档：够就起、偏紧就起但告警、实在不够才跳过。
+     */
     const avail = systemService.memoryInfo().availableMb;
-    if (avail < cfg.memoryMb * 1.15) {
+    if (avail < cfg.memoryMb * 0.9) {
       logger.warn(
-        `autostart 跳过 ${id}：可用内存 ${avail}MB，装不下 ${cfg.memoryMb}MB 的堆（看门狗稍后会再试）`,
+        `autostart 跳过 ${id}：可用内存 ${avail}MB，明显装不下 ${cfg.memoryMb}MB 的堆（看门狗稍后会再试）`,
       );
       continue;
+    }
+    if (avail < cfg.memoryMb * 1.05) {
+      logger.warn(`autostart 拉起 ${id}：可用内存 ${avail}MB 偏紧（堆 ${cfg.memoryMb}MB），可能走 swap 而变卡`);
     }
     logger.info(`autostart 拉起 ${id}（可用内存 ${avail}MB / 需要 ${cfg.memoryMb}MB）`);
     try {

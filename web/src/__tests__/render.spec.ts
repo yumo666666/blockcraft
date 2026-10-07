@@ -235,6 +235,25 @@ describeIfPanel('控制台命令提示', () => {
       expect(text, `缺少快捷命令：${label}`).toContain(label);
     }
     // 带参数的按钮不应直接把半截命令发出去，而是填进输入框
+    // 发公告：颜色选择 + 内容输入都在快捷命令区
+    expect(text).toContain('发公告');
+    expect(w.find('[data-test="announce"]').exists(), '应该有公告内容输入框').toBe(true);
+    const picks = w.findAll('.announce-box .color-pick');
+    expect(picks.length, '应该有一排颜色按钮').toBeGreaterThan(5);
+    // 可视化：预览里的文字颜色要跟着选中的颜色走
+    const input = w.find('[data-test="announce"]');
+    await input.setValue('服务器 5 分钟后重启');
+    await flushPromises();
+    const gold = picks.find((b) => b.text().includes('金'));
+    expect(gold).toBeTruthy();
+    await gold!.trigger('click');
+    await flushPromises();
+    const previewText = w.find('[data-test="announce-preview"] .ap-text');
+    expect(previewText.text()).toContain('服务器 5 分钟后重启');
+    // Vue 生成的内联样式就是原始色值形式
+    const style = previewText.attributes('style') ?? '';
+    expect(style.includes('#ffaa00') || style.includes('rgb(255, 170, 0)'), `预览颜色不对：${style}`).toBe(true);
+
     const argChip = w.findAll('button.chip').find((b) => b.text().includes('给管理员'));
     expect(argChip).toBeTruthy();
     await argChip!.trigger('click');
