@@ -18,9 +18,15 @@ function fileStream(): fs.WriteStream {
   return stream;
 }
 
+/** 本地时间戳。原来用 toISOString()（UTC），日志会比系统时间早 8 小时，看日志时对不上。 */
+export function localStamp(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 function write(level: Level, scope: string, msg: string, extra?: unknown): void {
   if (LEVELS.indexOf(level) < LEVELS.indexOf(minLevel)) return;
-  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const ts = localStamp();
   const tail = extra === undefined ? '' : ' ' + safeJson(extra);
   const line = `${ts} [${level.toUpperCase()}] [${scope}] ${msg}${tail}`;
   const console_ = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;

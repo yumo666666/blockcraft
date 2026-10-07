@@ -21,7 +21,9 @@ const GRACE_FIRST = Number(process.env.BC_WATCHDOG_GRACE || 45) * 1000;
 const LOG = path.join(DATA_DIR, 'logs', 'watchdog.log');
 
 function log(msg: string): void {
-  const line = `${new Date().toISOString().replace('T', ' ').slice(0, 19)} ${msg}`;
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  const line = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${msg}`;
   console.log(line);
   try {
     fs.mkdirSync(path.dirname(LOG), { recursive: true });

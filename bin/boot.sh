@@ -6,19 +6,24 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p data/logs
 
-echo "[boot] $(date '+%F %T') 启动 BlockCraft"
+# 记一份自己的启动流水：谁在什么时候触发、结果如何。
+# 调用方（DSH 插件、crontab）通常把输出丢掉，没有这个文件就无法核对「是否随开机启动」。
+BOOTLOG=data/logs/boot.log
+say() { echo "[boot] $(date '+%F %T') $*" | tee -a "$BOOTLOG"; }
+
+say "启动 BlockCraft（调用方 PID ${PPID:-?}）"
 
 # 1) 面板（自己会把两条 FRP 通道拉起来）
-bash bin/start.sh || echo "[boot] 面板启动失败，见 data/logs/panel.out"
+bash bin/start.sh || say "面板启动失败，见 data/logs/panel.out"
 
 # 2) 看门狗（每 60 秒巡检：面板掉线、FRP 通道掉线、世界自启与卡住自愈）
 WD=$(bash "$(dirname "$0")/proc-find.sh" node "server/src/watchdog.ts" | head -1)
 if [ -n "$WD" ]; then
-  echo "[boot] 看门狗已经在运行（PID $WD）"
+  say "看门狗已经在运行（PID $WD）"
 else
   setsid nohup node server/src/watchdog.ts >> data/logs/watchdog.out 2>&1 < /dev/null &
   echo $! > data/logs/watchdog.pid
-  echo "[boot] 看门狗已启动（PID $(cat data/logs/watchdog.pid)）"
+  say "看门狗已启动（PID $(cat data/logs/watchdog.pid)）"
 fi
 
-echo "[boot] 完成"
+say "完成"
