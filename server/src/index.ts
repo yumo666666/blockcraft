@@ -20,6 +20,7 @@ import { registerPackRoutes } from './routes/packs.ts';
 import { startScheduler } from './services/scheduler.ts';
 import { startFrpService } from './services/frpService.ts';
 import { createJob } from './services/jobService.ts';
+import { createSession as createSessionRec, destroySession, isValidSession as isValidSessionRec, prune } from './core/sessions.ts';
 
 const logger = createLogger('http');
 
@@ -27,27 +28,16 @@ export interface AuthedRequest extends Request {
   sessionId?: string;
 }
 
-const sessions = new Map<string, { createdAt: number; ip: string }>();
-
+/**
+ * 登录会话落盘（见 core/sessions.ts）。
+ * 之前只在内存里，面板一重启登录态就全丢 —— 每次升级/重启都要重新输 token，很烦。
+ */
 export function createSession(ip: string, hours: number): string {
-  const id = crypto.randomBytes(24).toString('base64url');
-  sessions.set(id, { createdAt: Date.now(), ip });
-  // 过期清理
-  const ttl = hours * 3600 * 1000;
-  for (const [k, v] of sessions) if (Date.now() - v.createdAt > ttl) sessions.delete(k);
-  return id;
+  return createSessionRec(ip, hours);
 }
 
 export function isValidSession(id: string | undefined): boolean {
-  if (!id) return false;
-  const s = sessions.get(id);
-  if (!s) return false;
-  const ttl = loadConfig().panel.sessionHours * 3600 * 1000;
-  if (Date.now() - s.createdAt > ttl) {
-    sessions.delete(id);
-    return false;
-  }
-  return true;
+  return isValidSessionRec(id, loadConfig().panel.sessionHours);
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {
@@ -135,7 +125,7 @@ export function boot(): void {
 
   app.post('/api/logout', (req, res) => {
     const cookies = parseCookies(req.headers.cookie);
-    if (cookies['bc_session']) sessions.delete(cookies['bc_session']);
+    if (cookies['bc_session']) destroySession(cookies['bc_session']);
     res.setHeader('Set-Cookie', 'bc_session=; Path=/; HttpOnly; Max-Age=0');
     res.json({ ok: true });
   });
@@ -208,6 +198,17 @@ export function boot(): void {
   sup.reconcile();
   ports.reconcile(new Set(I.listInstanceIds()));
   createJob({ id: 'boot', kind: 'install', title: '面板启动', instanceId: null, status: 'done', stages: [], lines: [`面板启动于 ${new Date().toLocaleString('zh-CN')}`], progress: 100, error: null, startedAt: Date.now(), endedAt: Date.now() }).catch(() => undefined);
+
+  // 启动时清一遍过期会话，之后每小时一次
+  const pruned = prune(cfg.panel.sessionHours);
+  if (pruned) logger.info(`清理了 ${pruned} 个过期登录会话`);
+  setInterval(() => {
+    try {
+      prune(loadConfig().panel.sessionHours);
+    } catch {
+      /* ignore */
+    }
+  }, 3600_000).unref();
 
   app.listen(cfg.panel.port, cfg.panel.host, () => {
     logger.info(`BlockCraft 面板已启动：http://${cfg.panel.host}:${cfg.panel.port}`);

@@ -4,6 +4,7 @@ import { DATA_DIR, INSTANCES_DIR, PROJECT_ROOT } from '../core/paths.ts';
 import { dirSizeSync } from '../core/fsx.ts';
 import { loadConfig, publicConfig, saveConfig, randomToken } from '../config.ts';
 import { bad } from '../core/errors.ts';
+import { destroyAllSessions, sessionCount } from '../core/sessions.ts';
 import { systemSnapshot, connectionAddresses } from '../services/systemService.ts';
 import { summarizeAll, countMods } from '../services/overview.ts';
 import { javaSummary, listJava, autoJava } from '../services/javaService.ts';
@@ -20,6 +21,7 @@ export function registerSystemRoutes(app: Express): void {
       dataDir: DATA_DIR,
       projectRoot: PROJECT_ROOT,
       java: javaSummary(),
+      sessions: sessionCount(),
     });
   });
 
@@ -39,7 +41,9 @@ export function registerSystemRoutes(app: Express): void {
     const cfg = loadConfig();
     const token = randomToken();
     saveConfig({ panel: { ...cfg.panel, token } });
-    res.json({ ok: true, token });
+    // 令牌换了，之前发出去的登录会话也要一起作废（否则旧 cookie 还能继续用）
+    const killed = destroyAllSessions();
+    res.json({ ok: true, token, killedSessions: killed });
   });
 
   app.get('/api/system', async (_req, res) => {

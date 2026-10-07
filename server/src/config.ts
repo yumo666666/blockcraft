@@ -36,7 +36,7 @@ export function defaultConfig(): PanelConfig {
       host: process.env.BC_HOST || '0.0.0.0',
       port: Number(process.env.BC_PORT || 8081),
       token: process.env.BC_TOKEN || randomToken(),
-      sessionHours: 72,
+      sessionHours: Number(process.env.BC_SESSION_HOURS || 720),
     },
     portRanges: {
       game: [25565, 25609],
