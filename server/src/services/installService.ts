@@ -275,6 +275,8 @@ export interface CopyParams {
   autostart?: boolean;
   inheritOps?: boolean;
   inheritWhitelist?: boolean;
+  /** 连存档一起复制。默认 false：按「同模组的新世界」语义，用下面的种子重新生成 */
+  includeWorld?: boolean;
 }
 
 /**
@@ -282,6 +284,7 @@ export interface CopyParams {
  * 不复制：存档、日志、备份、崩溃报告、端口（重新分配）、RCON 密码（重新生成）。
  */
 export async function copyInstance(srcId: string, params: CopyParams, onLog: (s: string) => void): Promise<InstanceConfig> {
+  // params.includeWorld: 是否连存档一起复制（默认否 —— 同模组的全新世界）
   const src = I.getConfig(srcId);
   if (!I.exists(srcId)) throw notFound(`源世界不存在：${srcId}`);
   onLog(`从「${src.name}」复制为新世界「${params.name}」`);
@@ -315,7 +318,15 @@ export async function copyInstance(srcId: string, params: CopyParams, onLog: (s:
 
   const from = instanceServerDir(srcId);
   const to = instanceServerDir(created.id);
-  const skip = new Set(['world', 'logs', 'crash-reports', 'backups', 'level.dat_old']);
+  // 默认不带走存档（新世界按 seed 重新生成）；勾了「连存档一起复制」就保留存档目录。
+  // 存档目录名跟随源世界的 level-name（不一定是 world），所以按实际配置判断。
+  const skip = new Set(['logs', 'crash-reports', 'backups', 'level.dat_old']);
+  if (!params.includeWorld) {
+    const lvl = String(src.levelName || 'world');
+    for (const d of [lvl, `${lvl}_nether`, `${lvl}_the_end`, 'DIM1', 'DIM-1', 'world', 'world_nether', 'world_the_end']) {
+      skip.add(d);
+    }
+  }
   const skipFiles = new Set(['session.lock', 'usercache.json', 'ops.json', 'banned-ips.json', 'banned-players.json']);
   onLog('开始复制服务端目录（真实复制，零共享）…');
   const stats = copyTree(from, to, { skipDirs: skip, skipFiles, onLog });
@@ -326,8 +337,10 @@ export async function copyInstance(srcId: string, params: CopyParams, onLog: (s:
 
   // 覆盖级配置：与源世界不同的部分
   I.saveConfig(created.id, {
-    levelSeed: params.levelSeed ?? '',
+    // 带存档复制时种子由存档里的 level.dat 说了算，不能再写一个不同的种子进去
+    levelSeed: params.includeWorld ? '' : params.levelSeed ?? '',
     gamerules: src.gamerules,
+    ...(params.includeWorld ? { levelName: String(src.levelName || 'world') } : {}),
   });
   I.writeProperties(created.id);
   onLog('新世界的配置已生成（端口与 RCON 密码都是新的）');

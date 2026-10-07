@@ -274,6 +274,13 @@ export function registerInstanceRoutes(app: Express): void {
     res.json({ ok: true, jobId: job.id });
   });
 
+  /** 世界的真实种子（配置 → 存档 → 问服务端 三级兜底） */
+  app.get('/api/instances/:id/seed', async (req, res) => {
+    const id = requireId(req.params.id);
+    const r = await I.resolveSeed(id);
+    res.json({ ok: true, ...r });
+  });
+
   app.post('/api/instances/:id/copy', async (req, res) => {
     const id = requireId(req.params.id);
     const body = req.body as { name?: string } & Record<string, unknown>;

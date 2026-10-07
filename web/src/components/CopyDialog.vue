@@ -21,7 +21,11 @@ const form = ref({
   generateStructures: true,
   inheritOps: true,
   autostart: false,
+  includeWorld: false,
 });
+/** 源世界的种子是从哪来的（配置 / 存档 / 问服务端），显示给用户看 */
+const seedNote = ref('');
+const seedValue = ref<string | null>(null);
 
 watch(
   () => props.open,
@@ -43,7 +47,26 @@ watch(
         generateStructures: Boolean(c.generateStructures ?? true),
         inheritOps: true,
         autostart: false,
+        includeWorld: false,
       };
+      // 预填源世界的真实种子：不填的话新世界是随机种子，
+      // 那就不是「同一套模组 + 同一片地形」了，用户要的往往正是这个。
+      seedNote.value = '读取中…';
+      seedValue.value = null;
+      api
+        .get<{ seed: string | null; source: string | null }>(`/api/instances/${props.source.id}/seed`)
+        .then((r) => {
+          seedValue.value = r.seed;
+          if (r.seed) {
+            form.value.levelSeed = r.seed;
+            seedNote.value = `已自动填入源世界的种子（来源：${r.source}）。想换一片地形就修改或清空它。`;
+          } else {
+            seedNote.value = '读不出源世界的种子（这个版本没把它存在存档里），留空则随机生成一片新地形。';
+          }
+        })
+        .catch(() => {
+          seedNote.value = '读取源世界种子失败，留空则随机生成。';
+        });
     } catch (err) {
       toastError(err, '读取源世界失败');
     }
@@ -71,17 +94,30 @@ async function submit() {
     <div v-if="!detail" class="row gap-2"><span class="spinner" /> 读取源世界…</div>
     <div v-else class="col gap-4">
       <div class="badge badge-accent">MOD 与配置会被完整复制到新世界（真实复制，两个世界互不影响）</div>
+
+      <label class="switch copy-world-switch">
+        <input v-model="form.includeWorld" type="checkbox" />
+        <span class="switch-track" />
+        <span class="col" style="gap: 2px">
+          <span class="switch-text" style="font-weight: 600">连存档一起复制</span>
+          <span class="text-3 small">
+            不开（默认）：只带模组，新世界按下面的种子重新生成 —— 「同一套模组的全新世界」<br />
+            打开：把源世界的地图、建筑、玩家数据一起搬过去（此时种子以存档为准，下面填的种子不生效）
+          </span>
+        </span>
+      </label>
       <div class="form-grid-2">
         <div class="field">
           <label class="field-label">新世界名称</label>
           <input v-model="form.name" class="input" />
         </div>
         <div class="field">
-          <label class="field-label">世界种子</label>
+          <label class="field-label">世界种子（决定自然地形：生物群系、矿脉、村庄位置）</label>
           <input v-model="form.levelSeed" class="input mono" placeholder="留空 = 随机生成" />
         </div>
         <div class="field">
           <label class="field-label">内存上限（MB）</label>
+          <div v-if="!form.includeWorld && seedNote" class="text-3 small">{{ seedNote }}</div>
           <input v-model.number="form.memoryMb" class="input" type="number" />
         </div>
         <div class="field">
@@ -111,7 +147,12 @@ async function submit() {
         <label class="switch"><input v-model="form.autostart" type="checkbox" /><span class="switch-track" /><span class="switch-text">随面板自启</span></label>
       </div>
       <p class="text-3 small">
-        不会复制：存档（新世界会重新生成）、日志、备份、端口与 RCON 密码（都会重新生成）。
+        无论怎么选都不会复制：日志、备份、崩溃报告；端口与 RCON 密码都会重新生成。
+        {{
+          form.includeWorld
+            ? '本次会把存档一起复制过去，建筑与玩家数据都保留。'
+            : '本次不复制存档：新世界是全新的，只有模组与配置沿用源世界。'
+        }}
       </p>
     </div>
     <template #footer>

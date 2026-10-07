@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { levelDatPath, readWorldSeed } from '../core/nbt.ts';
 import { INSTANCES_DIR, INSTANCE_ID_RE, instanceConfigFile, instanceDir, instanceServerDir, instanceStateFile } from '../core/paths.ts';
 import { atomicWriteJsonWithBackupSync, atomicWriteFileSync, readJsonSync, dirSizeSync, dirSizeAsync } from '../core/fsx.ts';
 import { bad, conflict, notFound } from '../core/errors.ts';
@@ -311,7 +312,8 @@ export function slugify(name: string): string {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 32);
-  return base || 'world_' + Math.random().toString(36).slice(2, 7);
+  // 纯中文名 slug 后是空的：用固定的 world，重名由 createInstance 的自动序号解决
+  return base || 'world';
 }
 
 /** 只登记元数据与端口，不下载任何东西（安装由 installService 负责） */
@@ -442,6 +444,36 @@ async function realServerPath(id: string): Promise<string> {
   } catch {
     return p;
   }
+}
+
+/**
+ * 取世界的真实种子。按可靠性排序：
+ *   1) server.properties / 面板配置里显式写着的 level-seed
+ *   2) level.dat 里的 WorldGenSettings.seed（1.13~1.20.x 都在这；26.x 已经不放这里了）
+ *   3) 世界正在运行时问服务端（`seed` 命令）—— 任何版本都准，但需要它跑着
+ * 读不出来就返回 null，界面显示「未知」，绝不猜。
+ */
+export async function resolveSeed(id: string): Promise<{ seed: string | null; source: 'config' | '存档' | '服务端' | null }> {
+  const cfg = getConfig(id);
+  const fromConfig = String(cfg.levelSeed ?? '').trim();
+  if (fromConfig && fromConfig !== '0') return { seed: fromConfig, source: 'config' };
+
+  const fromNbt = readWorldSeed(levelDatPath(instanceServerDir(id), cfg.levelName));
+  if (fromNbt && fromNbt !== '0') return { seed: fromNbt, source: '存档' };
+
+  // 跑着的话直接问服务端
+  try {
+    const st = getState(id);
+    if (st.status === 'running' || st.status === 'starting') {
+      const sup = await import('./supervisor.ts');
+      const out = await sup.rcon(id, 'seed');
+      const m = /Seed:\s*\[?(-?\d+)\]?/i.exec(out);
+      if (m) return { seed: m[1], source: '服务端' };
+    }
+  } catch {
+    /* 问不到就算了 */
+  }
+  return { seed: null, source: null };
 }
 
 export function instanceSize(id: string): { total: number; server: number; backups: number } {
