@@ -208,6 +208,13 @@ describe('控制台命令提示', () => {
     await flushPromises();
     expect(w.text()).toContain('keepInventory');
     expect(w.text()).toContain('死亡');
+
+    // 布局要求：命令输入必须在「控制台」卡片里（也就是日志下方），而不是在右侧快捷命令卡片里
+    const consoleCard = w.find('.console-card');
+    expect(consoleCard.exists()).toBe(true);
+    expect(consoleCard.find('[data-test="cmd"]').exists(), '命令输入应该在控制台卡片内').toBe(true);
+    const sideCard = w.find('.console-side .card');
+    expect(sideCard.find('[data-test="cmd"]').exists(), '快捷命令卡片里不该再有命令输入').toBe(false);
     w.unmount();
   });
 

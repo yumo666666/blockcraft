@@ -466,7 +466,7 @@ watch(
 
     <!-- 左右两栏：左宽（日志）右窄（快捷命令） -->
     <div class="console-grid">
-      <div class="card">
+      <div class="card console-card">
         <div class="card-head">
           <h2>🖥 控制台</h2>
           <div class="row gap-2 wrap">
@@ -481,7 +481,7 @@ watch(
             <input v-model="filter" class="input filter-input" placeholder="过滤关键字" />
           </div>
         </div>
-        <div class="card-body">
+        <div class="card-body console-body">
           <div ref="consoleEl" class="console" @scroll.passive="onConsoleScroll">
             <div v-if="!filteredLines.length" class="console-empty">
               {{ filter ? '没有匹配的日志行' : '还没有日志。世界启动后这里会实时输出。' }}
@@ -489,37 +489,9 @@ watch(
             <div v-for="l in filteredLines" :key="l.seq" class="console-line" :class="lineClass(l.text)">{{ l.text }}</div>
           </div>
         </div>
-      </div>
 
-      <div class="col gap-4">
-        <div class="card">
-          <div class="card-head">
-            <h3>⚡ 快捷命令</h3>
-            <span class="text-3 small">{{ shortcuts.length }} 条 · 按组排</span>
-          </div>
-          <div class="card-body col gap-3">
-            <div v-if="shortcutGroups.length" class="col gap-3">
-              <div v-for="g in shortcutGroups" :key="g.group" class="col gap-1">
-                <div class="chip-group-label">{{ g.group }}</div>
-                <div class="chips">
-                  <button
-                    v-for="s in g.items"
-                    :key="s.group + s.cmd + s.label"
-                    class="chip"
-                    :class="{ 'chip-danger': s.danger, 'chip-arg': s.needsArg }"
-                    :title="s.needsArg ? `${s.cmd}…` : s.cmd"
-                    :disabled="sending"
-                    @click="useShortcut(s)"
-                  >
-                    {{ s.label }}<span v-if="s.needsArg" class="chip-dots">…</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div v-else class="text-3 small">没有可用的快捷命令</div>
-
-            <div class="divider" />
-
+        <!-- 命令输入放在控制台正下方：和日志连成一体，也让左右两栏底部对齐 -->
+        <div class="console-cmd">
             <div class="cmd-wrap">
               <div v-if="suggestOpen" class="suggest">
                 <button
@@ -564,7 +536,39 @@ watch(
                 </template>
               </div>
             </div>
-            <div v-if="!running" class="text-3 small">世界没有在运行，命令会被拒绝，先去总览启动它。</div>
+          <div v-if="!running" class="text-3 small">世界没有在运行，命令会被拒绝，先去总览启动它。</div>
+        </div>
+      </div>
+
+      <div class="col gap-4 console-side">
+        <div class="card">
+          <div class="card-head">
+            <h3>⚡ 快捷命令</h3>
+            <span class="text-3 small">{{ shortcuts.length }} 条 · 按组排</span>
+          </div>
+          <div class="card-body col gap-3">
+            <div v-if="shortcutGroups.length" class="col gap-3">
+              <div v-for="g in shortcutGroups" :key="g.group" class="col gap-1">
+                <div class="chip-group-label">{{ g.group }}</div>
+                <div class="chips">
+                  <button
+                    v-for="s in g.items"
+                    :key="s.group + s.cmd + s.label"
+                    class="chip"
+                    :class="{ 'chip-danger': s.danger, 'chip-arg': s.needsArg }"
+                    :title="s.needsArg ? `${s.cmd}…` : s.cmd"
+                    :disabled="sending"
+                    @click="useShortcut(s)"
+                  >
+                    {{ s.label }}<span v-if="s.needsArg" class="chip-dots">…</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div v-else class="text-3 small">没有可用的快捷命令</div>
+
+            <div class="divider" />
+
 
             <div v-if="history.length" class="col gap-1">
               <div class="field-label">最近用过（点击回填）</div>
@@ -719,12 +723,35 @@ watch(
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 330px);
   gap: var(--sp-4);
-  align-items: start;
+  /* 两栏等高：左栏是「日志 + 命令输入」，右栏是快捷命令，底部正好平齐 */
+  align-items: stretch;
 }
 @media (max-width: 940px) {
-  .console-grid { grid-template-columns: 1fr; }
+  .console-grid { grid-template-columns: 1fr; align-items: start; }
 }
 .head-stats { display: flex; gap: var(--sp-5); }
 .filter-input { width: 150px; }
 .grace-input { width: 84px; }
+
+/* 左栏：头部 + 可伸缩的日志 + 贴在底部的命令输入，整卡撑满一栏高度 */
+.console-card { display: flex; flex-direction: column; }
+.console-body { flex: 1; display: flex; min-height: 0; }
+.console-body .console {
+  flex: 1;
+  height: auto;
+  min-height: 320px;
+  max-height: 62vh;
+}
+.console-cmd {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 0 0 var(--r) var(--r);
+}
+/* 右栏：快捷命令卡片自己长高，和左栏底部平齐 */
+.console-side { height: 100%; }
+.console-side .card:first-child { flex: 1; }
 </style>
