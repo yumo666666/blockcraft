@@ -666,6 +666,24 @@ export function hasIntent(id: string): boolean {
 
 /** 面板重启后的对账：把还在跑的进程接管回来 */
 export function reconcile(): void {
+  /*
+   * 面板每次启动都清掉「用户主动停止」这个意图。
+   * 它的本意只是「这一轮别自动给我拉起来」（比如你刚在面板里点了停止，看门狗不该马上又开），
+   * 但它被持久化在 state.json 里，结果变成「手动停过一次 → autostart 永久失效」，
+   * 连重启 DSH 都恢复不了。新的一次启动 = 新的一轮，应当重新按 autostart 来。
+   */
+  try {
+    for (const id of I.listInstanceIds()) {
+      const st = I.getState(id);
+      if (st.intentionalStop && st.status !== 'running' && st.status !== 'starting') {
+        I.saveState(id, { intentionalStop: false });
+        logger.info('世界 ' + id + ' 的「主动停止」意图已随面板重启失效（仍按 autostart 设置）');
+      }
+    }
+  } catch (err) {
+    logger.warn('清理主动停止意图失败', String(err));
+  }
+
   for (const id of I.listInstanceIds()) {
     const pid = readPidFile(id);
     if (pid && isAlive(pid)) {

@@ -41,6 +41,12 @@ for host, port, label in targets:
     try:
         pid, j = ping(host, port)
         v = j.get('version', {}); p = j.get('players', {})
-        print(f"  ✔ {label} → 版本 {v.get('name')} (协议 {v.get('protocol')}) · 在线 {p.get('online')}/{p.get('max')} · MOTD {j.get('description',{}).get('text') if isinstance(j.get('description'),dict) else j.get('description')}")
+        if not v and not p:
+            # 某些服务端在还没就绪时会回一个结构不一样的响应，原样打出来便于排查
+            print(f"  ~ {label} → 响应结构异常，原文：{str(j)[:200]}")
+        else:
+            desc = j.get('description')
+            motd = desc.get('text') if isinstance(desc, dict) else desc
+            print(f"  ✔ {label} → 版本 {v.get('name')} (协议 {v.get('protocol')}) · 在线 {p.get('online')}/{p.get('max')} · MOTD {motd}")
     except Exception as e:
         print(f"  ✘ {label} → {type(e).__name__}: {e}")

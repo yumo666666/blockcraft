@@ -131,6 +131,9 @@ export function registerInstanceRoutes(app: Express): void {
     const propsChanged = PROP_KEYS.some(changed);
     const needsRestart = RESTART_KEYS.some(changed);
     const next = I.saveConfig(id, patch);
+    // 把「随面板自动启动」打开时，顺手清掉「主动停止」意图，
+    // 否则看门狗会一直跳过这个世界，用户会以为开关没生效。
+    if ((patch as { autostart?: boolean }).autostart === true) I.saveState(id, { intentionalStop: false });
     // 只要动了 properties 相关的项就重写（幂等、很便宜），不再只在「需重启」时才写
     if (propsChanged) I.writeProperties(id);
     if (sup.isRunning(id) && before.gamerules !== next.gamerules) await sup.applyGamerules(id).catch(() => undefined);
