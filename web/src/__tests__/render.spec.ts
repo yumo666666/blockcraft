@@ -263,7 +263,7 @@ describeIfPanel('控制台命令提示', () => {
   });
 });
 
-describe('世界配置弹窗', () => {
+describeIfPanel('世界配置弹窗', () => {
   it('「随面板自动启动」在弹窗顶部一眼可见（不能藏在滚动区里）', async () => {
     const w = await mountAt('/');
     await waitFor(w, (t) => t.includes('显示端口'));
@@ -332,7 +332,7 @@ describe('世界配置弹窗', () => {
   });
 });
 
-describeIfPanel('世界卡片的崩溃提示', () => {
+describe('世界卡片的崩溃提示', () => {
   it('有 lastError 时显示「上次崩溃」与原因，没有时不显示', async () => {
     const { default: WorldNote } = await import('../components/WorldNote.vue');
     const base = {
