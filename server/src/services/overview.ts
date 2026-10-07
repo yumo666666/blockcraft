@@ -98,7 +98,7 @@ export async function summarize(id: string): Promise<InstanceSummary> {
     uptime: st.uptime,
     cpu: st.cpu,
     rss: st.rss,
-    players: state.players || st.players,
+    players: st.players,
     maxPlayers: cfg.maxPlayers,
     modCount: countMods(id),
     diskUsage: await dirSizeCachedAsync(id),
@@ -106,6 +106,8 @@ export async function summarize(id: string): Promise<InstanceSummary> {
     intentionalStop: state.intentionalStop,
     createdAt: cfg.createdAt ?? cfg.created,
     javaMajor: cfg.javaMajor,
+    // 上次崩溃/异常退出的原因（由 sweepDeadWorlds / 退出事件读崩溃报告写入）
+    lastError: state.lastError ?? null,
   };
 }
 

@@ -10,6 +10,7 @@ import { createLogger } from '../core/logger.ts';
 import { withLock } from '../core/lock.ts';
 import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile, writeLaunchScript } from '../launcher/index.ts';
 import { processStat } from './systemService.ts';
+import { latestCrashReport } from '../core/crashReport.ts';
 import { pingServer } from '../core/mcping.ts';
 import * as systemService from './systemService.ts';
 import { autoJava } from './javaService.ts';
@@ -380,8 +381,13 @@ function attachOutput(child: ChildProcess, id: string): void {
       players: 0,
     });
     if (crash) {
-      const reason = detectFailure(buf.text()) ?? `进程异常退出（code=${code}）`;
-      I.saveState(id, { lastError: reason });
+      // 优先用服务端自己的崩溃报告（信息最准），其次才靠日志特征猜
+      const report = latestCrashReport(instanceServerDir(id), Date.now() - 6 * 3600_000);
+      const reason = report?.reason ?? detectFailure(buf.text()) ?? `进程异常退出（code=${code}）`;
+      I.saveState(id, {
+        lastError: report ? `${report.reason}｜崩溃时间 ${report.time}` : reason,
+        phase: `崩溃：${reason}`,
+      });
       logger.warn(`世界 ${id} 异常退出`, { code, signal, reason });
     } else {
       logger.info(`世界 ${id} 已停止`, { code });
@@ -741,6 +747,42 @@ export async function startAutostartWorlds(): Promise<void> {
     }
     // 错开：等上一个把内存吃住再起下一个
     await new Promise((r) => setTimeout(r, 15000));
+  }
+}
+
+/**
+ * 巡检「状态写着在跑、进程其实已经没了」的世界。
+ *
+ * 为什么需要：面板重启时接管过来的世界**没有子进程句柄**，`child.on('exit')` 永远不会触发，
+ * 于是世界炸掉了面板也一直显示运行中（实测：18:25 世界被看门狗判定卡死而关闭，面板全程
+ * 没留下任何原因）。这里顺便把崩溃报告读出来翻译成人话写进 lastError，卡片上直接能看到。
+ */
+export function sweepDeadWorlds(): void {
+  for (const id of I.listInstanceIds()) {
+    let st: ReturnType<typeof I.getState>;
+    try {
+      st = I.getState(id);
+    } catch {
+      continue;
+    }
+    if (st.status !== 'running' && st.status !== 'starting') continue;
+    if (alivePid(id)) continue; // 进程还活着，正常
+    const since = st.startedAt ? st.startedAt * 1000 - 60_000 : 0;
+    const crash = latestCrashReport(instanceServerDir(id), since);
+    I.saveState(id, {
+      status: crash ? 'crashed' : 'stopped',
+      pid: null,
+      listening: false,
+      players: 0,
+      intentionalStop: false,
+      phase: crash ? `崩溃：${crash.reason}` : '已停止（进程已不在）',
+      lastError: crash ? `${crash.reason}｜崩溃时间 ${crash.time}` : st.lastError ?? null,
+    });
+    if (crash) {
+      logger.warn(`世界 ${id} 进程已消失，且发现崩溃报告`, { file: crash.file, reason: crash.reason });
+    } else {
+      logger.warn(`世界 ${id} 进程已消失（没有崩溃报告，可能被系统杀掉或正常退出）`);
+    }
   }
 }
 

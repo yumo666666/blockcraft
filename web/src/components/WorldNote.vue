@@ -49,6 +49,10 @@ const loaderLabel = computed(() => {
             <i class="dot" :class="statusClass(item.status)" />
             <h2 class="ellipsis">{{ item.name }}</h2>
           </div>
+          <div v-if="item.lastError" class="note-crash" :title="item.lastError">
+            <span class="badge badge-danger">上次崩溃</span>
+            <span class="ellipsis">{{ item.lastError }}</span>
+          </div>
           <div class="row gap-2 mt-2 wrap">
             <span v-if="item.autostart" class="badge badge-accent" title="随面板自动启动">自启</span>
             <span class="text-3 small ellipsis">{{ item.note || `${loaderLabel} · Minecraft ${item.mc}` }}</span>

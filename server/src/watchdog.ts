@@ -132,6 +132,8 @@ function portAlive(port: number): Promise<boolean> {
 }
 
 async function tick(firstTick = false): Promise<void> {
+  // 先让面板把「进程不在了」的世界标记出来（含读崩溃报告），再看要不要按 autostart 拉起
+  await api('POST', '/api/maintenance/sweep-dead', {}).catch(() => undefined);
   // 1) 面板：必须连续两次 ping 失败 **且** 端口真的没人监听，才认为它挂了。
   //    只凭一次超时就拉起，会在面板短暂繁忙时糊出一个重复进程（实测踩到）。
   const ping = await api<{ ok: boolean }>('GET', '/api/ping');

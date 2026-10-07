@@ -117,6 +117,10 @@ function normalizeConfig(cfg: InstanceConfig, id: string): InstanceConfig {
     color: cfg.color ?? '#e8d5b7',
     levelName: cfg.levelName || 'world',
     gamerules: { ...DEFAULT_GAMERULES, ...(cfg.gamerules ?? {}) },
+    // 默认关掉强制刷盘：手机上它会在主线程上阻塞，是卡顿的常见来源之一。
+    // 正常关服照样会完整存盘，只有「断电/被强杀」时可能丢最近几秒。
+    syncChunkWrites: cfg.syncChunkWrites ?? false,
+    maxTickTime: cfg.maxTickTime ?? 60000,
     frp: cfg.frp ?? { enabled: true, remotePort: null, mode: 'auto' },
     backup: { ...defaultBackupPolicy(), ...(cfg.backup ?? {}) },
     schedule: { ...defaultSchedule(), ...(cfg.schedule ?? {}) },
@@ -185,6 +189,8 @@ const PROP_KEYS: [keyof InstanceConfig, string][] = [
   ['enableCommandBlock', 'enable-command-block'],
   ['viewDistance', 'view-distance'],
   ['simulationDistance', 'simulation-distance'],
+  ['syncChunkWrites', 'sync-chunk-writes'],
+  ['maxTickTime', 'max-tick-time'],
 ];
 
 export function parseProperties(text: string): Record<string, string> {
@@ -229,7 +235,6 @@ export function writeProperties(id: string): void {
   props['enable-query'] = props['enable-query'] ?? 'false';
   props['level-name'] = cfg.levelName || 'world';
   props['max-world-size'] = props['max-world-size'] ?? '29999984';
-  props['sync-chunk-writes'] = props['sync-chunk-writes'] ?? 'true';
   for (const [key, prop] of PROP_KEYS) {
     const v = cfg[key];
     if (v === undefined || v === null) continue;
@@ -299,6 +304,8 @@ export interface CreateParams {
   motd?: string;
   viewDistance?: number;
   simulationDistance?: number;
+  syncChunkWrites?: boolean;
+  maxTickTime?: number;
   gamerules?: Gamerules;
   autostart?: boolean;
   createdFrom?: InstanceConfig['createdFrom'];
@@ -379,7 +386,9 @@ export async function createInstance(params: CreateParams): Promise<InstanceConf
     onlineMode: params.onlineMode ?? false,
     whiteList: params.whiteList ?? false,
     viewDistance: params.viewDistance ?? 6,
-    simulationDistance: params.simulationDistance ?? 5,
+    simulationDistance: params.simulationDistance ?? 4,
+    syncChunkWrites: params.syncChunkWrites ?? false,
+    maxTickTime: params.maxTickTime ?? 60000,
     allowNether: params.allowNether ?? true,
     spawnMonsters: true,
     spawnAnimals: true,

@@ -27,6 +27,8 @@ export interface InstanceSummary {
   intentionalStop: boolean;
   createdAt: number;
   javaMajor: number | null;
+  /** 上次崩溃/异常退出的原因（面板自动读崩溃报告生成） */
+  lastError: string | null;
 }
 
 export interface DeviceInfo {

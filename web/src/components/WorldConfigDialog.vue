@@ -30,6 +30,8 @@ interface Cfg {
   jvmExtra: string;
   viewDistance: number;
   simulationDistance: number;
+  syncChunkWrites: boolean;
+  maxTickTime: number;
   port: number;
   onlineMode: boolean;
   whiteList: boolean;
@@ -68,6 +70,7 @@ const RESTART_FIELDS: (keyof Cfg)[] = [
   'port', 'memoryMb', 'minMemoryMb', 'jvmExtra', 'onlineMode', 'whiteList', 'levelSeed',
   'gamemode', 'difficulty', 'pvp', 'hardcore', 'allowNether', 'spawnMonsters', 'spawnAnimals',
   'spawnNpcs', 'generateStructures', 'enableCommandBlock', 'maxPlayers', 'motd', 'viewDistance',
+  'syncChunkWrites', 'maxTickTime',
 ];
 
 function pick(c: Record<string, never>): Cfg {
@@ -92,7 +95,9 @@ function pick(c: Record<string, never>): Cfg {
     minMemoryMb: Number(c.minMemoryMb ?? 1024),
     jvmExtra: String(c.jvmExtra ?? ''),
     viewDistance: Number(c.viewDistance ?? 6),
-    simulationDistance: Number(c.simulationDistance ?? 5),
+    simulationDistance: Number(c.simulationDistance ?? 4),
+    syncChunkWrites: Boolean(c.syncChunkWrites ?? false),
+    maxTickTime: Number(c.maxTickTime ?? 60000),
     port: Number(c.port ?? 25565),
     onlineMode: Boolean(c.onlineMode ?? false),
     whiteList: Boolean(c.whiteList ?? false),
@@ -291,6 +296,26 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
           <div class="field">
             <label class="field-label">模拟距离</label>
             <input v-model.number="form.simulationDistance" class="input" type="number" min="2" max="32" />
+          </div>
+          <div class="field">
+            <label class="field-label">存盘强制刷盘（sync-chunk-writes）</label>
+            <label class="switch">
+              <input v-model="form.syncChunkWrites" type="checkbox" />
+              <span class="switch-track" />
+              <span class="switch-text">{{ form.syncChunkWrites ? '开启（更安全，但存盘会卡主线程）' : '关闭（推荐，存盘更快）' }}</span>
+            </label>
+            <div class="text-3 small">
+              开启时每次存区块都会强制刷到物理磁盘，手机上会造成明显卡顿；关闭后交给系统缓存，
+              正常关服照样完整保存，只有断电或被强杀时可能丢最近几秒。
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">单 tick 卡死判定（max-tick-time，毫秒）</label>
+            <input v-model.number="form.maxTickTime" class="input" type="number" step="10000" min="0" />
+            <div class="text-3 small">
+              服务端自带看门狗：一次 tick 超过这个时间就判定卡死并强制关服（原版 60000）。
+              机器慢、整合包重时建议放宽到 180000 甚至 0（0 = 不自动关，只卡不崩）。
+            </div>
           </div>
         </div>
         <div class="field mt-3">

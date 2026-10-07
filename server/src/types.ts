@@ -86,6 +86,10 @@ export interface InstanceConfig {
   whiteList: boolean;
   viewDistance: number;
   simulationDistance: number;
+  /** 存盘时是否强制刷盘（true 更安全但会阻塞主线程导致卡顿） */
+  syncChunkWrites: boolean;
+  /** 单 tick 超过多少毫秒就判定卡死（服务端自带看门狗；0 = 关闭） */
+  maxTickTime: number;
   allowNether: boolean;
   spawnMonsters: boolean;
   spawnAnimals: boolean;
@@ -151,6 +155,8 @@ export interface InstanceSummary {
   intentionalStop: boolean;
   createdAt: number;
   javaMajor: number | null;
+  /** 上次崩溃/异常退出的原因（面板自动读崩溃报告生成） */
+  lastError: string | null;
 }
 
 export interface PortRegistry {

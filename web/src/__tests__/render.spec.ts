@@ -300,6 +300,7 @@ describe('世界配置弹窗', () => {
       intentionalStop: false,
       createdAt: 0,
       javaMajor: 17,
+      lastError: null,
     };
     const on = mount(WorldNote, { props: { item: { ...base, autostart: true } } });
     expect(on.find('.badge-accent').exists(), '开启自启时应有强调色徽标').toBe(true);
@@ -309,5 +310,29 @@ describe('世界配置弹窗', () => {
     const off = mount(WorldNote, { props: { item: { ...base, autostart: false } } });
     expect(off.find('.badge-accent').exists(), '未开启时不该有自启徽标').toBe(false);
     off.unmount();
+  });
+});
+
+describeIfPanel('世界卡片的崩溃提示', () => {
+  it('有 lastError 时显示「上次崩溃」与原因，没有时不显示', async () => {
+    const { default: WorldNote } = await import('../components/WorldNote.vue');
+    const base = {
+      id: 'unit-crash', name: '测试世界', note: '', color: '#e9e2d0', mc: '1.20.1',
+      loader: 'forge', loaderVersion: '47.4.20', port: 25565, frpPort: 26000, frpEnabled: true,
+      memoryMb: 4096, minMemoryMb: 1024, autostart: false, status: 'crashed', phase: '崩溃',
+      progress: null, pid: null, uptime: 0, cpu: 0, rss: 0, players: 0, maxPlayers: 20,
+      modCount: 244, diskUsage: 0, lastBackup: null, intentionalStop: false, createdAt: 0,
+      javaMajor: 17,
+      lastError: '单个 tick 卡了 60.00 秒，被服务端自带看门狗判定为卡死并强制关闭',
+    };
+    const w = mount(WorldNote, { props: { item: base } });
+    expect(w.find('.note-crash').exists(), '有崩溃原因时应该显示提示').toBe(true);
+    expect(w.text()).toContain('上次崩溃');
+    expect(w.text()).toContain('看门狗判定为卡死');
+    w.unmount();
+
+    const clean = mount(WorldNote, { props: { item: { ...base, lastError: null } } });
+    expect(clean.find('.note-crash').exists(), '正常世界不该显示崩溃提示').toBe(false);
+    clean.unmount();
   });
 });

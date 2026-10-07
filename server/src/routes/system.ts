@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { DATA_DIR, INSTANCES_DIR, PROJECT_ROOT } from '../core/paths.ts';
 import { dirSizeSync } from '../core/fsx.ts';
 import { loadConfig, publicConfig, saveConfig, randomToken } from '../config.ts';
+import * as sup from '../services/supervisor.ts';
 import { bad } from '../core/errors.ts';
 import { destroyAllSessions, sessionCount } from '../core/sessions.ts';
 import { systemSnapshot, connectionAddresses } from '../services/systemService.ts';
@@ -35,6 +36,12 @@ export function registerSystemRoutes(app: Express): void {
     if (body.portRanges) patch.portRanges = body.portRanges;
     const next = saveConfig(patch);
     res.json({ ok: true, config: publicConfig(next) });
+  });
+
+  /** 巡检「进程已不在」的世界并把崩溃原因记下来（看门狗每分钟调一次） */
+  app.post('/api/maintenance/sweep-dead', (_req, res) => {
+    sup.sweepDeadWorlds();
+    res.json({ ok: true });
   });
 
   app.post('/api/panel/token/reset', (_req, res) => {

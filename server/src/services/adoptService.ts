@@ -265,6 +265,10 @@ export async function adopt(opts: AdoptOptions): Promise<InstanceConfig> {
     onlineMode: readProps(det.dir)['online-mode'] === 'true',
     whiteList: readProps(det.dir)['white-list'] === 'true',
     viewDistance: Number(readProps(det.dir)['view-distance'] ?? 6),
+    // 原目录怎么写就怎么沿用：强制刷盘默认关（手机上有明显卡顿代价），
+    // max-tick-time 沿用服务端自己的设置（默认 60 秒）
+    syncChunkWrites: (readProps(det.dir)['sync-chunk-writes'] ?? 'false') === 'true',
+    maxTickTime: Number(readProps(det.dir)['max-tick-time'] ?? 60000),
     simulationDistance: Number(readProps(det.dir)['simulation-distance'] ?? 5),
     allowNether: readProps(det.dir)['allow-nether'] !== 'false',
     spawnMonsters: readProps(det.dir)['spawn-monsters'] !== 'false',
