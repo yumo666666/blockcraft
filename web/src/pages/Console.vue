@@ -733,14 +733,15 @@ watch(
 .filter-input { width: 150px; }
 .grace-input { width: 84px; }
 
-/* 左栏：头部 + 可伸缩的日志 + 贴在底部的命令输入，整卡撑满一栏高度 */
+/* 左栏：头部 + 日志 + 贴在底部的命令输入。日志区不再设 max-height ——
+   之前设了上限，而右边快捷命令太长把整栏撑高，日志区填不满就露出一大块空白。 */
 .console-card { display: flex; flex-direction: column; }
 .console-body { flex: 1; display: flex; min-height: 0; }
 .console-body .console {
   flex: 1;
   height: auto;
   min-height: 320px;
-  max-height: 62vh;
+  max-height: none;
 }
 .console-cmd {
   display: flex;
@@ -751,7 +752,13 @@ watch(
   background: var(--surface-2);
   border-radius: 0 0 var(--r) var(--r);
 }
-/* 右栏：快捷命令卡片自己长高，和左栏底部平齐 */
-.console-side { height: 100%; }
-.console-side .card:first-child { flex: 1; }
+/* 右栏：快捷命令区自己封顶并滚动，这样两栏高度一致、左栏日志也能填满 */
+.console-side { height: 100%; display: flex; flex-direction: column; }
+.console-side .card:first-child { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.console-side .card:first-child .card-body {
+  flex: 1;
+  min-height: 0;
+  max-height: 62vh;
+  overflow-y: auto;
+}
 </style>
