@@ -317,9 +317,27 @@ export function slugify(name: string): string {
 /** 只登记元数据与端口，不下载任何东西（安装由 installService 负责） */
 export async function createInstance(params: CreateParams): Promise<InstanceConfig> {
   const panel = loadConfig();
-  const id = (params.id ?? slugify(params.name)).trim();
+  const explicitId = params.id?.trim();
+  let id = (explicitId || slugify(params.name)).trim();
   if (!INSTANCE_ID_RE.test(id)) throw bad('世界 id 只能包含字母、数字、下划线、连字符，长度 1~40');
-  if (exists(id)) throw conflict(`世界 ${id} 已经存在`);
+  if (exists(id) || fs.existsSync(instanceDir(id))) {
+    // 显式指定的 id 撞车 = 用户输入问题，直接报错；
+    // 自动生成（比如「复制为新世界」中文名 slug 后与源世界同名）就自动加序号，
+    // 否则会变成「世界 cozy_zen 已经存在」这种让人摸不着头脑的失败。
+    if (explicitId) throw conflict(`世界 ${id} 已经存在`);
+    const base = id.slice(0, 36);
+    let found: string | null = null;
+    for (let n = 2; n < 100; n++) {
+      const cand = `${base}-${n}`;
+      if (!exists(cand) && !fs.existsSync(instanceDir(cand))) {
+        found = cand;
+        break;
+      }
+    }
+    if (!found) throw conflict(`以「${params.name}」为名创建的世界太多了，请换一个名字`);
+    logger.info(`目录 id「${id}」已被占用，自动改用「${found}」`);
+    id = found;
+  }
   const dir = instanceDir(id);
   fs.mkdirSync(path.join(dir, 'server'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'backups', '.tmp'), { recursive: true });
