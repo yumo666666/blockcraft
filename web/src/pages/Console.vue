@@ -11,7 +11,7 @@ const props = defineProps<{ id: string }>();
 const router = useRouter();
 
 /** 本地最多留多少行（服务端缓冲也是有限长度，两边都封顶才不会越看越卡） */
-const MAX_LINES = 3000;
+const MAX_LINES = 200;
 /** 重连等待时间 */
 const RETRY_MS = 1500;
 const WEEK = ['一', '二', '三', '四', '五', '六', '日'];
@@ -206,10 +206,11 @@ function receive(rows: ConsoleLine[]): void {
   void scrollToBottom();
 }
 
-/** 按 seq 拉一次（首次打开拉最近 300 行，断线后补拉断线期间的） */
+/** 按 seq 拉一次（首次只拉最近 MAX_LINES 行，断线后补拉断线期间的） */
 async function fetchConsole(): Promise<void> {
   try {
-    const q = lastSeq > 0 ? `?since=${lastSeq}` : '';
+    // 首次就只要 200 行：反正界面上也只保留这么多，别白拉几千行过来
+    const q = lastSeq > 0 ? `?since=${lastSeq}` : `?lines=${MAX_LINES}`;
     const r = await api.get<{ lines: ConsoleLine[]; seq: number }>(`/api/instances/${props.id}/console${q}`);
     if (r.lines?.length) {
       receive(r.lines);

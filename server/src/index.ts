@@ -20,6 +20,7 @@ import { registerPackRoutes } from './routes/packs.ts';
 import { startScheduler } from './services/scheduler.ts';
 import { startFrpService } from './services/frpService.ts';
 import { createJob } from './services/jobService.ts';
+import { evSystem } from './services/eventLog.ts';
 import { createSession as createSessionRec, destroySession, isValidSession as isValidSessionRec, prune } from './core/sessions.ts';
 
 const logger = createLogger('http');
@@ -195,6 +196,7 @@ export function boot(): void {
   });
 
   // ---- 启动对账：把面板外还在跑的世界接管回来，并清理幽灵端口登记
+  evSystem('面板已启动');
   sup.reconcile();
   sup.sweepDeadWorlds();
   // 面板一起来就按 autostart 拉起世界：比等看门狗（45 秒宽限 + 连续两次巡检）快得多

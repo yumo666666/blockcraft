@@ -5,6 +5,7 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'overview', component: () => import('./pages/Overview.vue') },
     { path: '/new', name: 'wizard', component: () => import('./pages/Wizard.vue') },
+    { path: '/events', name: 'events', component: () => import('./pages/Events.vue') },
     { path: '/settings', name: 'settings', component: () => import('./pages/Settings.vue') },
     { path: '/w/:id/console', name: 'console', component: () => import('./pages/Console.vue'), props: true },
     { path: '/w/:id/backups', name: 'backups', component: () => import('./pages/Backups.vue'), props: true },

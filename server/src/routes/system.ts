@@ -4,6 +4,7 @@ import { DATA_DIR, INSTANCES_DIR, PROJECT_ROOT } from '../core/paths.ts';
 import { dirSizeSync } from '../core/fsx.ts';
 import { loadConfig, publicConfig, saveConfig, randomToken } from '../config.ts';
 import * as sup from '../services/supervisor.ts';
+import { evSystem, listEvents as evList } from '../services/eventLog.ts';
 import { bad } from '../core/errors.ts';
 import { destroyAllSessions, sessionCount } from '../core/sessions.ts';
 import { systemSnapshot, connectionAddresses } from '../services/systemService.ts';
@@ -36,6 +37,12 @@ export function registerSystemRoutes(app: Express): void {
     if (body.portRanges) patch.portRanges = body.portRanges;
     const next = saveConfig(patch);
     res.json({ ok: true, config: publicConfig(next) });
+  });
+
+  /** 事件总日志（世界启动/就绪/关闭/崩溃） */
+  app.get('/api/events', (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 200) || 200, 1), 1000);
+    res.json({ events: evList(limit) });
   });
 
   /** 巡检「进程已不在」的世界并把崩溃原因记下来（看门狗每分钟调一次） */

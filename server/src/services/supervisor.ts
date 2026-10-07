@@ -11,6 +11,7 @@ import { withLock } from '../core/lock.ts';
 import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile, writeLaunchScript } from '../launcher/index.ts';
 import { processStat } from './systemService.ts';
 import { latestCrashReport } from '../core/crashReport.ts';
+import { evCrash, evReady, evStart, evStop } from './eventLog.ts';
 import { pingServer } from '../core/mcping.ts';
 import * as systemService from './systemService.ts';
 import { autoJava } from './javaService.ts';
@@ -380,6 +381,10 @@ function attachOutput(child: ChildProcess, id: string): void {
       phase: crash ? `进程异常退出（code=${code} signal=${signal}）` : '已停止',
       players: 0,
     });
+    if (!crash) {
+      // .stop-intent 存在 = 是我们主动优雅停止的
+      evStop({ id, name: I.getConfig(id).name }, fs.existsSync(intentFile(id)) ? '优雅停止' : '进程正常退出');
+    }
     if (crash) {
       // 优先用服务端自己的崩溃报告（信息最准），其次才靠日志特征猜
       const report = latestCrashReport(instanceServerDir(id), Date.now() - 6 * 3600_000);
@@ -389,6 +394,7 @@ function attachOutput(child: ChildProcess, id: string): void {
         phase: `崩溃：${reason}`,
       });
       logger.warn(`世界 ${id} 异常退出`, { code, signal, reason });
+      evCrash({ id, name: I.getConfig(id).name }, reason);
     } else {
       logger.info(`世界 ${id} 已停止`, { code });
     }
@@ -431,8 +437,10 @@ export function startTail(id: string): void {
       if (/Done \([\d.]+s\)!/i.test(chunk)) {
         const st = I.getState(id);
         if (st.status === 'starting' || st.status === 'stopped') {
+          const took = st.startedAt ? Math.round(Date.now() / 1000 - st.startedAt) : 0;
           I.saveState(id, { status: 'running', phase: '服务端已就绪', progress: null, startedAt: st.startedAt || Date.now() / 1000 });
           logger.info(`世界 ${id} 已就绪（从日志里看到 Done）`);
+          evReady({ id, name: I.getConfig(id).name }, took > 0 ? `耗时 ${took} 秒` : '');
         }
       }
     } catch {
@@ -530,6 +538,7 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
       }
     });
     I.saveState(id, { status: 'starting', pid, startedAt: Date.now() / 1000, phase: '正在启动', lastError: null, intentionalStop: false, players: 0 });
+    evStart({ id, name: cfg.name }, `${cfg.loader} ${cfg.mc}，Xmx ${cfg.memoryMb}M`);
     logger.info(`世界 ${id} 启动中（PID ${pid}，${check.plan.how}）`);
 
     if (opts.wait === false) return { ok: true, pid };
@@ -778,10 +787,20 @@ export function sweepDeadWorlds(): void {
       phase: crash ? `崩溃：${crash.reason}` : '已停止（进程已不在）',
       lastError: crash ? `${crash.reason}｜崩溃时间 ${crash.time}` : st.lastError ?? null,
     });
+    const w = (() => {
+      try {
+        const c = I.getConfig(id);
+        return { id, name: c.name };
+      } catch {
+        return { id, name: id };
+      }
+    })();
     if (crash) {
       logger.warn(`世界 ${id} 进程已消失，且发现崩溃报告`, { file: crash.file, reason: crash.reason });
+      evCrash(w, crash.reason);
     } else {
       logger.warn(`世界 ${id} 进程已消失（没有崩溃报告，可能被系统杀掉或正常退出）`);
+      evStop(w, '进程消失（没有崩溃报告，可能被系统杀掉）');
     }
   }
 }

@@ -336,3 +336,27 @@ describeIfPanel('世界卡片的崩溃提示', () => {
     clean.unmount();
   });
 });
+
+describeIfPanel('控制台与事件日志的行数上限', () => {
+  it('控制台最多渲染 200 行', async () => {
+    const w = await mountAt(`/w/${instanceId}/console`);
+    await waitFor(w, (t) => t.includes('快捷命令'));
+    const n = w.findAll('.console-line').length;
+    expect(n, `控制台渲染了 ${n} 行，应该不超过 200`).toBeLessThanOrEqual(200);
+    w.unmount();
+  });
+
+  it('事件日志页最多渲染 200 行，且事件带类型样式', async () => {
+    const w = await mountAt('/events');
+    await waitFor(w, (t) => t.includes('事件日志'));
+    const n = w.findAll('.console-line').length;
+    expect(n, `事件日志渲染了 ${n} 行，应该不超过 200`).toBeLessThanOrEqual(200);
+    // 页面结构：时间 + 类型标签 + 说明
+    if (n > 0) {
+      const first = w.find('.console-line');
+      expect(first.find('.ev-time').exists()).toBe(true);
+      expect(first.find('.ev-kind').exists()).toBe(true);
+    }
+    w.unmount();
+  });
+});

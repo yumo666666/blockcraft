@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { BLOCK_ICON_SVG } from './lib/blockIcon.ts';
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, setUnauthorizedHandler } from './lib/api.ts';
@@ -80,7 +81,7 @@ defineExpose({});
   <div v-else-if="!authed" class="login-wrap">
     <div class="card login-card">
       <div class="row gap-3 mb-4">
-        <div class="brand-mark">B</div>
+        <div class="brand-mark" v-html="BLOCK_ICON_SVG" />
         <div>
           <h1>BlockCraft</h1>
           <div class="text-3 small">多世界 Minecraft 管理面板</div>
@@ -109,7 +110,7 @@ defineExpose({});
   <template v-else>
     <header class="app-header">
       <div class="brand">
-        <div class="brand-mark">B</div>
+        <div class="brand-mark" v-html="BLOCK_ICON_SVG" />
         <span>BlockCraft</span>
       </div>
       <nav class="row gap-1 grow">
@@ -118,6 +119,13 @@ defineExpose({});
         </button>
         <button class="btn btn-ghost btn-sm" :class="{ 'btn-soft': $route.name === 'wizard' }" @click="router.push('/new')">
           新建 / 导入
+        </button>
+        <button
+          class="btn btn-ghost btn-sm"
+          :class="{ 'btn-soft': $route.name === 'events' }"
+          @click="router.push('/events')"
+        >
+          日志
         </button>
         <button
           class="btn btn-ghost btn-sm"
