@@ -390,7 +390,16 @@ export async function status(): Promise<FrpStatus> {
   const proxies: ProxyStatus[] = [];
   for (const name of ['panel', 'worlds'] as ChannelName[]) {
     const st = await apiCall(name, '/api/status');
-    const list = ((st.data as { tcp?: ProxyStatus[] })?.tcp ?? []) as ProxyStatus[];
+    // frpc 的 /api/status 返回的是 snake_case（local_addr / remote_addr），这里归一化，
+    // 不然前端拿到的地址永远是空的。
+    const raw = ((st.data as { tcp?: Record<string, unknown>[] })?.tcp ?? []) as Record<string, unknown>[];
+    const list: ProxyStatus[] = raw.map((p) => ({
+      name: String(p.name ?? ''),
+      status: String(p.status ?? ''),
+      localAddr: String(p.local_addr ?? p.localAddr ?? ''),
+      remoteAddr: String(p.remote_addr ?? p.remoteAddr ?? ''),
+      err: String(p.err ?? ''),
+    }));
     const pid = readPid(name) ?? runtime[name].pid;
     if (st.ok) proxies.push(...list);
     channels.push({

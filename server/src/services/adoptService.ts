@@ -25,6 +25,7 @@ export interface Detection {
   hasRcon: boolean;
   modsCount: number;
   evidence: string[];
+  memory: { memoryMb: number | null; minMemoryMb: number | null };
 }
 
 function readProps(serverDir: string): Record<string, string> {
@@ -113,6 +114,23 @@ function detectPaper(serverDir: string): { mc: string; version: string } | null 
   return null;
 }
 
+/** 从已有的 user_jvm_args.txt 里读出内存设置 —— 纳管时不能凭空改成默认值 */
+function detectMemory(serverDir: string): { memoryMb: number | null; minMemoryMb: number | null } {
+  try {
+    const text = fs.readFileSync(path.join(serverDir, 'user_jvm_args.txt'), 'utf8');
+    const xmx = text.match(/-Xmx(\d+)([MmGg]?)/);
+    const xms = text.match(/-Xms(\d+)([MmGg]?)/);
+    const toMb = (m: RegExpMatchArray | null) => {
+      if (!m) return null;
+      const v = Number(m[1]);
+      return /[Gg]/.test(m[2]) ? v * 1024 : v;
+    };
+    return { memoryMb: toMb(xmx), minMemoryMb: toMb(xms) };
+  } catch {
+    return { memoryMb: null, minMemoryMb: null };
+  }
+}
+
 export function detect(dir: string): Detection {
   const serverDir = path.resolve(dir);
   if (!fs.existsSync(serverDir)) throw bad(`目录不存在：${serverDir}`);
@@ -167,6 +185,7 @@ export function detect(dir: string): Detection {
     hasRcon: props['enable-rcon'] === 'true' && Boolean(props['rcon.password']),
     modsCount: countJars(path.join(serverDir, 'mods')),
     evidence,
+    memory: detectMemory(serverDir),
   };
 }
 
@@ -229,8 +248,10 @@ export async function adopt(opts: AdoptOptions): Promise<InstanceConfig> {
     port: alloc.game,
     rconPort: alloc.rcon,
     rconPassword: det.hasRcon ? readProps(det.dir)['rcon.password'] : Math.random().toString(36).slice(2, 12),
-    memoryMb: opts.memoryMb ?? 3072,
-    minMemoryMb: 1024,
+    // 内存见上面（沿用原设置）
+    // 沿用原目录里 user_jvm_args.txt 的内存设置，没读到才用默认值
+    memoryMb: opts.memoryMb ?? det.memory.memoryMb ?? 3072,
+    minMemoryMb: det.memory.minMemoryMb ?? Math.min(1024, det.memory.memoryMb ?? 1024),
     jvmExtra: '',
     autostart: false,
     motd: readProps(det.dir)['motd'] ?? (opts.name ?? id),

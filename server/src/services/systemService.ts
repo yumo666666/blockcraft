@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { getDeviceInfo, type DeviceInfo } from '../core/dsha.ts';
 
 export interface ProcessStat {
@@ -64,6 +65,29 @@ export interface MemoryInfo {
   /** 这台机器的 /proc/stat 是否可读（Android 上常被 SELinux 拦） */
   loadAvgAvailable: boolean;
   loadAvg: number | null;
+}
+
+/**
+ * CPU 核数。实测：在 proot 容器里 os.cpus() 会返回空数组（显示成 0 核），
+ * 所以要退回到 /proc/cpuinfo 与 nproc。
+ */
+export function cpuCount(): number {
+  const fromOs = os.cpus().length;
+  if (fromOs > 0) return fromOs;
+  try {
+    const info = fs.readFileSync('/proc/cpuinfo', 'utf8');
+    const n = (info.match(/^processor\s*:/gm) ?? []).length;
+    if (n > 0) return n;
+  } catch {
+    /* ignore */
+  }
+  try {
+    const n = Number(execFileSync('nproc', { encoding: 'utf8' }).trim());
+    if (Number.isFinite(n) && n > 0) return n;
+  } catch {
+    /* ignore */
+  }
+  return 1;
 }
 
 export function memoryInfo(): MemoryInfo {
@@ -173,7 +197,7 @@ export async function systemSnapshot(panelPort: number, dir: string): Promise<Sy
     memory: memoryInfo(),
     disk: diskInfo(dir),
     panel: { pid: process.pid, rss: self?.rss ?? 0, cpu: lastPanelCpu, uptime: self?.uptime ?? 0 },
-    cpuCount: os.cpus().length,
+    cpuCount: cpuCount(),
     platform: process.platform,
     arch: process.arch,
     hostname: os.hostname(),
