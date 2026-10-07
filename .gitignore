@@ -6,3 +6,8 @@ instances/
 *.log
 *.pid
 .DS_Store
+
+# 第三方可执行文件不进仓库（面板会在设置页按需下载，并校验版本）
+bin/frpc
+bin/frps
+bin/*.tar.gz

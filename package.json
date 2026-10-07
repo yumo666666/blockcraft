@@ -11,9 +11,10 @@
     "dev:web": "pnpm -C web dev",
     "build": "pnpm -C web build",
     "start": "node server/src/index.ts",
-    "typecheck": "tsc -p server/tsconfig.json --noEmit && vue-tsc -p web/tsconfig.json --noEmit",
+    "typecheck": "tsc -p server/tsconfig.json --noEmit && pnpm -C web exec vue-tsc --noEmit",
     "test": "pnpm -C web test",
-    "test:render": "pnpm -C web test"
+    "test:render": "pnpm -C web test",
+    "lint": "pnpm typecheck"
   },
   "devDependencies": {
     "@types/express": "^4.17.25",

@@ -3,6 +3,13 @@
  * 覆盖：总览（资源监控 + FRP + 世界卡片）、控制台、备份、MOD、玩家、新建向导、设置。
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+
+/**
+ * 这组测试需要一个**真实运行中的面板**（要 BC_TOKEN）。
+ * CI 里没有面板时会整体跳过，只跑纯逻辑测试（commands.spec.ts）。
+ */
+const RUN = Boolean(process.env.BC_TOKEN);
+const describeIfPanel = RUN ? describe : describe.skip;
 import { mount, flushPromises } from '@vue/test-utils';
 import { createRouter, createMemoryHistory, type RouteRecordRaw } from 'vue-router';
 import { TEST_BASE } from './setup.ts';
@@ -62,7 +69,7 @@ let javaMajor = 0;
 let localPort = 0;
 let frpPort = 0;
 
-beforeAll(async () => {
+const setup = async () => {
   const token = process.env.BC_TOKEN || '';
   const res = await fetch(`/api/login`, {
     method: 'POST',
@@ -89,9 +96,11 @@ beforeAll(async () => {
   }
   const backups = (await (await fetch(`/api/instances/${instanceId}/backups`)).json()) as { backups: { file: string }[] };
   firstBackupFile = backups.backups[0]?.file ?? '';
-});
+};
 
-describe('总览页', () => {
+if (RUN) beforeAll(setup, 60000);
+
+describeIfPanel('总览页', () => {
   it('渲染资源监控、FRP 双通道与世界便签卡片', async () => {
     const w = await mountAt('/');
     const text = w.text();
@@ -114,7 +123,7 @@ describe('总览页', () => {
   });
 });
 
-describe('控制台页', () => {
+describeIfPanel('控制台页', () => {
   it('渲染日志区、快捷命令与定时设置', async () => {
     const w = await mountAt(`/w/${instanceId}/console`);
     const text = await waitFor(w, (t) => t.includes(instanceName));
@@ -127,7 +136,7 @@ describe('控制台页', () => {
   });
 });
 
-describe('备份页', () => {
+describeIfPanel('备份页', () => {
   it('渲染备份列表与策略设置', async () => {
     const w = await mountAt(`/w/${instanceId}/backups`);
     const text = await waitFor(w, (t) => /备份/.test(t) && !t.includes('读取中'));
@@ -140,7 +149,7 @@ describe('备份页', () => {
   });
 });
 
-describe('MOD 页', () => {
+describeIfPanel('MOD 页', () => {
   it('渲染 MOD 卡片（含名称与来源徽标）', async () => {
     const w = await mountAt(`/w/${instanceId}/mods`);
     // 注意：等待条件必须用「真实 MOD 名」，不能用来源字样 ——
@@ -155,7 +164,7 @@ describe('MOD 页', () => {
   });
 });
 
-describe('玩家页', () => {
+describeIfPanel('玩家页', () => {
   it('渲染玩家区与离线说明', async () => {
     const w = await mountAt(`/w/${instanceId}/players`);
     const text = await waitFor(w, (t) => /在线|离线/.test(t));
@@ -165,7 +174,7 @@ describe('玩家页', () => {
   });
 });
 
-describe('新建向导', () => {
+describeIfPanel('新建向导', () => {
   it('渲染三种起始方式与版本/加载器选择', async () => {
     const w = await mountAt('/new');
     const text = w.text();
@@ -176,7 +185,7 @@ describe('新建向导', () => {
   });
 });
 
-describe('设置页', () => {
+describeIfPanel('设置页', () => {
   it('渲染限额、Java、FRP、端口段与存储', async () => {
     const w = await mountAt('/settings');
     const text = await waitFor(w, (t) => !t.includes('读取中…'));
@@ -188,7 +197,7 @@ describe('设置页', () => {
   });
 });
 
-describe('控制台命令提示', () => {
+describeIfPanel('控制台命令提示', () => {
   it('输入一半会弹出候选，且候选带中文说明', async () => {
     const w = await mountAt(`/w/${instanceId}/console`);
     await waitFor(w, (t) => t.includes(instanceName));

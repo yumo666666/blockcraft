@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+.git
+.gitignore
+data
+instances
+.secrets
+web/dist
+bin/frpc
+*.log
+*.pid
+docs

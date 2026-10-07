@@ -1,0 +1,35 @@
+# 用法：
+#   docker compose up -d
+#   然后打开 http://<主机IP>:8081/?token=<data/panel.json 里的 token>
+#
+# 注意：世界跑在容器里，所以「本地端口」是容器端口；
+# 要让朋友连进来，要么把 25565-25574 映射出去，要么用面板自带的 FRP 穿透。
+services:
+  blockcraft:
+    build: .
+    image: blockcraft:2
+    container_name: blockcraft
+    restart: unless-stopped
+    ports:
+      - "8081:8081"          # 面板
+      # 游戏端口按需放开（每个世界一个）
+      - "25565-25574:25565-25574"
+      # RCON 不要暴露到公网，只在容器内部用
+    volumes:
+      - ./data:/app/data           # 配置、备份、日志、下载缓存
+      - ./instances:/app/instances # 各个世界
+    environment:
+      BC_PORT: "8081"
+      # 想固定令牌就打开这两行（不填会自动生成，存在 data/panel.json）
+      # BC_TOKEN: "换成你自己的长随机串"
+      BC_SESSION_HOURS: "720"
+      # CurseForge API Key（可选，导入 CF 整合包时需要）
+      # CURSEFORGE_API_KEY: "$2a$10$..."
+    # 面板要拉起 Java，给它足够的共享内存，避免某些整合包启动失败
+    shm_size: "512m"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/api/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

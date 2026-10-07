@@ -59,6 +59,19 @@ http://<你的机器IP>:8081/?token=<token>     # 带 token 打开会自动登�
 pnpm dev        # 后端 8081 + Vite 5173，Vite 会把 /api 代理到后端
 ```
 
+### Docker 部署（VPS / NAS）
+
+```bash
+docker compose up -d
+# 打开 http://<主机IP>:8081/?token=<data/panel.json 里的 token>
+```
+
+镜像里带了 OpenJDK 17 / 21（覆盖绝大多数整合包），世界与配置通过 volume 落在宿主机的 `./data` 与 `./instances`。
+`docker-compose.yml` 里有注释说明怎么固定 token、怎么放开游戏端口、以及为什么要给 `shm_size`。
+
+> 容器里跑面板时，**不要**再把 `bin/boot.sh` 挂上去：进程保活交给 `restart: unless-stopped` 就行，
+> 看门狗是给「没有 systemd、也没用 Docker」的场景准备的。
+
 ### 后台常驻与自愈
 
 没有 systemd 也能用，`bin/boot.sh` 是幂等的启动入口：
@@ -146,6 +159,20 @@ instances/<世界id>/        每个世界一份，完全独立
 - **扫目录不用 `dirent.isFile()`。** 部分文件系统（含 f2fs）会把多链接文件报成 `DT_LNK`，依赖它会让 MOD 全部「消失」；统一用 `stat`。
 - **MOD 元数据从 jar 里读**，不信整合包清单里的标签。解析 `mods.toml` / `fabric.mod.json` / Jar-in-Jar，实测 344 个 MOD 的 modId 解析率 99.7%。
 - **运行中禁止改 MOD**：服务端跑着的时候删 jar，下次启动那些方块会变成未知方块。
+
+## 打包与发布
+
+源码仓库里**不包含**任何第三方可执行文件与凭据：
+
+- `bin/frpc`（约 14MB 的第三方二进制）随用随下，面板设置页里有「下载 frpc」按钮，会自动校验版本
+- `data/`、`instances/`、`.secrets/` 全部在 `.gitignore` 里
+- 前端产物 `web/dist/` 也不入库，由 `pnpm build` 生成
+
+自己出一份源码包：
+
+```bash
+git archive --format=tar.gz --prefix=blockcraft-2.0.0/ -o blockcraft-2.0.0.tar.gz HEAD
+```
 
 ## 测试
 
