@@ -11,3 +11,8 @@ instances/
 bin/frpc
 bin/frps
 bin/*.tar.gz
+
+# 发布件（不属于源码）
+dist-release/
+*.tar.gz
+*.bundle
