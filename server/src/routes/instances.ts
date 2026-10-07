@@ -153,6 +153,11 @@ export function registerInstanceRoutes(app: Express): void {
     res.json({ ok: true });
   });
 
+  /**
+   * 启停这类操作可能耗时几十秒到两分钟（等世界加载 / 保存 / 踢人 / 关服）。
+   * 从前是同步等完才回响应，结果经过 VPN / 反向代理时会被判超时，前端收到 502，
+   * 但服务端其实还在干。现在默认立刻返回 202，进度靠状态轮询看。
+   */
   app.post('/api/instances/:id/start', async (req, res) => {
     const id = requireId(req.params.id);
     if (sup.isRunning(id)) throw conflict('这个世界已经在运行');
@@ -164,22 +169,51 @@ export function registerInstanceRoutes(app: Express): void {
     if (usedMb > memoryBudget()) {
       throw conflict(`启动后总内存需求 ${usedMb}MB 会超过预算 ${memoryBudget()}MB，可能把机器拖垮。请降低某个世界的 Xmx，或在设置里调大预算。`);
     }
-    const result = await sup.start(id, { wait: true });
-    if (!result.ok) {
-      res.status(409).json({ error: { code: 'CONFLICT', message: result.error ?? '启动失败' } });
+    const wait = String(req.query.wait ?? '0') === '1';
+    if (wait) {
+      const result = await sup.start(id, { wait: true });
+      if (!result.ok) {
+        res.status(409).json({ error: { code: 'CONFLICT', message: result.error ?? '启动失败' } });
+        return;
+      }
+      await frp.syncWorlds().catch(() => undefined);
+      audit({ ip: req.ip, action: 'instance.start', target: id });
+      res.json({ ok: true, jobId: null });
       return;
     }
-    await frp.syncWorlds().catch(() => undefined);
-    audit({ ip: req.ip, action: 'instance.start', target: id });
-    res.json({ ok: true, jobId: null });
+    // 后台执行：立刻回 202，前端靠轮询看 phase / status
+    void sup
+      .start(id, { wait: true })
+      .then(async (result) => {
+        if (!result.ok) {
+          I.saveState(id, { lastError: result.error ?? '启动失败', phase: result.error ?? '启动失败' });
+          return;
+        }
+        await frp.syncWorlds().catch(() => undefined);
+      })
+      .catch((err) => I.saveState(id, { lastError: String(err), phase: `启动异常：${String(err)}` }));
+    audit({ ip: req.ip, action: 'instance.start', target: id, detail: { async: true } });
+    res.status(202).json({ ok: true, accepted: true });
   });
 
   app.post('/api/instances/:id/stop', async (req, res) => {
     const id = requireId(req.params.id);
     const body = (req.body ?? {}) as { message?: string; kick?: boolean; timeoutSec?: number };
-    const result = await sup.stop(id, { message: body.message, kick: body.kick, timeoutSec: body.timeoutSec });
-    audit({ ip: req.ip, action: 'instance.stop', target: id, detail: { graceful: result.graceful } });
-    res.json(result);
+    const wait = String(req.query.wait ?? '0') === '1';
+    if (wait) {
+      const result = await sup.stop(id, { message: body.message, kick: body.kick, timeoutSec: body.timeoutSec });
+      audit({ ip: req.ip, action: 'instance.stop', target: id, detail: { graceful: result.graceful } });
+      res.json(result);
+      return;
+    }
+    // 同上：优雅停止要等保存+踢人+关服，同步等会被代理判超时
+    void sup
+      .stop(id, { message: body.message, kick: body.kick, timeoutSec: body.timeoutSec })
+      .then((result) =>
+        audit({ ip: req.ip, action: 'instance.stop', target: id, detail: { graceful: result.graceful, async: true } }),
+      )
+      .catch((err) => I.saveState(id, { lastError: String(err), phase: `停止异常：${String(err)}` }));
+    res.status(202).json({ ok: true, accepted: true, message: '已开始关闭，稍等几秒看状态' });
   });
 
   app.post('/api/instances/:id/restart', async (req, res) => {

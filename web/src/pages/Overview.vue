@@ -94,7 +94,7 @@ async function start(item: InstanceSummary) {
   busyId.value = item.id;
   try {
     await api.post(`/api/instances/${item.id}/start`);
-    toast('ok', `${item.name} 正在启动`);
+    toast('ok', `${item.name} 正在启动`, '状态会自己刷新，进度看卡片上的说明');
     loadInstances();
   } catch (err) {
     toastError(err, '启动失败');
@@ -106,8 +106,8 @@ async function start(item: InstanceSummary) {
 async function stop(item: InstanceSummary) {
   busyId.value = item.id;
   try {
-    await api.post(`/api/instances/${item.id}/stop`, { message: '服务器正在关闭，感谢游玩' });
-    toast('ok', `${item.name} 已停止（世界已保存）`);
+    const r = await api.post<{ message?: string }>(`/api/instances/${item.id}/stop`, { message: '服务器正在关闭，感谢游玩' });
+    toast('ok', `${item.name} 正在关闭`, r?.message ?? '保存完成后会自动停止，状态会自己刷新');
     loadInstances();
   } catch (err) {
     toastError(err, '停止失败');

@@ -63,6 +63,21 @@ class ConsoleBuffer extends EventEmitter {
     return this.lines.filter((l) => l.seq > seq);
   }
 
+  /**
+   * 面板重启后把磁盘上的历史读回环形缓冲。
+   * 不做这一步的话：世界其实早就 Done 了，但内存里没有任何日志，
+   * detectPhase() 只能保守报「启动中」—— 实测就是这么来的（世界起了 11 分钟还显示启动中），
+   * 而且「优雅停止」在等一条永远等不到的 "Saved the game"。
+   */
+  loadHistory(rawLines: string[]): void {
+    for (const raw of rawLines) {
+      const text = stripAnsi(raw).replace(/\s+$/, '');
+      if (!text) continue;
+      this.lines.push({ seq: ++this.seq, ts: Date.now(), text });
+    }
+    if (this.lines.length > 5000) this.lines.splice(0, this.lines.length - 5000);
+  }
+
   tail(n = 300): ConsoleLine[] {
     return this.lines.slice(-n);
   }
@@ -108,50 +123,44 @@ export class RconClient {
     return buf;
   }
 
+  /**
+   * 读一个完整的 RCON 包。
+   * 原来的写法在「包被 TCP 分片」和「首片不足 4 字节」两种情况下会丢数据、把长度读歪，
+   * 表现为偶发的 "RCON 超时"（实测：连续两条命令，第二条就挂了）。
+   * 改成先累积、够一个完整包再解析。
+   */
   private read(sock: net.Socket): Promise<{ id: number; type: number; body: string }> {
     return new Promise((resolve, reject) => {
-      let sizeBuf: Buffer | null = null;
+      let buf = Buffer.alloc(0);
       const onData = (chunk: Buffer) => {
-        if (!sizeBuf) {
-          if (chunk.length < 4) return;
-          sizeBuf = chunk.subarray(0, 4);
-          chunk = chunk.subarray(4);
-        }
-        const size = sizeBuf.readInt32LE(0);
-        if (chunk.length < size) {
-          // 极少数情况下分片，继续等
-          const need = size - chunk.length;
-          const more = (c: Buffer) => {
-            chunk = Buffer.concat([chunk, c]);
-            if (chunk.length >= size) {
-              cleanup();
-              finish(chunk);
-            }
-          };
-          const cleanup = () => sock.off('data', more);
-          sock.on('data', more);
-          void need;
-          return;
-        }
+        buf = Buffer.concat([buf, chunk]);
+        if (buf.length < 4) return;
+        const size = buf.readInt32LE(0);
+        if (size < 10 || buf.length < 4 + size) return;
+        const packet = buf.subarray(4, 4 + size);
         cleanup();
-        finish(chunk);
+        resolve({
+          id: packet.readInt32LE(0),
+          type: packet.readInt32LE(4),
+          body: packet.subarray(8, packet.length - 2).toString('utf8'),
+        });
       };
-      const finish = (buf: Buffer) => {
-        const id = buf.readInt32LE(0);
-        const type = buf.readInt32LE(4);
-        const body = buf.subarray(8, buf.length - 2).toString('utf8');
-        resolve({ id, type, body });
-      };
-      const cleanup = () => sock.off('data', onData);
-      sock.on('data', onData);
-      sock.once('error', (e) => {
+      const onError = (err: Error) => {
         cleanup();
-        reject(e);
-      });
-      sock.once('timeout', () => {
+        reject(err);
+      };
+      const onTimeout = () => {
         cleanup();
         reject(new Error('RCON 超时'));
-      });
+      };
+      const cleanup = () => {
+        sock.off('data', onData);
+        sock.off('error', onError);
+        sock.off('timeout', onTimeout);
+      };
+      sock.on('data', onData);
+      sock.once('error', onError);
+      sock.once('timeout', onTimeout);
     });
   }
 
@@ -330,6 +339,7 @@ function attachOutput(child: ChildProcess, id: string): void {
   child.stderr?.on('data', onData);
   child.on('exit', (code, signal) => {
     procs.delete(id);
+    stopTail(id);
     try {
       fs.unlinkSync(pidFile(id));
     } catch {
@@ -352,6 +362,51 @@ function attachOutput(child: ChildProcess, id: string): void {
       logger.info(`世界 ${id} 已停止`, { code });
     }
   });
+}
+
+// ------------------------------------------------------------------ 日志文件 tail
+/**
+ * 跟着 logs/server.out 读新增内容（面板不持有管道，所以只能读文件）。
+ * 这样面板重启、崩溃、被看门狗拉起，控制台都不会断。
+ */
+const tailers = new Map<string, { offset: number; timer: NodeJS.Timeout }>();
+
+export function startTail(id: string): void {
+  stopTail(id);
+  const file = path.join(instanceDir(id), 'logs', 'server.out');
+  let offset = 0;
+  try {
+    offset = fs.statSync(file).size;
+  } catch {
+    offset = 0;
+  }
+  const timer = setInterval(() => {
+    try {
+      const st = fs.statSync(file);
+      if (st.size < offset) offset = 0; // 文件被清空/轮转过
+      if (st.size === offset) return;
+      const fd = fs.openSync(file, 'r');
+      const len = st.size - offset;
+      const raw = Buffer.alloc(len);
+      fs.readSync(fd, raw, 0, len, offset);
+      fs.closeSync(fd);
+      offset = st.size;
+      const buf = console_(id);
+      for (const line of `${raw.toString('utf8')}`.split(/\r?\n/)) buf.push(line);
+    } catch {
+      /* 文件暂时读不到就下一轮再试 */
+    }
+  }, 1000);
+  timer.unref();
+  tailers.set(id, { offset, timer });
+}
+
+export function stopTail(id: string): void {
+  const t = tailers.get(id);
+  if (t) {
+    clearInterval(t.timer);
+    tailers.delete(id);
+  }
 }
 
 export interface StartResult {
@@ -414,7 +469,8 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
     const child = spawn('/bin/bash', [path.join(dir, 'launch.sh')], {
       cwd: serverDir,
       detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // 服务端自己的输出由 launch.sh 写进 logs/server.out，面板只 tail 它
+      stdio: ['ignore', 'ignore', 'ignore'],
     });
     child.unref();
     if (!child.pid) return { ok: false, error: '进程启动失败' };
@@ -422,6 +478,7 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
     procs.set(id, { child, pid, startedAt: Date.now() / 1000, intentional: false });
     atomicWriteFileSync(pidFile(id), String(pid));
     attachOutput(child, id);
+    startTail(id);
     const buf = console_(id);
     buf.on('line', (l: ConsoleLine) => {
       try {
@@ -481,7 +538,9 @@ export async function stop(id: string, opts: StopOptions = {}): Promise<{ ok: bo
     // 走 RCON 做「保存 → 公告 → 踢人 → 停服」；RCON 不通就退化为 SIGTERM
     try {
       await rconFor(cfg).command('save-all flush');
-      const saveDeadline = Date.now() + 20000;
+      // 只在「本来就有日志」的前提下等保存完成；缓冲为空（比如刚重启过面板）就别干等 20 秒
+      const hadLog = buf.tail(1).length > 0;
+      const saveDeadline = Date.now() + (hadLog ? 20000 : 2000);
       while (Date.now() < saveDeadline) {
         if (/Saved the game|Saved the world/i.test(buf.tail(40).map((l) => l.text).join('\n'))) break;
         await sleep(500);
@@ -618,7 +677,32 @@ export function reconcile(): void {
       }
       if (/java/.test(cmdline) && /(nogui|unix_args)/.test(cmdline)) {
         logger.info(`接管已存在的世界进程 ${id}（PID ${pid}，面板外启动）`);
-        I.saveState(id, { status: 'running', pid, phase: '运行中（面板重启前已在运行）' });
+        // 先把磁盘上的控制台历史读回来，再判定状态 —— 否则会一直显示「启动中」
+        const logFile = path.join(instanceDir(id), 'logs', 'console.log');
+        try {
+          if (fs.existsSync(logFile)) {
+            const stat = fs.statSync(logFile);
+            const maxBytes = 512 * 1024;
+            const start = Math.max(0, stat.size - maxBytes);
+            const fd = fs.openSync(logFile, 'r');
+            const buf = Buffer.alloc(Math.min(maxBytes, stat.size));
+            fs.readSync(fd, buf, 0, buf.length, start);
+            fs.closeSync(fd);
+            const text = buf.toString('utf8');
+            const raw = (start > 0 ? text.slice(text.indexOf('\n') + 1) : text).split('\n');
+            console_(id).loadHistory(raw.slice(-3000));
+            logger.info(`已恢复 ${id} 的控制台历史（${Math.min(raw.length, 3000)} 行）`);
+          }
+        } catch (err) {
+          logger.warn(`恢复 ${id} 的控制台历史失败`, String(err));
+        }
+        startTail(id);
+        const phaseNow = detectPhase(console_(id).text());
+        I.saveState(id, {
+          status: phaseNow.status === 'running' ? 'running' : 'starting',
+          pid,
+          phase: phaseNow.status === 'running' ? '服务端已就绪（面板重启前已在运行）' : '运行中（面板重启前已在运行，日志尚未就绪）',
+        });
         const st = I.getState(id);
         if (!st.startedAt) I.saveState(id, { startedAt: Date.now() / 1000 });
       } else {

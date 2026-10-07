@@ -125,7 +125,11 @@ export function writeLaunchScript(opts: {
     'export LANG=C',
     `rm -f ${JSON.stringify(path.join(instanceDir, '.stop-intent'))}`,
     `echo $$ > ${JSON.stringify(path.join(instanceDir, 'server.pid'))}`,
-    `exec ${JSON.stringify(javaPath)} ${jvm.join(' ')} < <(sleep infinity)`,
+    // 输出写到文件而不是「面板持有的管道」：
+    // 面板一重启，管道读端就没了，正在跑的世界之后所有日志都收不到（控制台空白、状态卡在启动中）。
+    // 写文件后，面板重启只是换个 offset 继续 tail，什么都不丢。
+    `mkdir -p ${JSON.stringify(path.join(instanceDir, 'logs'))}`,
+    `exec ${JSON.stringify(javaPath)} ${jvm.join(' ')} >> ${JSON.stringify(path.join(instanceDir, 'logs', 'server.out'))} 2>&1 < <(sleep infinity)`,
     '',
   ];
   return lines.join('\n');
