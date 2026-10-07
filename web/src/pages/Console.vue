@@ -5,6 +5,7 @@ import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import { fmtDuration, fmtTime, STATUS_TEXT, statusClass } from '../lib/format.ts';
 import type { ConsoleLine, InstanceDetail, ScheduleInfo } from '../lib/types.ts';
+import { applySuggestion, suggest, type Suggestion } from '../lib/commands.ts';
 
 const props = defineProps<{ id: string }>();
 const router = useRouter();
@@ -25,10 +26,114 @@ const filter = ref('');
 const consoleEl = ref<HTMLElement | null>(null);
 const streaming = ref('');
 
-const shortcuts = ref<string[]>([]);
+interface Shortcut {
+  label: string;
+  cmd: string;
+  group: string;
+  needsArg?: boolean;
+  danger?: boolean;
+  hint?: string;
+}
+
+const shortcuts = ref<Shortcut[]>([]);
 const cmd = ref('');
 const sending = ref(false);
 const history = ref<string[]>([]);
+
+/** 按 group 分组后的快捷命令，模板里按组渲染 */
+const shortcutGroups = computed(() => {
+  const map = new Map<string, Shortcut[]>();
+  for (const s of shortcuts.value) {
+    const arr = map.get(s.group) ?? [];
+    arr.push(s);
+    map.set(s.group, arr);
+  }
+  return [...map.entries()].map(([group, items]) => ({ group, items }));
+});
+
+// ---------------------------------------------------------------- 命令补全
+const suggestions = ref<Suggestion[]>([]);
+const suggestIndex = ref(0);
+const suggestOpen = ref(false);
+const inputEl = ref<HTMLInputElement | null>(null);
+const onlinePlayers = ref<string[]>([]);
+
+function refreshSuggest(): void {
+  suggestions.value = suggest(cmd.value, onlinePlayers.value);
+  suggestIndex.value = 0;
+  suggestOpen.value = suggestions.value.length > 0 && cmd.value.trim().length > 0;
+}
+
+async function loadOnlinePlayers(): Promise<void> {
+  try {
+    const r = await api.get<{ names: string[] }>(`/api/instances/${props.id}/players/online`);
+    onlinePlayers.value = r.names ?? [];
+  } catch {
+    onlinePlayers.value = [];
+  }
+}
+
+/** 当前高亮的候选（用于底部那行中文说明） */
+const currentHint = computed(() => suggestions.value[suggestIndex.value] ?? null);
+
+function pickSuggestion(s?: Suggestion): void {
+  const target = s ?? suggestions.value[suggestIndex.value];
+  if (!target) return;
+  cmd.value = applySuggestion(cmd.value, target);
+  suggestions.value = suggest(cmd.value, onlinePlayers.value);
+  suggestIndex.value = 0;
+  suggestOpen.value = false;
+  nextTick(() => inputEl.value?.focus());
+}
+
+function onCmdKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') {
+    suggestOpen.value = false;
+    return;
+  }
+  if (e.key === 'Tab') {
+    if (suggestions.value.length) {
+      e.preventDefault();
+      pickSuggestion();
+    }
+    return;
+  }
+  if (e.key === 'ArrowDown' && suggestions.value.length) {
+    e.preventDefault();
+    suggestOpen.value = true;
+    suggestIndex.value = (suggestIndex.value + 1) % suggestions.value.length;
+    return;
+  }
+  if (e.key === 'ArrowUp' && suggestions.value.length) {
+    e.preventDefault();
+    suggestOpen.value = true;
+    suggestIndex.value = (suggestIndex.value - 1 + suggestions.value.length) % suggestions.value.length;
+    return;
+  }
+  if (e.key === 'Enter') {
+    const typed = cmd.value.trim();
+    const hit = suggestions.value[suggestIndex.value];
+    // 只是「打了半个命令名」时，回车先补全，不把半截命令发出去（游戏里也是这个手感）
+    if (suggestOpen.value && hit && hit.value.trim().startsWith(typed) && hit.value.trim() !== typed) {
+      e.preventDefault();
+      pickSuggestion(hit);
+      return;
+    }
+    suggestOpen.value = false;
+    void send(cmd.value);
+  }
+}
+
+/** 点快捷命令：需要参数的只填前缀并把光标放好，不需要的直接发 */
+function useShortcut(s: Shortcut): void {
+  if (s.needsArg) {
+    cmd.value = s.cmd;
+    refreshSuggest();
+    nextTick(() => inputEl.value?.focus());
+    return;
+  }
+  void send(s.cmd);
+}
 
 const sched = ref<ScheduleInfo | null>(null);
 const startTimesText = ref('');
@@ -176,9 +281,12 @@ async function send(text: string): Promise<void> {
     // 命令与回显由服务端推进日志缓冲，SSE 会带回来，本地不重复插
     await api.post<{ ok: boolean; output: string }>(`/api/instances/${props.id}/command`, { cmd: value });
     cmd.value = '';
+    suggestions.value = [];
+    suggestOpen.value = false;
     remember(value);
     autoScroll.value = true;
     void scrollToBottom();
+    void loadOnlinePlayers();
   } catch (err) {
     toastError(err, '命令发送失败');
   } finally {
@@ -198,7 +306,7 @@ async function loadDetail(): Promise<void> {
 
 async function loadShortcuts(): Promise<void> {
   try {
-    const r = await api.get<{ shortcuts: string[] }>(`/api/instances/${props.id}/shortcuts`);
+    const r = await api.get<{ shortcuts: Shortcut[] }>(`/api/instances/${props.id}/shortcuts`);
     shortcuts.value = r.shortcuts ?? [];
   } catch (err) {
     toastError(err, '读取快捷命令失败');
@@ -296,7 +404,7 @@ function reset(): void {
 }
 
 async function boot(): Promise<void> {
-  await Promise.all([loadDetail(), loadShortcuts(), loadSchedule()]);
+  await Promise.all([loadDetail(), loadShortcuts(), loadSchedule(), loadOnlinePlayers()]);
   await fetchConsole();
   if (closed) return;
   connect();
@@ -387,28 +495,74 @@ watch(
         <div class="card">
           <div class="card-head">
             <h3>⚡ 快捷命令</h3>
-            <span class="text-3 small">{{ shortcuts.length }} 条</span>
+            <span class="text-3 small">{{ shortcuts.length }} 条 · 按组排</span>
           </div>
           <div class="card-body col gap-3">
-            <div v-if="shortcuts.length" class="chips">
-              <button v-for="s in shortcuts" :key="s" class="chip" :disabled="sending" @click="send(s)">{{ s }}</button>
+            <div v-if="shortcutGroups.length" class="col gap-3">
+              <div v-for="g in shortcutGroups" :key="g.group" class="col gap-1">
+                <div class="chip-group-label">{{ g.group }}</div>
+                <div class="chips">
+                  <button
+                    v-for="s in g.items"
+                    :key="s.group + s.cmd + s.label"
+                    class="chip"
+                    :class="{ 'chip-danger': s.danger, 'chip-arg': s.needsArg }"
+                    :title="s.needsArg ? `${s.cmd}…` : s.cmd"
+                    :disabled="sending"
+                    @click="useShortcut(s)"
+                  >
+                    {{ s.label }}<span v-if="s.needsArg" class="chip-dots">…</span>
+                  </button>
+                </div>
+              </div>
             </div>
             <div v-else class="text-3 small">没有可用的快捷命令</div>
 
             <div class="divider" />
 
-            <div class="cmd-input">
-              <input
-                v-model="cmd"
-                class="input grow"
-                placeholder="输入命令后回车"
-                :disabled="sending"
-                @keydown.enter="send(cmd)"
-              />
-              <button class="btn btn-primary" :disabled="sending || !cmd.trim()" @click="send(cmd)">
-                <span v-if="sending" class="spinner" style="border-top-color: #fff" />
-                发送
-              </button>
+            <div class="cmd-wrap">
+              <div v-if="suggestOpen" class="suggest">
+                <button
+                  v-for="(s, i) in suggestions"
+                  :key="s.kind + s.label"
+                  class="suggest-item"
+                  :class="{ active: i === suggestIndex, danger: s.kind === 'command' && s.desc.includes('关闭') }"
+                  @mousedown.prevent="pickSuggestion(s)"
+                >
+                  <span class="suggest-name">{{ s.label }}</span>
+                  <span v-if="s.desc" class="suggest-desc">{{ s.desc }}</span>
+                  <span class="suggest-kind">{{ s.kind === 'player' ? '玩家' : s.kind === 'rule' ? '规则' : s.kind === 'value' ? '取值' : '命令' }}</span>
+                </button>
+              </div>
+              <div class="cmd-input">
+                <input
+                  ref="inputEl"
+                  v-model="cmd"
+                  data-test="cmd"
+                  class="input grow mono"
+                  placeholder="输入命令，Tab 补全 · ↑↓ 选择 · 回车发送"
+                  :disabled="sending"
+                  autocomplete="off"
+                  spellcheck="false"
+                  @input="refreshSuggest"
+                  @keydown="onCmdKeydown"
+                  @focus="refreshSuggest"
+                  @blur="suggestOpen = false"
+                />
+                <button class="btn btn-primary" :disabled="sending || !cmd.trim()" @click="send(cmd)">
+                  <span v-if="sending" class="spinner" style="border-top-color: #fff" />
+                  发送
+                </button>
+              </div>
+              <div class="suggest-hint">
+                <template v-if="currentHint && suggestOpen">
+                  <span class="badge badge-accent">{{ currentHint.label }}</span>
+                  {{ currentHint.desc || '按 Tab 补全' }}
+                </template>
+                <template v-else>
+                  支持 Tab 补全、↑↓ 选择、回车发送；打一半按回车会先补全。参数位会提示在线玩家与常用取值。
+                </template>
+              </div>
             </div>
             <div v-if="!running" class="text-3 small">世界没有在运行，命令会被拒绝，先去总览启动它。</div>
 

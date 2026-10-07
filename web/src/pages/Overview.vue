@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
@@ -19,6 +19,14 @@ const instances = ref<InstanceSummary[]>([]);
 const frp = ref<FrpStatus | null>(null);
 const activeId = ref<string | null>(null);
 const busyId = ref<string | null>(null);
+
+/** 选中的世界标签滚进视野（世界多了以后，当前看的世界可能被挤出可见区域） */
+const tabsEl = ref<HTMLElement | null>(null);
+watch(activeId, async () => {
+  await nextTick();
+  const el = tabsEl.value?.querySelector<HTMLElement>('.tab.active');
+  el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+});
 
 const showConfig = ref(false);
 const showPorts = ref(false);
@@ -142,7 +150,7 @@ function openJob(id: string) {
 
     <!-- 下半：世界便签页 -->
     <div class="card">
-      <div class="tabs" style="border-bottom: 1px solid var(--border); border-radius: 0">
+      <div ref="tabsEl" class="tabs" style="border-bottom: 1px solid var(--border); border-radius: 0">
         <button
           v-for="i in instances"
           :key="i.id"

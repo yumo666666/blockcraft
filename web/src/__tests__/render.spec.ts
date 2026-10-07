@@ -187,3 +187,43 @@ describe('设置页', () => {
     w.unmount();
   });
 });
+
+describe('控制台命令提示', () => {
+  it('输入一半会弹出候选，且候选带中文说明', async () => {
+    const w = await mountAt(`/w/${instanceId}/console`);
+    await waitFor(w, (t) => t.includes(instanceName));
+    // 页面上还有一个「日志过滤」输入框，必须按稳定钩子选命令框，不然测的是过滤框
+    const input = w.find('[data-test="cmd"]');
+    expect(input.exists()).toBe(true);
+
+    await input.setValue('whitel');
+    await flushPromises();
+    const items = w.findAll('.suggest-item');
+    expect(items.length, '输入 whitel 应该弹出候选').toBeGreaterThan(0);
+    expect(w.find('.suggest-name').text()).toContain('whitelist');
+    expect(w.text()).toContain('白名单'); // 中文说明
+
+    // 参数位提示在线玩家（没有在线玩家时不该崩，且不该出现空下拉）
+    await input.setValue('gamerule keep');
+    await flushPromises();
+    expect(w.text()).toContain('keepInventory');
+    expect(w.text()).toContain('死亡');
+    w.unmount();
+  });
+
+  it('快捷命令按中文分组展示', async () => {
+    const w = await mountAt(`/w/${instanceId}/console`);
+    await waitFor(w, (t) => t.includes(instanceName));
+    const text = w.text();
+    for (const label of ['查看在线玩家', '设为白天', '给管理员', '死亡不掉落：开', '关闭自动保存']) {
+      expect(text, `缺少快捷命令：${label}`).toContain(label);
+    }
+    // 带参数的按钮不应直接把半截命令发出去，而是填进输入框
+    const argChip = w.findAll('button.chip').find((b) => b.text().includes('给管理员'));
+    expect(argChip).toBeTruthy();
+    await argChip!.trigger('click');
+    await flushPromises();
+    expect((w.find('[data-test="cmd"]').element as HTMLInputElement).value).toBe('op ');
+    w.unmount();
+  });
+});
