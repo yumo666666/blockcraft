@@ -356,6 +356,13 @@ describeIfPanel('控制台与事件日志的行数上限', () => {
       const first = w.find('.console-line');
       expect(first.find('.ev-time').exists()).toBe(true);
       expect(first.find('.ev-kind').exists()).toBe(true);
+      // 回归：时间单位必须是毫秒。曾经把秒当毫秒传，整页时间显示成 1970 年（"1-22 01:36"）
+      const shown = first.find('.ev-time').text();
+      const d = new Date();
+      const pad = (x: number) => String(x).padStart(2, '0');
+      const today = `${d.getMonth() + 1}-${pad(d.getDate())} `;
+      expect(shown, `事件时间 ${shown} 应该是今天的日期`).toContain(today);
+      expect(shown).not.toContain('1970');
     }
     w.unmount();
   });

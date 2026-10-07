@@ -2,7 +2,6 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../lib/api.ts';
 import { toastError } from '../lib/toast.ts';
-import { fmtTime } from '../lib/format.ts';
 
 /**
  * 事件总日志：所有世界的启动 / 就绪 / 关闭 / 崩溃都记在这里，按类型上不同颜色。
@@ -51,8 +50,16 @@ async function load(): Promise<void> {
   }
 }
 
+/**
+ * 事件时间。注意单位：事件里存的 ts 是**毫秒**（Date.now()），
+ * 而 lib/format 的 fmtTime() 也是吃毫秒 —— 之前这里画蛇添足除了个 1000，
+ * 结果整页时间戳变成了 1970 年（显示成 1-22 01:36）。
+ * 日志里同一分钟可能有多个事件，所以这里带上秒。
+ */
 function fmtTs(ts: number): string {
-  return fmtTime(ts / 1000) || new Date(ts).toLocaleTimeString('zh-CN', { hour12: false });
+  const d = new Date(ts);
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 const empty = computed(() => !loading.value && events.value.length === 0);
