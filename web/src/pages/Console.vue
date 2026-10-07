@@ -727,21 +727,27 @@ watch(
   align-items: stretch;
 }
 @media (max-width: 940px) {
-  .console-grid { grid-template-columns: 1fr; align-items: start; }
+  .console-grid { grid-template-columns: 1fr; }
 }
 .head-stats { display: flex; gap: var(--sp-5); }
 .filter-input { width: 150px; }
 .grace-input { width: 84px; }
 
-/* 左栏：头部 + 日志 + 贴在底部的命令输入。日志区不再设 max-height ——
-   之前设了上限，而右边快捷命令太长把整栏撑高，日志区填不满就露出一大块空白。 */
+/* 两栏同高、高度固定：日志在窗口内滚动，永远不会被内容撑长。
+   （之前用「弹性高度」的两头都被坑过：设上限会露出空白，不设上限则无限延长。） */
+.console-card,
+.console-side .card:first-child {
+  height: min(70vh, 680px);
+}
 .console-card { display: flex; flex-direction: column; }
 .console-body { flex: 1; display: flex; min-height: 0; }
 .console-body .console {
   flex: 1;
-  height: auto;
-  min-height: 320px;
+  height: 100%;
+  /* flex 链路上每一级都要给 min-height: 0，否则内容会把容器顶开 */
+  min-height: 0;
   max-height: none;
+  overflow-y: auto;
 }
 .console-cmd {
   display: flex;
@@ -752,13 +758,13 @@ watch(
   background: var(--surface-2);
   border-radius: 0 0 var(--r) var(--r);
 }
-/* 右栏：快捷命令区自己封顶并滚动，这样两栏高度一致、左栏日志也能填满 */
-.console-side { height: 100%; display: flex; flex-direction: column; }
-.console-side .card:first-child { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+/* 右栏：卡片与左栏同高，快捷命令多了就在卡片内滚动 */
+.console-side { display: flex; flex-direction: column; }
+.console-side .card:first-child { display: flex; flex-direction: column; min-height: 0; }
 .console-side .card:first-child .card-body {
   flex: 1;
   min-height: 0;
-  max-height: 62vh;
+  max-height: none;
   overflow-y: auto;
 }
 </style>
