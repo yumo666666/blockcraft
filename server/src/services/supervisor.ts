@@ -10,6 +10,7 @@ import { createLogger } from '../core/logger.ts';
 import { withLock } from '../core/lock.ts';
 import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile, writeLaunchScript } from '../launcher/index.ts';
 import { processStat } from './systemService.ts';
+import { pingServer } from '../core/mcping.ts';
 import * as systemService from './systemService.ts';
 import { autoJava } from './javaService.ts';
 import * as frp from './frpService.ts';
@@ -282,6 +283,19 @@ export interface StatusSnapshot {
   detectedFrom: 'memory' | 'disk';
 }
 
+/** 协议探测出来的在线人数缓存：概览每几秒就会问一次，不能每次都去连 */
+const playerCountCache = new Map<string, { at: number; value: number }>();
+
+async function livePlayerCount(id: string, host: string, port: number, fallback: number): Promise<number> {
+  const hit = playerCountCache.get(id);
+  if (hit && Date.now() - hit.at < 5000) return hit.value;
+  const r = await pingServer(host, port, 2500);
+  // 探不到就沿用上一次/状态里的值，别把界面刷成 0
+  const value = r ? r.online : fallback;
+  playerCountCache.set(id, { at: Date.now(), value });
+  return value;
+}
+
 export async function statusOf(id: string): Promise<StatusSnapshot> {
   const cfg = I.getConfig(id);
   const st = I.getState(id);
@@ -300,6 +314,14 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
     } else if (logStatus === 'stopping') {
       status = 'stopping';
       phase = '正在关闭';
+    } else if (st.status === 'running') {
+      /*
+       * 日志窗口（最后 64KB）里已经没有 "Done" 那行，但这个世界的状态早就是运行中。
+       * 以前这里会直接降级成「启动中」—— 世界跑一两个小时后日志涨过 64KB，
+       * 面板就一直显示「启动中」，与实际完全不符。进程还活着时，保留已判定的运行中。
+       */
+      status = 'running';
+      phase = '服务端已就绪';
     } else {
       status = 'starting';
       phase = p ? `正在生成世界 ${p.replace('Preparing spawn area:', '').trim()}` : '正在启动';
@@ -316,7 +338,8 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
       listening,
       phase,
       progress: progress ?? null,
-      players: st.players,
+      // 在线人数用协议探测实时拿（state.players 只在启动/停止时写过 0，从来没被更新）
+      players: status === 'running' ? await livePlayerCount(id, '127.0.0.1', cfg.port, st.players) : st.players,
       uptime: proc?.uptime ?? 0,
       cpu: proc?.cpu ?? 0,
       rss: proc?.rss ?? 0,
