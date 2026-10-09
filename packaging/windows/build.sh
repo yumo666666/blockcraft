@@ -64,7 +64,8 @@ BlockCraft Windows x64
 Unzip the complete folder and double-click BlockCraft.exe.
 The first start opens the local management panel in your default browser.
 BlockCraft stays in the Windows notification area. Right-click its icon to
-open the panel or stop all worlds and exit after a confirmation prompt.
+open the panel, restart only the panel while worlds keep running, or stop all
+worlds and exit after a confirmation prompt.
 Everything BlockCraft creates is kept inside this extracted folder:
   data\       settings, logs, downloads, Java runtimes, backups
   instances\  Minecraft worlds and server files

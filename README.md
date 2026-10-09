@@ -55,7 +55,7 @@
 
 ### Windows
 
-解压 Windows x64 发布包到可写文件夹后，双击 `BlockCraft.exe`。程序会启动内置 Node.js 并打开浏览器；设置、日志、下载和 Java 运行时保存在发布包旁的 `data` 文件夹，Minecraft 世界保存在 `instances` 文件夹。旧版 `%LOCALAPPDATA%\BlockCraft` 数据会在首次启动时复制到便携目录，旧文件会保留作备份。
+解压 Windows x64 发布包到可写文件夹后，双击 `BlockCraft.exe`。程序会启动内置 Node.js 并打开浏览器；托盘菜单可以打开面板、仅重启面板（世界继续运行），或停止所有世界后退出。设置、日志、下载和 Java 运行时保存在发布包旁的 `data` 文件夹，Minecraft 世界保存在 `instances` 文件夹。旧版 `%LOCALAPPDATA%\BlockCraft` 数据会在首次启动时复制到便携目录，旧文件会保留作备份。
 
 从源码生成发布包（需要 Node.js ≥ 22.6、pnpm、Go 与网络）：
 
@@ -199,7 +199,7 @@ instances/<世界id>/        每个世界一份，完全独立
 自己出一份源码包：
 
 ```bash
-git archive --format=tar.gz --prefix=blockcraft-2.2.5/ -o blockcraft-2.2.5.tar.gz HEAD
+git archive --format=tar.gz --prefix=blockcraft-2.2.6/ -o blockcraft-2.2.6.tar.gz HEAD
 ```
 
 ## 测试
