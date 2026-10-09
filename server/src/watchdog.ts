@@ -2,7 +2,7 @@
  * 看门狗：在没有 systemd / init 的环境里负责「面板活着 + 世界按需拉起 + 卡住自愈」。
  * 它只通过面板的 HTTP API 干活，不直接碰进程，避免和面板抢控制权。
  *
- *   node server/src/watchdog.ts
+ *   node --experimental-strip-types server/src/watchdog.ts
  *
  * 每 60 秒一轮：
  *   1. 面板不通 → 直接把面板拉起来

@@ -40,4 +40,4 @@ VOLUME ["/app/data", "/app/instances"]
 EXPOSE 8081
 
 # 面板自己管进程，不需要 init；停止信号会优雅退出（不会杀正在跑的世界）
-CMD ["node", "server/src/index.ts"]
+CMD ["node", "--experimental-strip-types", "server/src/index.ts"]

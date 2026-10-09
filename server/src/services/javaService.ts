@@ -24,6 +24,23 @@ const SEARCH_DIRS = [
   JDK_DIR,
 ];
 
+function javaFileName(): string {
+  return process.platform === 'win32' ? 'java.exe' : 'java';
+}
+
+function javaSearchDirs(): string[] {
+  if (process.platform !== 'win32') return SEARCH_DIRS;
+  const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+  return [
+    process.env.JAVA_HOME || '',
+    path.join(programFiles, 'Java'),
+    path.join(programFiles, 'Eclipse Adoptium'),
+    path.join(programFiles, 'Microsoft'),
+    JDK_DIR,
+    ...String(process.env.PATH || '').split(path.delimiter),
+  ].filter(Boolean);
+}
+
 function javaMajorFromVersionOutput(out: string): number | null {
   // java version "1.8.0_402" / openjdk version "17.0.10" / openjdk version "25.0.4.1"
   const m = out.match(/version "(\d+)(?:\.(\d+))?/);
@@ -52,12 +69,14 @@ function probeJava(bin: string): JavaRuntime | null {
   const major = javaMajorFromVersionOutput(text);
   if (!major) return null;
   const version = text.split('\n').find((l) => l.trim())?.trim() ?? `Java ${major}`;
+  const relativeToManaged = path.relative(JDK_DIR, bin);
+  const managed = !path.isAbsolute(relativeToManaged) && relativeToManaged !== '..' && !relativeToManaged.startsWith(`..${path.sep}`);
   return {
     major,
     path: bin,
     home: path.dirname(path.dirname(bin)),
     version,
-    source: bin.startsWith(JDK_DIR) ? 'managed' : 'system',
+    source: managed ? 'managed' : 'system',
   };
 }
 
@@ -76,7 +95,8 @@ export function listJava(force = false): JavaRuntime[] {
     // managed 优先，其次版本号更高的
     if (!cur || (rt.source === 'managed' && cur.source === 'system')) found.set(rt.major, rt);
   };
-  for (const dir of SEARCH_DIRS) {
+  const exe = javaFileName();
+  for (const dir of javaSearchDirs()) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -85,9 +105,10 @@ export function listJava(force = false): JavaRuntime[] {
     }
     for (const e of entries) {
       if (!e.isDirectory() && !e.isSymbolicLink()) continue;
-      check(path.join(dir, e.name, 'bin', 'java'));
+      check(path.join(dir, e.name, 'bin', exe));
     }
-    check(path.join(dir, 'bin', 'java'));
+    check(path.join(dir, 'bin', exe));
+    check(path.join(dir, exe));
   }
   cache = [...found.values()].sort((a, b) => a.major - b.major);
   cacheAt = Date.now();
@@ -151,7 +172,8 @@ export async function downloadJava(major: number): Promise<JavaRuntime> {
   const osName = osMap[process.platform] ?? 'linux';
   const url = `https://api.adoptium.net/v3/binary/latest/${major}/ga/${osName}/${arch}/jdk/hotspot/normal/eclipse`;
   fs.mkdirSync(JDK_DIR, { recursive: true });
-  const target = path.join(JDK_DIR, `temurin-${major}.tar.gz`);
+  const windows = process.platform === 'win32';
+  const target = path.join(JDK_DIR, `temurin-${major}.${windows ? 'zip' : 'tar.gz'}`);
   logger.info(`下载 JDK ${major}`, { url });
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok || !res.body) throw new Error(`下载 JDK 失败：HTTP ${res.status}`);
@@ -173,12 +195,17 @@ export async function downloadJava(major: number): Promise<JavaRuntime> {
     };
     pump();
   });
-  execFileSync('tar', ['xzf', target, '-C', JDK_DIR]);
+  if (windows) {
+    const quote = (value: string) => value.replaceAll("'", "''");
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${quote(target)}' -DestinationPath '${quote(JDK_DIR)}' -Force`], { stdio: 'ignore' });
+  } else {
+    execFileSync('tar', ['xzf', target, '-C', JDK_DIR]);
+  }
   fs.unlinkSync(target);
   const extracted = fs.readdirSync(JDK_DIR).find((d) => d.startsWith('jdk-'));
   if (!extracted) throw new Error('JDK 解压后没有找到目录');
   cache = null;
-  const rt = probeJava(path.join(JDK_DIR, extracted, 'bin', 'java'));
+  const rt = probeJava(path.join(JDK_DIR, extracted, 'bin', javaFileName()));
   if (!rt) throw new Error('下载的 JDK 无法执行');
   logger.info(`JDK ${major} 已就绪`, { path: rt.path });
   return rt;

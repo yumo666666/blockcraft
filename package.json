@@ -1,7 +1,7 @@
 {
   "name": "blockcraft",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "BlockCraft · 多世界 Minecraft 服务器管理面板",
   "license": "MIT",
   "type": "module",
@@ -10,7 +10,7 @@
     "dev:server": "pnpm -C server dev",
     "dev:web": "pnpm -C web dev",
     "build": "pnpm -C web build",
-    "start": "node server/src/index.ts",
+    "start": "node --experimental-strip-types server/src/index.ts",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && pnpm -C web exec vue-tsc --noEmit",
     "test": "pnpm -C web test",
     "test:render": "pnpm -C web test",
@@ -25,10 +25,5 @@
   },
   "engines": {
     "node": ">=22.6"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   }
 }

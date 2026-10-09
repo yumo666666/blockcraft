@@ -7,7 +7,7 @@ if curl -s -m 2 -o /dev/null "http://127.0.0.1:$PORT/api/ping"; then
   exit 0
 fi
 mkdir -p data/logs
-PORT="$PORT" setsid nohup node server/src/index.ts >> data/logs/panel.out 2>&1 < /dev/null &
+PORT="$PORT" setsid nohup node --experimental-strip-types server/src/index.ts >> data/logs/panel.out 2>&1 < /dev/null &
 for i in $(seq 1 20); do
   sleep 1
   if curl -s -m 2 -o /dev/null "http://127.0.0.1:$PORT/api/ping"; then

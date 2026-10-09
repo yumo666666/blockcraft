@@ -6,7 +6,7 @@ import Modal from './Modal.vue';
 import type { InstanceDetail } from '../lib/types.ts';
 
 const props = defineProps<{ open: boolean; instanceId: string | null }>();
-const emit = defineEmits<{ close: []; saved: [] }>();
+const emit = defineEmits<{ close: []; saved: []; job: [jobId: string] }>();
 
 interface Cfg {
   name: string;
@@ -153,8 +153,9 @@ async function reinstall() {
   if (!props.instanceId) return;
   busy.value = true;
   try {
-    await api.post(`/api/instances/${props.instanceId}/reinstall`);
+    const result = await api.post<{ jobId: string }>(`/api/instances/${props.instanceId}/reinstall`);
     toast('ok', '已开始重新安装服务端', '可以在总览页的任务里看进度');
+    emit('job', result.jobId);
     emit('close');
   } catch (err) {
     toastError(err, '重新安装失败');

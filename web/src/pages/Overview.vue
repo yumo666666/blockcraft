@@ -189,7 +189,13 @@ function openJob(id: string) {
       </div>
     </div>
 
-    <WorldConfigDialog :open="showConfig" :instance-id="active?.id ?? null" @close="showConfig = false" @saved="loadInstances" />
+    <WorldConfigDialog
+      :open="showConfig"
+      :instance-id="active?.id ?? null"
+      @close="showConfig = false"
+      @saved="loadInstances"
+      @job="openJob"
+    />
     <PortsDialog :open="showPorts" :instance-id="active?.id ?? ''" :name="active?.name ?? ''" @close="showPorts = false" @changed="loadInstances" />
     <CopyDialog
       :open="showCopy"
@@ -215,13 +221,18 @@ function openJob(id: string) {
 </template>
 
 <style scoped>
+.page { min-width: 0; }
+.page > .card { min-width: 0; }
 .top-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
   gap: var(--sp-4);
-  align-items: start;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
 }
+.top-grid > * { min-width: 0; }
 @media (max-width: 940px) {
-  .top-grid { grid-template-columns: 1fr; }
+  .top-grid { grid-template-columns: minmax(0, 1fr); align-items: start; }
 }
 </style>

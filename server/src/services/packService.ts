@@ -148,9 +148,9 @@ export async function inspectPack(file: string): Promise<PackInspection> {
         };
         out.packName = idx.name ?? null;
         out.mc = idx.dependencies?.minecraft ?? null;
-        out.loader = idx.dependencies?.fabricLoader ? 'fabric' : idx.dependencies?.forge ? 'forge' : idx.dependencies?.neoforge ? 'neoforge' : null;
-        out.loaderVersion =
-          idx.dependencies?.fabricLoader ?? idx.dependencies?.forge ?? idx.dependencies?.neoforge ?? null;
+        const fabricVersion = idx.dependencies?.fabricLoader ?? idx.dependencies?.['fabric-loader'];
+        out.loader = fabricVersion ? 'fabric' : idx.dependencies?.forge ? 'forge' : idx.dependencies?.neoforge ? 'neoforge' : null;
+        out.loaderVersion = fabricVersion ?? idx.dependencies?.forge ?? idx.dependencies?.neoforge ?? null;
         out.filesToDownload = idx.files?.length ?? 0;
         out.note = 'Modrinth 格式：下载直链在 cdn.modrinth.com（部分网络不通），失败的文件会列成人工清单';
       } catch {
@@ -185,7 +185,7 @@ async function extractTree(
   file: string,
   entries: string[],
   targetRoot: string,
-  opts: { prefixes: RegExp; stripPrefix?: string; onLog: (s: string) => void },
+  opts: { prefixes: RegExp; stripPrefix?: string; stripChildPrefix?: string; onLog: (s: string) => void },
 ): Promise<number> {
   const zip = await openZip(file);
   let count = 0;
@@ -196,14 +196,22 @@ async function extractTree(
         zip.readEntry();
         return;
       }
-      const stripped = name.replace(/^\.?\/?(\.minecraft|minecraft)\//i, '');
-      const rel = opts.stripPrefix && stripped.startsWith(opts.stripPrefix) ? stripped.slice(opts.stripPrefix.length) : stripped;
-      if (!rel || rel.includes('..')) {
+      const unixMode = ((entry as ZipEntry & { externalFileAttributes?: number }).externalFileAttributes ?? 0) >>> 16;
+      if ((unixMode & 0xf000) === 0xa000) {
         zip.readEntry();
         return;
       }
-      const dest = path.join(targetRoot, rel);
-      if (!dest.startsWith(targetRoot)) {
+      const stripped = name.replace(/^\.?\/?(\.minecraft|minecraft)\//i, '');
+      let rel = opts.stripPrefix && stripped.startsWith(opts.stripPrefix) ? stripped.slice(opts.stripPrefix.length) : stripped;
+      if (opts.stripChildPrefix && rel.startsWith(opts.stripChildPrefix)) rel = rel.slice(opts.stripChildPrefix.length);
+      const portableRel = rel.replaceAll('\\', '/');
+      if (!portableRel || portableRel.startsWith('/') || /^[A-Za-z]:/.test(portableRel) || portableRel.split('/').some((part) => !part || part === '.' || part === '..')) {
+        zip.readEntry();
+        return;
+      }
+      const dest = path.resolve(targetRoot, ...portableRel.split('/'));
+      const relative = path.relative(path.resolve(targetRoot), dest);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
         zip.readEntry();
         return;
       }
@@ -354,7 +362,7 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
       break;
     case 'curseforge': {
       onLog('解压 overrides/ …');
-      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, onLog });
+      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, stripChildPrefix: 'overrides/', onLog });
       const r = await installCurseForge(file, instanceId, onLog);
       manual = r.manual;
       onLog(`MOD 下载完成 ${r.downloaded} 个${manual.length ? `，${manual.length} 个需要手动处理` : ''}`);
@@ -362,7 +370,7 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
     }
     case 'modrinth': {
       onLog('解压 overrides/ …');
-      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, onLog });
+      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, stripChildPrefix: 'overrides/', onLog });
       const zip = await openZip(file);
       const idxName = names.find((n) => /modrinth\.index\.json$/.test(n))!;
       const idx = JSON.parse((await readEntry(zip, await findEntry(zip, idxName))).toString('utf8')) as {

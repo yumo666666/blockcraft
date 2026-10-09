@@ -21,7 +21,7 @@ WD=$(bash "$(dirname "$0")/proc-find.sh" node "server/src/watchdog.ts" | head -1
 if [ -n "$WD" ]; then
   say "看门狗已经在运行（PID $WD）"
 else
-  setsid nohup node server/src/watchdog.ts >> data/logs/watchdog.out 2>&1 < /dev/null &
+  setsid nohup node --experimental-strip-types server/src/watchdog.ts >> data/logs/watchdog.out 2>&1 < /dev/null &
   echo $! > data/logs/watchdog.pid
   say "看门狗已启动（PID $(cat data/logs/watchdog.pid)）"
 fi

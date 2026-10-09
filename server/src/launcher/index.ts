@@ -73,19 +73,19 @@ export function planLaunch(cfg: InstanceConfig, serverDir: string, javaMajor: nu
     case 'fabric':
       return mk(['-jar', 'fabric-server-launch.jar'], ['fabric-server-launch.jar'], 'Fabric 自举启动器');
     case 'neoforge': {
-      const unixArgs = path.join('libraries', 'net', 'neoforged', 'neoforge', cfg.loaderVersion, 'unix_args.txt');
-      return mk([`@${unixArgs}`], [unixArgs], 'NeoForge unix_args 参数文件');
+      const launcherArgs = path.join('libraries', 'net', 'neoforged', 'neoforge', cfg.loaderVersion, process.platform === 'win32' ? 'win_args.txt' : 'unix_args.txt');
+      return mk([`@${launcherArgs}`], [launcherArgs], process.platform === 'win32' ? 'NeoForge win_args 参数文件' : 'NeoForge unix_args 参数文件');
     }
     case 'forge': {
-      const unixArgs = path.join('libraries', 'net', 'minecraftforge', 'forge', `${cfg.mc}-${cfg.loaderVersion}`, 'unix_args.txt');
-      if (fs.existsSync(path.join(serverDir, unixArgs))) {
-        return mk([`@${unixArgs}`], [unixArgs], 'Forge unix_args 参数文件（1.17+）');
+      const launcherArgs = path.join('libraries', 'net', 'minecraftforge', 'forge', `${cfg.mc}-${cfg.loaderVersion}`, process.platform === 'win32' ? 'win_args.txt' : 'unix_args.txt');
+      if (fs.existsSync(path.join(serverDir, launcherArgs))) {
+        return mk([`@${launcherArgs}`], [launcherArgs], `Forge ${process.platform === 'win32' ? 'win_args' : 'unix_args'} 参数文件（1.17+）`);
       }
       const legacy = findForgeLegacyJar(serverDir, cfg.mc, cfg.loaderVersion);
       if (legacy) {
         return mk(['-jar', legacy], [legacy], 'Forge 单体 jar（1.16.5 及更早）');
       }
-      return mk([`@${unixArgs}`], [unixArgs], 'Forge unix_args 参数文件（缺失，需要先安装）');
+      return mk([`@${launcherArgs}`], [launcherArgs], `Forge ${process.platform === 'win32' ? 'win_args' : 'unix_args'} 参数文件（缺失，需要先安装）`);
     }
     default:
       return mk(['-jar', 'minecraft_server.jar'], ['minecraft_server.jar'], '未知加载器，按原版处理');
@@ -104,37 +104,6 @@ export function validateInstall(cfg: InstanceConfig, serverDir: string): { ok: b
   return { ok: missing.length === 0, missing, plan };
 }
 
-/** 生成启动脚本。stdin 必须接一个永不 EOF 的管道，否则控制台线程空转刷 "> " 烧 CPU */
-export function writeLaunchScript(opts: {
-  instanceDir: string;
-  serverDir: string;
-  javaPath: string;
-  plan: LaunchPlan;
-  useArgFile: boolean;
-}): string {
-  const { instanceDir, serverDir, javaPath, plan, useArgFile } = opts;
-  const jvm = useArgFile ? ['@user_jvm_args.txt', ...plan.serverArgs] : [...plan.jvmArgs, ...plan.serverArgs];
-  const lines = [
-    '#!/bin/bash',
-    '# 本文件由 BlockCraft 面板生成，请勿手改（改世界配置后会自动重新生成）',
-    'set -u',
-    `cd ${JSON.stringify(serverDir)} || exit 1`,
-    `export JAVA_HOME=${JSON.stringify(path.dirname(path.dirname(javaPath)))}`,
-    'export PATH="$JAVA_HOME/bin:$PATH"',
-    'export LC_ALL=C',
-    'export LANG=C',
-    `rm -f ${JSON.stringify(path.join(instanceDir, '.stop-intent'))}`,
-    `echo $$ > ${JSON.stringify(path.join(instanceDir, 'server.pid'))}`,
-    // 输出写到文件而不是「面板持有的管道」：
-    // 面板一重启，管道读端就没了，正在跑的世界之后所有日志都收不到（控制台空白、状态卡在启动中）。
-    // 写文件后，面板重启只是换个 offset 继续 tail，什么都不丢。
-    `mkdir -p ${JSON.stringify(path.join(instanceDir, 'logs'))}`,
-    `exec ${JSON.stringify(javaPath)} ${jvm.join(' ')} >> ${JSON.stringify(path.join(instanceDir, 'logs', 'server.out'))} 2>&1 < <(sleep infinity)`,
-    '',
-  ];
-  return lines.join('\n');
-}
-
 export function writeJvmArgsFile(serverDir: string, plan: LaunchPlan): void {
   const content = plan.jvmArgs.join('\n') + '\n';
   fs.writeFileSync(path.join(serverDir, 'user_jvm_args.txt'), content);
@@ -143,9 +112,13 @@ export function writeJvmArgsFile(serverDir: string, plan: LaunchPlan): void {
 /** 从日志里识别「真的起来了」——端口通不等于能联机（Forge 先绑端口后加载世界） */
 export function detectPhase(logText: string): { status: 'starting' | 'running' | 'stopping'; progress: string | null; doneLine: string | null } {
   const tail = logText.slice(-64 * 1024);
-  const doneMatch = [...tail.matchAll(/Done \(([\d.,]+)s\)! For help, type "help"/g)].pop();
-  const stopping = /Stopping server|Stopping the server/.test(tail.slice(-4000));
-  const progress = tail.match(/Preparing spawn area:\s*(\d+)%/g)?.pop() ?? null;
+  // The console keeps history across restarts. Scope phase markers to the latest
+  // server start so a previous run's Done/Stopping lines cannot mislabel this run.
+  const startMatch = [...tail.matchAll(/Starting (?:minecraft server version|minecraft server on|the server)/gi)].pop();
+  const current = startMatch?.index !== undefined ? tail.slice(startMatch.index) : tail;
+  const doneMatch = [...current.matchAll(/Done \(([\d.,]+)s\)! For help, type "help"/g)].pop();
+  const stopping = /Stopping server|Stopping the server/i.test(current.slice(-4000));
+  const progress = current.match(/Preparing spawn area:\s*(\d+)%/g)?.pop() ?? null;
   if (doneMatch && !stopping) return { status: 'running', progress: null, doneLine: doneMatch[0] };
   if (stopping) return { status: 'stopping', progress: null, doneLine: null };
   return { status: 'starting', progress, doneLine: null };

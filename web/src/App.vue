@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router';
 import { api, setUnauthorizedHandler } from './lib/api.ts';
 import { toast, toastError } from './lib/toast.ts';
 import ToastHost from './components/ToastHost.vue';
+import ThemeSwitcher from './components/ThemeSwitcher.vue';
 
 const router = useRouter();
 const ready = ref(false);
@@ -136,6 +137,7 @@ defineExpose({});
         </button>
       </nav>
       <div class="header-meta">
+        <ThemeSwitcher />
         <span v-if="addresses[0]" class="hide-sm mono">{{ addresses[0].value }}</span>
         <span v-if="publicAddr" class="badge badge-accent hide-sm">公网已映射</span>
         <button class="btn btn-ghost btn-sm" @click="doLogout">退出</button>

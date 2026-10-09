@@ -25,43 +25,31 @@ interface PackInfo {
   note: string;
 }
 
-function inspectPack(file: string): PackInfo {
-  const stat = fs.statSync(file);
-  const base: PackInfo = {
-    id: path.basename(file),
-    file,
-    bytes: stat.size,
-    uploadedAt: stat.mtimeMs,
-    format: null,
-    name: null,
-    mc: null,
-    loader: null,
-    loaderVersion: null,
-    modCount: null,
-    note: '',
-  };
-  // 简单识别：zip 内的文件名列表
-  try {
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-    const list = execFileSync('unzip', ['-l', file], { encoding: 'utf8' });
-    void list;
-  } catch {
-    /* 本机没有 unzip，改用下面的纯 JS 判断 */
-  }
-  return base;
-}
-
 export function registerPackRoutes(app: Express): void {
-  app.get('/api/packs', (_req, res) => {
+  app.get('/api/packs', async (_req, res) => {
     fs.mkdirSync(PACKS_DIR, { recursive: true });
-    const packs = fs
+    const files = fs
       .readdirSync(PACKS_DIR)
       .filter((f) => /\.(zip|mrpack)$/i.test(f))
       .map((f) => {
         const stat = fs.statSync(path.join(PACKS_DIR, f));
-        return { id: f, file: path.join(PACKS_DIR, f), bytes: stat.size, uploadedAt: stat.mtimeMs } as PackInfo;
-      })
-      .sort((a, b) => b.uploadedAt - a.uploadedAt);
+        return { id: f, file: path.join(PACKS_DIR, f), bytes: stat.size, uploadedAt: stat.mtimeMs };
+      });
+    const { inspectPack: inspect } = await import('../services/packService.ts');
+    const packs: PackInfo[] = await Promise.all(files.map(async (item) => {
+      const info = await inspect(item.file).catch(() => null);
+      return {
+        ...item,
+        format: info?.format ?? null,
+        name: info?.packName ?? null,
+        mc: info?.mc ?? null,
+        loader: info?.loader ?? null,
+        loaderVersion: info?.loaderVersion ?? null,
+        modCount: info?.modsInZip ?? null,
+        note: info?.note ?? '',
+      };
+    }));
+    packs.sort((a, b) => b.uploadedAt - a.uploadedAt);
     res.json({ packs });
   });
 

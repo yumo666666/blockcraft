@@ -13,6 +13,7 @@ import { createJob, finishJob, logJob, setStage } from '../services/jobService.t
 import { installServer, copyInstance } from '../services/installService.ts';
 import { validateInstall } from '../launcher/index.ts';
 import { loadConfig } from '../config.ts';
+import { memoryInfo } from '../services/systemService.ts';
 
 function requireId(id: string): string {
   if (!INSTANCE_ID_RE.test(id)) throw bad('世界 id 不合法');
@@ -25,9 +26,7 @@ const MEMORY_SAFETY = 0.6;
 function memoryBudget(): number {
   const cfg = loadConfig();
   if (cfg.limits.memoryBudgetMb !== 'auto') return cfg.limits.memoryBudgetMb;
-  const totalMb = fs.existsSync('/proc/meminfo')
-    ? Number(fs.readFileSync('/proc/meminfo', 'utf8').match(/MemTotal:\s+(\d+) kB/)?.[1] ?? 0) / 1024
-    : 8192;
+  const totalMb = memoryInfo().totalMb || 8192;
   return Math.round(totalMb * MEMORY_SAFETY);
 }
 

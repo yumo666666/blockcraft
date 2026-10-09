@@ -184,7 +184,7 @@ async function killWorld(id: string) {
     <template v-else>
       <div class="settings-grid">
         <!-- 访问 -->
-        <div class="card">
+        <div class="card settings-access">
           <div class="card-head"><h3>访问</h3></div>
           <div class="card-body col gap-3">
             <div class="field">
@@ -211,7 +211,7 @@ async function killWorld(id: string) {
         </div>
 
         <!-- 限额 -->
-        <div class="card">
+        <div class="card settings-limits">
           <div class="card-head"><h3>资源限额</h3></div>
           <div class="card-body col gap-3">
             <div class="field">
@@ -227,7 +227,7 @@ async function killWorld(id: string) {
         </div>
 
         <!-- Java -->
-        <div class="card">
+        <div class="card settings-java">
           <div class="card-head"><h3>Java 环境</h3></div>
           <div class="card-body col gap-2">
             <div v-if="!panel.java.installed.length" class="badge badge-warn">本机没有检测到 Java，创建世界前需要先安装</div>
@@ -240,7 +240,7 @@ async function killWorld(id: string) {
         </div>
 
         <!-- FRP -->
-        <div class="card">
+        <div class="card settings-frp">
           <div class="card-head"><h3>FRP</h3></div>
           <div class="card-body col gap-3">
             <div class="row gap-2">
@@ -266,7 +266,7 @@ async function killWorld(id: string) {
         </div>
 
         <!-- 端口段 -->
-        <div class="card">
+        <div class="card settings-ports">
           <div class="card-head"><h3>端口段</h3></div>
           <div class="card-body col gap-3">
             <div class="form-grid-2">
@@ -292,7 +292,7 @@ async function killWorld(id: string) {
         </div>
 
         <!-- 数据源 -->
-        <div class="card">
+        <div class="card settings-source">
           <div class="card-head"><h3>数据源</h3></div>
           <div class="card-body col gap-3">
             <div class="field">
@@ -315,11 +315,11 @@ async function killWorld(id: string) {
         </div>
 
         <!-- 存储 -->
-        <div class="card">
+        <div class="card settings-storage">
           <div class="card-head"><h3>存储</h3></div>
-          <div class="card-body col gap-3">
+          <div class="card-body storage-body">
             <div v-if="storage" class="col gap-2">
-              <div class="kv">
+              <div class="kv storage-metrics">
                 <div class="kv-row"><span class="kv-key">世界合计</span><span class="kv-val">{{ fmtBytes(storage.total) }}</span></div>
                 <div class="kv-row"><span class="kv-key">下载缓存</span><span class="kv-val">{{ fmtBytes(storage.store) }}</span></div>
                 <div class="kv-row"><span class="kv-key">回收站</span><span class="kv-val">{{ fmtBytes(storage.trash) }}</span></div>
@@ -327,30 +327,34 @@ async function killWorld(id: string) {
                 <div v-if="storage.jdk" class="kv-row"><span class="kv-key">内置 JDK</span><span class="kv-val">{{ fmtBytes(storage.jdk) }}</span></div>
               </div>
               <div class="divider" />
-              <div v-for="i in storage.instances" :key="i.id" class="row gap-2">
-                <span class="grow ellipsis">{{ i.name }}</span>
-                <span class="text-3 small">{{ i.mods }} MOD</span>
-                <span class="mono small">{{ fmtBytes(i.bytes) }}</span>
-                <button class="btn btn-ghost btn-sm" title="停止这个世界" @click="killWorld(i.id)">停止</button>
+              <div v-if="storage.instances.length" class="storage-instance-list">
+                <div v-for="i in storage.instances" :key="i.id" class="storage-instance row gap-2">
+                  <span class="grow ellipsis">{{ i.name }}</span>
+                  <span class="text-3 small">{{ i.mods }} MOD</span>
+                  <span class="mono small">{{ fmtBytes(i.bytes) }}</span>
+                  <button class="btn btn-ghost btn-sm" title="停止这个世界" @click="killWorld(i.id)">停止</button>
+                </div>
               </div>
             </div>
-            <div class="row gap-2">
-              <button class="btn btn-danger" @click="((cleanTarget = 'trash'), (showClean = true))">清空回收站</button>
-              <button class="btn" @click="((cleanTarget = 'logs'), (showClean = true))">清理日志</button>
-            </div>
-            <div class="field">
-              <label class="field-label">删除世界的回收站保留天数</label>
-              <input v-model.number="form.trashRetentionDays" class="input" type="number" />
+            <div class="col gap-3">
+              <div class="row gap-2">
+                <button class="btn btn-danger" @click="((cleanTarget = 'trash'), (showClean = true))">清空回收站</button>
+                <button class="btn" @click="((cleanTarget = 'logs'), (showClean = true))">清理日志</button>
+              </div>
+              <div class="field">
+                <label class="field-label">删除世界的回收站保留天数</label>
+                <input v-model.number="form.trashRetentionDays" class="input" type="number" />
+              </div>
             </div>
           </div>
         </div>
 
         <!-- 关于 -->
-        <div class="card">
+        <div class="card settings-about">
           <div class="card-head"><h3>关于</h3></div>
           <div class="card-body col gap-2">
             <div class="kv">
-              <div class="kv-row"><span class="kv-key">版本</span><span class="kv-val">BlockCraft 2.0.0</span></div>
+              <div class="kv-row"><span class="kv-key">版本</span><span class="kv-val">BlockCraft 2.2.0</span></div>
               <div class="kv-row"><span class="kv-key">项目目录</span><span class="kv-val mono small ellipsis">{{ panel.projectRoot }}</span></div>
               <div class="kv-row"><span class="kv-key">数据目录</span><span class="kv-val mono small ellipsis">{{ panel.dataDir }}</span></div>
               <div class="kv-row"><span class="kv-key">世界目录</span><span class="kv-val mono small ellipsis">{{ panel.instanceDir }}</span></div>
@@ -362,7 +366,7 @@ async function killWorld(id: string) {
         </div>
       </div>
 
-      <div class="row-between card card-pad">
+      <div class="row-between card card-pad settings-save-bar">
         <span class="text-3 small">改端口段与令牌后建议重启面板进程。</span>
         <button class="btn btn-primary btn-lg" :disabled="busy" @click="saveAll">保存全部设置</button>
       </div>
@@ -393,10 +397,31 @@ async function killWorld(id: string) {
 <style scoped>
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    'access source'
+    'limits java'
+    'frp ports'
+    'storage about';
   gap: var(--sp-4);
-  align-items: start;
+  align-items: stretch;
 }
+.settings-grid > .card { display: flex; flex-direction: column; min-width: 0; }
+.settings-grid > .card > .card-body { flex: 1; min-width: 0; }
+.settings-access { grid-area: access; }
+.settings-source { grid-area: source; }
+.settings-limits { grid-area: limits; }
+.settings-java { grid-area: java; }
+.settings-frp { grid-area: frp; }
+.settings-ports { grid-area: ports; }
+.settings-storage { grid-area: storage; }
+.settings-about { grid-area: about; }
+.settings-java > .card-body { justify-content: space-between; }
+.storage-body { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(215px, 0.95fr); align-content: start; gap: var(--sp-4); }
+.storage-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 20px; }
+.storage-instance-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 7px; }
+.storage-instance { min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
+.settings-save-bar { flex-wrap: wrap; gap: var(--sp-3); }
 .addr-row {
   display: flex;
   align-items: center;
@@ -411,4 +436,18 @@ async function killWorld(id: string) {
   text-align: left;
 }
 .addr-row:hover { border-color: var(--accent-border); background: var(--accent-soft); }
+@media (max-width: 760px) {
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'access' 'source' 'limits' 'java' 'frp' 'ports' 'storage' 'about';
+  }
+  .settings-java > .card-body { justify-content: flex-start; }
+}
+@media (max-width: 560px) {
+  .storage-body { grid-template-columns: minmax(0, 1fr); }
+  .storage-metrics { grid-template-columns: minmax(0, 1fr); }
+  .storage-instance-list { grid-template-columns: minmax(0, 1fr); }
+  .settings-save-bar { align-items: flex-start; }
+  .settings-save-bar .btn-lg { width: 100%; }
+}
 </style>

@@ -49,11 +49,7 @@ const loaderLabel = computed(() => {
             <i class="dot" :class="statusClass(item.status)" />
             <h2 class="ellipsis">{{ item.name }}</h2>
           </div>
-          <div v-if="item.lastError" class="note-crash" :title="item.lastError">
-            <span class="badge badge-danger">上次崩溃</span>
-            <span class="ellipsis">{{ item.lastError }}</span>
-          </div>
-          <div class="row gap-2 mt-2 wrap">
+          <div class="row gap-2 mt-2 note-meta">
             <span v-if="item.autostart" class="badge badge-accent" title="随面板自动启动">自启</span>
             <span class="text-3 small ellipsis">{{ item.note || `${loaderLabel} · Minecraft ${item.mc}` }}</span>
           </div>
@@ -102,7 +98,11 @@ const loaderLabel = computed(() => {
         </div>
       </div>
 
-      <div v-if="item.phase && item.status !== 'stopped'" class="text-3 small ellipsis">{{ item.phase }}</div>
+      <div class="note-message text-3 small" :class="{ 'note-message-error': item.lastError }" :title="item.lastError || item.phase || ''">
+        <template v-if="item.lastError">上次崩溃 · {{ item.lastError }}</template>
+        <template v-else-if="item.phase && item.status !== 'stopped'">{{ item.phase }}</template>
+        <span v-else aria-hidden="true">&nbsp;</span>
+      </div>
 
       <!-- 操作区：等宽网格，永远对齐 -->
       <div class="btn-grid">
@@ -140,4 +140,16 @@ const loaderLabel = computed(() => {
 }
 .conn-item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .conn-value { font-size: 13.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; }
+.note-card { display: flex; flex-direction: column; min-height: 400px; }
+.note-head { min-height: 80px; }
+.note-meta { min-width: 0; flex-wrap: nowrap; }
+.note-meta > .ellipsis { flex: 1; min-width: 0; }
+.note-body { flex: 1; }
+.note-message { min-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-message-error { color: var(--danger); }
+.btn-grid { margin-top: auto; }
+@media (max-width: 560px) {
+  .note-card { min-height: 0; }
+  .note-head { min-height: 0; }
+}
 </style>

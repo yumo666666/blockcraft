@@ -456,7 +456,7 @@ watch(
   <div class="page col gap-4">
     <!-- 头部：返回 + 世界名 + 状态 + 运行时长 + 在线人数 -->
     <div class="row-between wrap gap-3">
-      <div class="row gap-3">
+      <div class="row gap-3 console-title-group">
         <button class="btn btn-ghost btn-sm" @click="router.push('/')">← 返回总览</button>
         <div class="row gap-2">
           <i class="dot" :class="instance ? statusClass(instance.status) : 'dot-idle'" />
@@ -831,5 +831,14 @@ watch(
   min-height: 0;
   max-height: none;
   overflow-y: auto;
+}
+@media (max-width: 620px) {
+  .console-title-group { flex: 1 1 270px; min-width: 0; flex-wrap: wrap; }
+  .console-title-group h1 { min-width: 0; }
+  .head-stats { flex: 1 1 100%; justify-content: space-between; gap: var(--sp-3); }
+  .console-card > .card-head { flex-direction: column; align-items: stretch; }
+  .console-card > .card-head > .row { justify-content: flex-start; }
+  .console-grid, .console-grid > *, .console-side { min-width: 0; }
+  .filter-input { width: min(150px, 42vw); }
 }
 </style>

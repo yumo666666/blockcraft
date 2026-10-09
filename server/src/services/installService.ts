@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { Readable } from 'node:stream';
+import { inflateRawSync } from 'node:zlib';
 import { STORE_DIR, instanceDir, instanceServerDir } from '../core/paths.ts';
 import { atomicWriteFileSync, readJsonSync } from '../core/fsx.ts';
 import { bad, conflict, notFound } from '../core/errors.ts';
@@ -125,31 +126,101 @@ async function installPaper(cfg: InstanceConfig, onLog: (s: string) => void): Pr
 
 async function installFabric(cfg: InstanceConfig, onLog: (s: string) => void): Promise<void> {
   const serverDir = instanceServerDir(cfg.id);
-  // Fabric 自举启动器
-  const launcherUrl =
-    'https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar';
-  const launcherCache = path.join(STORE_DIR, 'fabric', 'fabric-server-launch.jar');
-  if (!fs.existsSync(launcherCache)) {
-    // server-launch.jar 可以直接从 maven 拿
-    const direct = 'https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.9/fabric-loader-0.16.9.jar';
-    void direct;
-    await downloadTo(
-      `https://meta.fabricmc.net/v2/versions/loader/${cfg.mc}/0.16.9/server/jar`,
-      launcherCache,
-      onLog,
-    ).catch(async () => {
-      await downloadTo('https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar', launcherCache, onLog);
-    });
-  } else {
-    onLog('复用已下载的 Fabric 启动器');
+  const fabricVersion = cfg.loaderVersion || '0.16.9';
+  const installerCache = path.join(STORE_DIR, 'fabric', 'fabric-installer-1.0.1.jar');
+  const installerUrl = 'https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar';
+  if (!fs.existsSync(installerCache)) await downloadTo(installerUrl, installerCache, onLog);
+  else onLog('复用已下载的 Fabric 安装器');
+
+  const { runtime: java, reason } = autoJava(cfg.mc, 'fabric');
+  if (!java) throw conflict(reason || '未找到可用于 Fabric 安装的 Java');
+
+  // Fabric 的 server/jar API 已不可用。运行官方安装器生成真正的
+  // fabric-server-launch.jar 和 libraries；安装器 Java 网络请求跟随常见代理环境变量。
+  const proxyArgs: string[] = [];
+  const proxyValue = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  if (proxyValue) {
+    try {
+      const proxy = new URL(proxyValue);
+      if (proxy.protocol === 'http:' && proxy.hostname) {
+        const port = proxy.port || '80';
+        proxyArgs.push(
+          `-Dhttp.proxyHost=${proxy.hostname}`,
+          `-Dhttp.proxyPort=${port}`,
+          `-Dhttps.proxyHost=${proxy.hostname}`,
+          `-Dhttps.proxyPort=${port}`,
+        );
+        onLog('为 Fabric 安装器启用系统 HTTP 代理');
+      }
+    } catch {
+      onLog('无法解析系统代理地址，Fabric 安装器将直接连接');
+    }
   }
-  copyIntoTarget(launcherCache, path.join(serverDir, 'fabric-server-launch.jar'));
-  // Fabric 需要一份原版服务端 jar
+
+  onLog(`运行 Fabric 安装器（Minecraft ${cfg.mc} / Loader ${fabricVersion}）…`);
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(
+      java.path,
+      [...proxyArgs, '-jar', installerCache, 'server', '-dir', serverDir, '-mcversion', cfg.mc, '-loader', fabricVersion],
+      { cwd: serverDir, maxBuffer: 32 * 1024 * 1024, windowsHide: true },
+      (err, stdout, stderr) => {
+        for (const line of (stdout + stderr).split('\n').slice(-60)) if (line.trim()) onLog(line.trim());
+        if (err) reject(new Error(`Fabric 安装器失败：${err.message}`));
+        else resolve();
+      },
+    );
+    child.on('error', reject);
+  });
+
+  const launcher = path.join(serverDir, 'fabric-server-launch.jar');
+  if (!fs.existsSync(launcher)) throw new Error('Fabric 安装器未生成 fabric-server-launch.jar');
+
+  // Fabric 自举启动器从当前目录的 server.jar 加载 Mojang 服务端。
   const { url } = await vanillaServerUrl(cfg.mc);
   const cache = path.join(STORE_DIR, 'vanilla', cfg.mc, 'minecraft_server.jar');
   if (!fs.existsSync(cache)) await downloadTo(url, cache, onLog);
-  copyIntoTarget(cache, path.join(serverDir, 'minecraft_server.jar'));
-  void launcherUrl;
+  copyIntoTarget(cache, path.join(serverDir, 'server.jar'));
+}
+
+function isFabricLauncher(file: string): boolean {
+  try {
+    if (!fs.existsSync(file)) return false;
+    const zip = fs.readFileSync(file);
+    const endMin = Math.max(0, zip.length - 65_557);
+    let end = -1;
+    for (let i = zip.length - 22; i >= endMin; i--) {
+      if (zip.readUInt32LE(i) === 0x06054b50) {
+        end = i;
+        break;
+      }
+    }
+    if (end < 0) return false;
+    const entries = zip.readUInt16LE(end + 10);
+    const directoryOffset = zip.readUInt32LE(end + 16);
+    let cursor = directoryOffset;
+    for (let i = 0; i < entries; i++) {
+      if (zip.readUInt32LE(cursor) !== 0x02014b50) return false;
+      const method = zip.readUInt16LE(cursor + 10);
+      const compressedSize = zip.readUInt32LE(cursor + 20);
+      const nameLength = zip.readUInt16LE(cursor + 28);
+      const extraLength = zip.readUInt16LE(cursor + 30);
+      const commentLength = zip.readUInt16LE(cursor + 32);
+      const localOffset = zip.readUInt32LE(cursor + 42);
+      const name = zip.toString('utf8', cursor + 46, cursor + 46 + nameLength);
+      if (name === 'META-INF/MANIFEST.MF') {
+        const localNameLength = zip.readUInt16LE(localOffset + 26);
+        const localExtraLength = zip.readUInt16LE(localOffset + 28);
+        const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+        const compressed = zip.subarray(dataStart, dataStart + compressedSize);
+        const manifest = (method === 8 ? inflateRawSync(compressed) : compressed).toString('utf8');
+        return /Main-Class:\s*net\.fabricmc\.loader\.impl\.launch\.server\.FabricServerLauncher/i.test(manifest);
+      }
+      cursor += 46 + nameLength + extraLength + commentLength;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void, neo: boolean): Promise<void> {
@@ -224,7 +295,10 @@ export async function installServer(id: string, onLog: (s: string) => void, opts
   const done: Record<Loader, () => boolean> = {
     vanilla: () => exists('minecraft_server.jar'),
     paper: () => exists('paper.jar'),
-    fabric: () => exists('fabric-server-launch.jar'),
+    fabric: () =>
+      isFabricLauncher(path.join(serverDir, 'fabric-server-launch.jar')) &&
+      exists('server.jar') &&
+      exists(path.join('libraries', 'net', 'fabricmc', 'fabric-loader', cfg.loaderVersion || '0.16.9', `fabric-loader-${cfg.loaderVersion || '0.16.9'}.jar`)),
     forge: () =>
       exists(path.join('libraries', 'net', 'minecraftforge', 'forge', `${cfg.mc}-${cfg.loaderVersion}`, 'unix_args.txt')) ||
       exists(`forge-${cfg.mc}-${cfg.loaderVersion}.jar`),

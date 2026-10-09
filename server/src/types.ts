@@ -272,6 +272,6 @@ export interface PlayerInfo {
   banned: boolean;
   lastSeen: number | null;
   skinUrl: string | null;
-  skinSource: 'mojang' | 'guess' | 'manual' | 'none';
+  skinSource: 'server' | 'bound' | 'mojang' | 'guess' | 'none';
   playtimeSeconds: number | null;
 }

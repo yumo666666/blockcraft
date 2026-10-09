@@ -223,7 +223,7 @@ async function submitCopy() {
 </script>
 
 <template>
-  <div class="page col gap-4">
+  <div class="page col gap-4 wizard-page">
     <div class="row gap-3">
       <button class="btn btn-ghost btn-sm" @click="mode === 'choose' ? router.push('/') : (mode = 'choose')">
         ← {{ mode === 'choose' ? '返回总览' : '重新选择' }}
@@ -256,8 +256,8 @@ async function submitCopy() {
     <div v-else-if="mode === 'new'" class="card">
       <div class="card-head">
         <h3>新建世界</h3>
-        <div class="row gap-1">
-          <span v-for="(s, i) in steps" :key="s" class="badge" :class="step === i + 1 ? 'badge-accent' : step > i + 1 ? 'badge-ok' : 'badge-outline'">
+        <div class="wizard-steps">
+          <span v-for="(s, i) in steps" :key="s" class="badge wizard-step" :class="step === i + 1 ? 'badge-accent' : step > i + 1 ? 'badge-ok' : 'badge-outline'">
             {{ i + 1 }}. {{ s }}
           </span>
         </div>
@@ -526,6 +526,9 @@ async function submitCopy() {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: var(--sp-4);
 }
+.wizard-page { min-height: calc(100vh - var(--header-h)); justify-content: center; }
+.wizard-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
+.wizard-step { max-width: 100%; }
 .choice {
   display: flex;
   flex-direction: column;
@@ -545,6 +548,7 @@ async function submitCopy() {
 .choice:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .choice-icon { font-size: 26px; }
 .choice-title { font-size: 15px; font-weight: 650; }
+.wizard-steps { min-width: 0; }
 .pack-row {
   display: flex;
   align-items: center;
@@ -557,6 +561,12 @@ async function submitCopy() {
   color: var(--text);
   cursor: pointer;
   text-align: left;
+}
+@media (max-width: 620px) {
+  .wizard-page > .row { flex-wrap: wrap; }
+  .wizard-page > .row h1 { flex: 1 1 180px; min-width: 0; }
+  .wizard-page .card > .card-head { flex-wrap: wrap; align-items: flex-start; }
+  .wizard-steps { flex: 1 1 240px; justify-content: flex-start; }
 }
 .pack-row:hover { border-color: var(--border-strong); }
 .pack-row.active { border-color: var(--accent); background: var(--accent-soft); }

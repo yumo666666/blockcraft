@@ -7,6 +7,7 @@ import { toast, toastError } from '../lib/toast.ts';
 import { fmtDuration, statusClass } from '../lib/format.ts';
 import type { InstanceDetail, InstanceSummary, PlayerInfo } from '../lib/types.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
+import Modal from '../components/Modal.vue';
 
 const props = defineProps<{ id: string }>();
 const router = useRouter();
@@ -20,6 +21,9 @@ const serverOnline = ref(false);
 const loading = ref(false);
 const busyName = ref<string | null>(null);
 const uploadingSkin = ref<string | null>(null);
+const skinEditor = ref<PlayerInfo | null>(null);
+const skinUrl = ref('');
+const savingSkin = ref(false);
 
 const worldName = computed(() => instance.value?.name ?? props.id);
 const onlinePlayers = computed(() => players.value.filter((p) => p.online));
@@ -169,23 +173,10 @@ async function onSkinFile(ev: Event) {
   uploadingSkin.value = name;
   try {
     const data = await readDataUrl(file);
-    await api.post(`/api/players/${encodeURIComponent(name)}/skin`, { data });
-    toast('ok', `已上传 ${name} 的皮肤`, '接口只认带 data:image/png;base64, 前缀的 PNG');
-    bumpSkinEpoch(name);
-    const entry = viewers.get(name);
-    if (entry) {
-      try {
-        entry.viewer.dispose();
-      } catch {
-        /* ignore */
-      }
-      viewers.delete(name);
-    }
-    const next = { ...skinFailed.value };
-    delete next[name];
-    skinFailed.value = next;
-    await nextTick();
-    scheduleSync();
+    await api.post(`${base.value}/players/${encodeURIComponent(name)}/skin`, { data });
+    toast('ok', `已绑定 ${name} 的皮肤`, '皮肤已保存在 BlockCraft 的玩家档案中');
+    skinEditor.value = null;
+    await refreshSkin(name);
   } catch (err) {
     toastError(err, '皮肤上传失败');
   } finally {
@@ -216,7 +207,79 @@ function bumpSkinEpoch(name: string) {
 
 /** 皮肤地址：服务端代理，可能 404（没有皮肤） */
 function skinPath(name: string): string {
-  return `/api/players/${encodeURIComponent(name)}/skin?v=${epochOf(name)}`;
+  return `${base.value}/players/${encodeURIComponent(name)}/skin?v=${epochOf(name)}`;
+}
+
+function openSkinEditor(p: PlayerInfo) {
+  skinEditor.value = p;
+  skinUrl.value = '';
+}
+
+async function refreshSkin(name: string) {
+  bumpSkinEpoch(name);
+  const entry = viewers.get(name);
+  if (entry) {
+    try {
+      entry.viewer.dispose();
+    } catch {
+      /* Ignore a WebGL cleanup failure. */
+    }
+    viewers.delete(name);
+  }
+  const next = { ...skinFailed.value };
+  delete next[name];
+  skinFailed.value = next;
+  await loadPlayers();
+  await nextTick();
+  scheduleSync();
+}
+
+async function bindMojangSkin() {
+  const p = skinEditor.value;
+  if (!p) return;
+  savingSkin.value = true;
+  try {
+    await api.put(`${base.value}/players/${encodeURIComponent(p.name)}/skin`, { kind: 'mojang' });
+    toast('ok', `已绑定 ${p.name} 的同名正版皮肤`, '后续会标记为「已绑定」');
+    skinEditor.value = null;
+    await refreshSkin(p.name);
+  } catch (err) {
+    toastError(err, '绑定正版皮肤失败');
+  } finally {
+    savingSkin.value = false;
+  }
+}
+
+async function bindUrlSkin() {
+  const p = skinEditor.value;
+  if (!p || !skinUrl.value.trim()) return;
+  savingSkin.value = true;
+  try {
+    await api.put(`${base.value}/players/${encodeURIComponent(p.name)}/skin`, { kind: 'url', url: skinUrl.value.trim() });
+    toast('ok', `已绑定 ${p.name} 的 URL 皮肤`, '图片已经下载并保存在玩家档案中');
+    skinEditor.value = null;
+    await refreshSkin(p.name);
+  } catch (err) {
+    toastError(err, '绑定皮肤 URL 失败');
+  } finally {
+    savingSkin.value = false;
+  }
+}
+
+async function restoreSkin() {
+  const p = skinEditor.value;
+  if (!p) return;
+  savingSkin.value = true;
+  try {
+    await api.del(`${base.value}/players/${encodeURIComponent(p.name)}/skin`);
+    toast('ok', `已恢复 ${p.name} 的自动皮肤来源`, '会重新按服务器记录、正版资料和默认皮肤查找');
+    skinEditor.value = null;
+    await refreshSkin(p.name);
+  } catch (err) {
+    toastError(err, '恢复默认来源失败');
+  } finally {
+    savingSkin.value = false;
+  }
 }
 
 function canvasSlot(name: string): string {
@@ -318,13 +381,15 @@ onUnmounted(() => {
 /* ------------------------------------------------------------ 徽标映射 */
 
 const SKIN_BADGE: Record<string, { label: string; cls: string; title: string } | undefined> = {
-  mojang: { label: '正版', cls: 'badge-ok', title: '在线模式下服务端向 Mojang 校验过账号，皮肤就是这个玩家的' },
+  server: { label: '服务器皮肤', cls: 'badge-ok', title: '读取了这个世界的 SkinsRestorer 玩家皮肤记录，代表服务器当前使用的皮肤' },
+  bound: { label: '✓ 已绑定', cls: 'badge-ok', title: '管理员已将这个离线玩家绑定到指定皮肤' },
+  mojang: { label: '✓ 已验证', cls: 'badge-ok', title: '在线模式下使用服务端验证过的玩家 UUID 获取皮肤' },
   guess: {
-    label: '推测',
+    label: '? 同名推测',
     cls: 'badge-warn',
-    title: '离线模式下按同名正版账号查到的，可能不是本人',
+    title: '当前服务器为离线模式，无法验证玩家的 Mojang 身份；这是同名正版账号的皮肤，可能不是本人',
   },
-  manual: { label: '手动', cls: 'badge-info', title: '管理员手动上传的本地皮肤' },
+  none: { label: '默认', cls: 'badge-outline', title: '没有找到服务器皮肤或玩家绑定，客户端会显示 Steve / Alex 默认皮肤' },
 };
 
 function skinBadge(source: string): { label: string; cls: string; title: string } | undefined {
@@ -332,7 +397,15 @@ function skinBadge(source: string): { label: string; cls: string; title: string 
 }
 
 function skinLabel(p: PlayerInfo): string {
-  return p.playtimeSeconds !== null && p.playtimeSeconds !== undefined ? fmtDuration(p.playtimeSeconds) : '在线';
+  if (p.playtimeSeconds !== null && p.playtimeSeconds !== undefined) return fmtDuration(p.playtimeSeconds);
+  const labels: Record<PlayerInfo['skinSource'], string> = {
+    server: 'SkinsRestorer 服务器皮肤',
+    bound: 'BlockCraft 玩家绑定',
+    mojang: '正版账号已验证',
+    guess: '离线模式同名推测',
+    none: '默认皮肤 Steve / Alex',
+  };
+  return labels[p.skinSource];
 }
 </script>
 
@@ -393,6 +466,8 @@ function skinLabel(p: PlayerInfo): string {
                 class="badge"
                 :class="skinBadge(p.skinSource)?.cls"
                 :title="skinBadge(p.skinSource)?.title"
+                :style="{ cursor: p.skinSource === 'guess' ? 'pointer' : undefined }"
+                @click="p.skinSource === 'guess' && openSkinEditor(p)"
               >
                 {{ skinBadge(p.skinSource)?.label }}
               </span>
@@ -423,8 +498,8 @@ function skinLabel(p: PlayerInfo): string {
               >
                 {{ p.whitelisted ? '移出白名单' : '加白名单' }}
               </button>
-              <button v-if="p.skinSource === 'none'" class="btn btn-sm btn-soft" :disabled="uploadingSkin === p.name" @click="pickSkin(p.name)">
-                {{ uploadingSkin === p.name ? '上传中' : '上传皮肤' }}
+              <button class="btn btn-sm btn-soft" :disabled="uploadingSkin === p.name" @click="openSkinEditor(p)">
+                更换皮肤
               </button>
             </div>
           </div>
@@ -451,6 +526,7 @@ function skinLabel(p: PlayerInfo): string {
                 <th>白名单</th>
                 <th>管理员</th>
                 <th>状态</th>
+                <th>皮肤来源</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -474,6 +550,17 @@ function skinLabel(p: PlayerInfo): string {
                   </span>
                 </td>
                 <td>
+                  <span
+                    class="badge"
+                    :class="skinBadge(p.skinSource)?.cls"
+                    :title="skinBadge(p.skinSource)?.title"
+                    :style="{ cursor: p.skinSource === 'guess' ? 'pointer' : undefined }"
+                    @click="p.skinSource === 'guess' && openSkinEditor(p)"
+                  >
+                    {{ skinBadge(p.skinSource)?.label ?? '默认' }}
+                  </span>
+                </td>
+                <td>
                   <div class="row gap-1 wrap">
                     <button
                       class="btn btn-sm"
@@ -494,6 +581,7 @@ function skinLabel(p: PlayerInfo): string {
                     >
                       {{ p.banned ? '解除拉黑' : '拉黑' }}
                     </button>
+                    <button class="btn btn-sm btn-soft" @click="openSkinEditor(p)">更换皮肤</button>
                   </div>
                 </td>
               </tr>
@@ -504,10 +592,48 @@ function skinLabel(p: PlayerInfo): string {
     </div>
 
     <p class="text-3 small">
-      离线模式（online-mode=false）下，服务端不向 Mojang 校验账号，同名玩家不一定是同一个人，所以皮肤只能按同名正版账号推测，会标注成「推测」；
-      没有皮肤（或者推错了）可以在在线玩家卡片上手动上传 PNG，手动皮肤只存在这台机器上。
-      踢出与拉黑需要服务端在运行；加白名单 / 管理员在停服时改的是名单文件，下次启动生效。
+      皮肤按可信度显示：SkinsRestorer 在本世界保存的皮肤 → BlockCraft 管理员绑定 → Mojang 同名推测 → 默认皮肤。
+      离线模式无法验证玩家身份；点击「同名推测」可绑定、上传 PNG 或填写皮肤 URL。皮肤绑定保存在 BlockCraft 的玩家档案中。
+      踢出需要服务端运行；白名单 / 管理员在停服时写入名单文件，下次启动生效。
     </p>
+
+    <Modal v-if="skinEditor" :title="`更换 ${skinEditor.name} 的皮肤`" size="md" @close="skinEditor = null">
+      <div class="col gap-3">
+        <div class="skin-help">
+          <div class="row gap-2 wrap">
+            <span class="badge" :class="skinBadge(skinEditor.skinSource)?.cls">{{ skinBadge(skinEditor.skinSource)?.label ?? '默认' }}</span>
+            <strong>{{ skinLabel(skinEditor) }}</strong>
+          </div>
+          <p v-if="skinEditor.skinSource === 'guess'" class="small mt-2">
+            当前服务器为离线模式，无法验证 {{ skinEditor.name }} 的 Mojang 身份。这个皮肤来自同名正版账号，可能并非该玩家实际皮肤。
+          </p>
+          <p v-else class="small mt-2">
+            SkinsRestorer 保存的服务器皮肤优先显示；下面的绑定会保存到 BlockCraft。恢复自动来源不会修改游戏服插件数据。
+          </p>
+        </div>
+        <button class="btn" :disabled="savingSkin" @click="bindMojangSkin">绑定同名正版皮肤</button>
+        <div class="field">
+          <label class="field-label">皮肤图片 URL</label>
+          <div class="row gap-2">
+            <input v-model="skinUrl" class="input" type="url" placeholder="https://example.com/skin.png" />
+            <button class="btn" :disabled="savingSkin || !skinUrl.trim()" @click="bindUrlSkin">绑定</button>
+          </div>
+          <span class="text-3 small">公开 HTTPS PNG；保存时会检查图片并复制到本地。</span>
+        </div>
+        <div class="row gap-2 wrap">
+          <button class="btn btn-soft" :disabled="savingSkin || uploadingSkin === skinEditor.name" @click="pickSkin(skinEditor.name)">
+            {{ uploadingSkin === skinEditor.name ? '上传中' : '上传 PNG' }}
+          </button>
+          <button class="btn" :disabled="savingSkin" @click="restoreSkin">恢复自动来源</button>
+        </div>
+        <p class="text-3 small">
+          上传和 URL 皮肤保存在 BlockCraft 的 data/skins 中。SkinsRestorer 若使用 FILE 存储，面板读取它的玩家皮肤记录；数据库存储后端无法由面板直接读取。
+        </p>
+      </div>
+      <template #footer>
+        <button class="btn" @click="skinEditor = null">关闭</button>
+      </template>
+    </Modal>
 
     <ConfirmDialog
       :open="!!pending"
@@ -531,6 +657,15 @@ function skinLabel(p: PlayerInfo): string {
   background: #c9d1dc;
   box-shadow: inset 0 -8px 0 rgba(0, 0, 0, 0.06);
 }
+
+.skin-help {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: 12px;
+}
+.skin-help p { margin-bottom: 0; line-height: 1.55; }
+.skin-help + .btn { justify-content: center; }
 
 .tbl-wrap {
   overflow-x: auto;

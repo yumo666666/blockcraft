@@ -86,7 +86,7 @@ async function reload(channel: string) {
 </script>
 
 <template>
-  <div class="card">
+  <div class="card frp-card">
     <div class="card-head">
       <h3>FRP 穿透</h3>
       <span class="badge" :class="status?.server.reachable ? 'badge-ok' : status?.configured ? 'badge-warn' : 'badge-outline'">
@@ -113,7 +113,7 @@ async function reload(channel: string) {
         <div class="divider" />
 
         <!-- 两条通道分开显示：这也是设计上的隔离，世界通道崩了不会影响面板 -->
-        <div class="col gap-2">
+        <div class="channels-grid">
           <div v-for="ch in status.channels" :key="ch.name" class="channel-row">
             <i class="dot" :class="ch.running ? 'dot-ok' : 'dot-danger'" />
             <div class="grow">
@@ -218,6 +218,9 @@ async function reload(channel: string) {
 </template>
 
 <style scoped>
+.frp-card { display: flex; flex-direction: column; }
+.frp-card > .card-body { flex: 1; }
+.channels-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
 .channel-row {
   display: flex;
   align-items: center;
@@ -227,4 +230,5 @@ async function reload(channel: string) {
   border-radius: var(--r-sm);
   background: var(--surface-2);
 }
+@media (max-width: 520px) { .channels-grid { grid-template-columns: 1fr; } }
 </style>

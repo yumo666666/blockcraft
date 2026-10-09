@@ -152,34 +152,47 @@ function readPid(name: ChannelName): number | null {
 }
 
 export function binaryPath(): string {
-  return loadConfig().frp.binary || path.join(BIN_DIR, 'frpc');
+  const configured = loadConfig().frp.binary;
+  if (configured) {
+    if (process.platform === 'win32' && !fs.existsSync(configured) && fs.existsSync(`${configured}.exe`)) return `${configured}.exe`;
+    return configured;
+  }
+  return path.join(BIN_DIR, process.platform === 'win32' ? 'frpc.exe' : 'frpc');
 }
 
 export async function downloadBinary(): Promise<string> {
   const panel = loadConfig();
   const archMap: Record<string, string> = { arm64: 'arm64', x64: 'amd64', arm: 'arm' };
   const arch = archMap[process.arch] ?? 'amd64';
+  const osName = process.platform === 'win32' ? 'windows' : 'linux';
+  const binaryName = process.platform === 'win32' ? 'frpc.exe' : 'frpc';
   const version = process.env.BC_FRP_VERSION || '0.68.1';
-  const asset = `frp_${version}_linux_${arch}.tar.gz`;
+  const asset = `frp_${version}_${osName}_${arch}.${process.platform === 'win32' ? 'zip' : 'tar.gz'}`;
   const url = `${panel.mirrors.githubMirror}https://github.com/fatedier/frp/releases/download/v${version}/${asset}`;
   fs.mkdirSync(BIN_DIR, { recursive: true });
-  const tar = path.join(BIN_DIR, asset);
+  const archive = path.join(BIN_DIR, asset);
   logger.info(`下载 frpc`, { url });
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok || !res.body) throw bad(`下载 frpc 失败：HTTP ${res.status}`);
   const buf = Buffer.from(new Uint8Array(await res.arrayBuffer()));
-  atomicWriteFileSync(tar, buf);
+  atomicWriteFileSync(archive, buf);
   const { execFileSync } = await import('node:child_process');
-  execFileSync('tar', ['xzf', tar, '-C', BIN_DIR]);
-  const dir = fs.readdirSync(BIN_DIR).find((d) => d.startsWith(`frp_${version}_linux`));
+  if (process.platform === 'win32') {
+    const quote = (value: string) => value.replaceAll("'", "''");
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${quote(archive)}' -DestinationPath '${quote(BIN_DIR)}' -Force`], { stdio: 'ignore' });
+  } else {
+    execFileSync('tar', ['xzf', archive, '-C', BIN_DIR]);
+  }
+  const dir = fs.readdirSync(BIN_DIR).find((d) => d.startsWith(`frp_${version}_${osName}`));
   if (!dir) throw bad('解压 frpc 后没有找到目录');
-  fs.copyFileSync(path.join(BIN_DIR, dir, 'frpc'), path.join(BIN_DIR, 'frpc'));
-  fs.chmodSync(path.join(BIN_DIR, 'frpc'), 0o755);
+  const target = path.join(BIN_DIR, binaryName);
+  fs.copyFileSync(path.join(BIN_DIR, dir, binaryName), target);
+  if (process.platform !== 'win32') fs.chmodSync(target, 0o755);
   fs.rmSync(path.join(BIN_DIR, dir), { recursive: true, force: true });
-  fs.unlinkSync(tar);
-  saveConfig({ frp: { ...panel.frp, binary: path.join(BIN_DIR, 'frpc') } });
-  logger.info('frpc 已就绪', { path: path.join(BIN_DIR, 'frpc') });
-  return path.join(BIN_DIR, 'frpc');
+  fs.unlinkSync(archive);
+  saveConfig({ frp: { ...panel.frp, binary: target } });
+  logger.info('frpc 已就绪', { path: target });
+  return target;
 }
 
 export async function startChannel(name: ChannelName, opts: { force?: boolean } = {}): Promise<void> {
@@ -209,7 +222,8 @@ export async function startChannel(name: ChannelName, opts: { force?: boolean } 
   writeWithBackup(cfgFile(name), config);
   fs.mkdirSync(path.dirname(logFile(name)), { recursive: true });
   const out = fs.openSync(logFile(name), 'a');
-  const child = spawn(bin, ['-c', cfgFile(name)], { detached: true, stdio: ['ignore', out, out] });
+  const child = spawn(bin, ['-c', cfgFile(name)], { detached: true, windowsHide: true, stdio: ['ignore', out, out] });
+  fs.closeSync(out);
   child.unref();
   runtime[name].pid = child.pid ?? null;
   runtime[name].startedAt = Date.now();

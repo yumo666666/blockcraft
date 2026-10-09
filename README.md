@@ -7,7 +7,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  资源监控                    │  FRP 穿透                    │
-│  手机电量/内存/存储          │  面板通道 ●  世界通道 ●      │
+│  主机 CPU / 内存 / 磁盘      │  面板通道 ●  世界通道 ●      │
 │  各世界进程的 CPU / 内存     │  一键数据回环自检            │
 ├─────────────────────────────────────────────────────────────┤
 │  [ 家园 ] [ 温馨禅意 ] [ 主世界 ] [ ＋ 新建/导入 ]           │
@@ -23,13 +23,14 @@
 
 | 模块 | 说明 |
 |---|---|
-| **总览** | 手机与容器资源监控（能读到每个 JVM 的真实 CPU/内存）、世界便签卡片、任务进度 |
+| **总览** | 主机资源监控（每个 JVM 的真实 CPU/内存）、世界便签卡片、任务进度 |
+| **界面主题** | 白色、黑色、Minecraft 绿色三种主题，浏览器内记住选择 |
 | **世界生命周期** | 启动 / 优雅停止（保存 → 公告 → 踢人 → 关服）/ 重启；每个世界独立端口 |
 | **配置** | 名称、种子、模式、难度、PVP、白名单、正版验证、视距、内存、JVM 参数、15 项游戏规则；改完标出哪些需要重启 |
 | **控制台** | 实时日志（SSE）、命令输入、快捷命令、**定时开服/停服**，停服前 N 分钟自动公告，到点还有人在线就等最后一人下线 |
 | **备份与回退** | 按「世界名+时间」命名，删除与回退都要二次确认；回退 = 停服 → 保底另存 → 解压 → 自动启动 |
 | **MOD 管理** | 搜索 / 分页 / 来源识别（Modrinth、CurseForge、本地）/ 批量导入 / 链接下载 / 启停 / 删除 / 缺依赖检查 |
-| **玩家管理** | 在线玩家 3D 皮肤卡片（skinview3d）、设/取消管理员、踢出、白名单、拉黑；可手动上传皮肤 |
+| **玩家管理** | 在线玩家 3D 皮肤卡片（skinview3d）、设/取消管理员、踢出、白名单、拉黑；皮肤按服务器记录、面板绑定、Mojang 推测的优先级显示 |
 | **复制为新世界** | 带种子与新参数，把源世界的 MOD 与配置**真实复制**一份，几十秒得到一个全新独立档 |
 | **新建 / 导入整合包** | 五步向导建世界；或给一个压缩包，一条龙装加载器 + 下 MOD + 启动 |
 | **FRP 穿透** | 每个世界自动分配远端端口并挂上 frps；**面板自己走独立通道**，新建世界不会把面板踢下线 |
@@ -42,11 +43,35 @@
 
 要求 **Node.js ≥ 22.6**（用到原生 TypeScript 类型剥离，不需要编译步骤）。
 
+### Ubuntu
+
+在桌面 Ubuntu 上运行一个脚本即可启动。系统没有合适版本的 Node.js 时，脚本会在项目目录下载便携版运行时；首次运行会安装依赖并构建页面。
+
+```bash
+./bin/ubuntu.sh
+```
+
+服务端会在终端前台运行，浏览器会自动打开本机管理页。按 `Ctrl+C` 关闭面板；已经启动的 Minecraft 世界不会被面板退出连带关闭。
+
+### Windows
+
+解压 Windows x64 发布包后，双击 `BlockCraft.exe`。程序会启动内置 Node.js 并打开浏览器；世界、设置与皮肤保存在 `%LOCALAPPDATA%\BlockCraft`。
+
+从源码生成发布包（需要 Node.js ≥ 22.6、pnpm、Go 与网络）：
+
+```bash
+packaging/windows/build.sh
+```
+
+脚本生成 `dist-release/BlockCraft-Windows-x64.zip`。可在 Ubuntu 上交叉构建 Windows 启动器。
+
+### 从源码开发运行
+
 ```bash
 git clone <repo> blockcraft && cd blockcraft
 pnpm install
 pnpm build              # 构建前端
-node server/src/index.ts   # 默认监听 0.0.0.0:8081
+node --experimental-strip-types server/src/index.ts   # 默认监听 0.0.0.0:8081
 ```
 
 第一次启动会生成 `data/panel.json`，里面的 `panel.token` 是登录令牌：
@@ -100,18 +125,12 @@ bin/stop.sh     # 只停面板（不会结束正在运行的世界）
 
 ## 关于运行环境
 
-这套面板不假设你跑在哪种设备上：
+服务端与世界进程由 Node.js 直接启动，不依赖 Android 桥接、Bash 或 Linux 的 `/proc` 才能运行。主机监控使用 Node.js 系统信息；Linux 上补读 cgroup 限额，Windows 上通过系统进程接口读取 JVM 的 CPU 和内存。
 
-- **不依赖 systemd / 包管理器**，进程自己管；也不用 `zip`/`unzip`/`sqlite3` 之类的系统命令
-- **只用纯 JS 依赖**（没有需要 node-gyp 编译的原生模块）
-- **不依赖文件系统的特殊能力**（不用硬链接、不用 reflink；世界之间零共享）
-- **Java 缺失也能跑**：启动自检会告诉你缺哪个版本，也可以在设置页指定路径
-- 手机 / 树莓派 / 小主机 / VPS / Docker 都行；x86_64 与 arm64 都支持
-
-如果你在 **Android 的 proot 容器**里跑（本项目的开发环境就是这样），有两点值得知道：
-
-- 面板能读到 `/proc/<自己的子进程>/stat`，所以**每个世界的 CPU / 内存是真实数据**；但 `/proc/stat`、`/proc/loadavg` 被 SELinux 拦着，系统级负载会显示「不可用」而不是编一个数字
-- `/sdcard` 是 sdcardfs，不支持软链接与权限位，**项目要放在容器根文件系统里**
+- Ubuntu 与 Windows x64 都能管理多个世界；项目依赖不要求 `zip`、`unzip` 或 `sqlite3`
+- 世界目录、日志、配置与皮肤文件分别保存在 BlockCraft 数据目录
+- Java 缺失时可以在面板设置里指定路径，也可以按需下载对应版本
+- Docker、VPS、树莓派等环境仍可用；具体 Java 版本取决于加载器与 Minecraft 版本
 
 ## FRP 穿透
 
@@ -140,7 +159,8 @@ data/                      运行时数据（可整个删掉重建，不影响�
 ├── frpc-panel.toml        面板通道
 ├── frpc-worlds.toml       世界通道
 ├── store/                 下载缓存（服务端 jar / 加载器安装包 / 整合包），可随时清空
-├── skins/                 玩家皮肤缓存
+├── skins/                 玩家皮肤图片与远端缓存
+├── skin-bindings.json     离线玩家的皮肤绑定
 ├── jobs/                  长任务状态
 └── logs/                  面板日志、审计日志、控制台日志
 
@@ -171,14 +191,15 @@ instances/<世界id>/        每个世界一份，完全独立
 
 源码仓库里**不包含**任何第三方可执行文件与凭据：
 
-- `bin/frpc`（约 14MB 的第三方二进制）随用随下，面板设置页里有「下载 frpc」按钮，会自动校验版本
+- `bin/frpc` / `bin/frpc.exe` 随用随下，面板设置页里有「下载 frpc」按钮
 - `data/`、`instances/`、`.secrets/` 全部在 `.gitignore` 里
 - 前端产物 `web/dist/` 也不入库，由 `pnpm build` 生成
+- Windows 发布包由 `packaging/windows/build.sh` 生成，内置 Node.js 与双击启动器
 
 自己出一份源码包：
 
 ```bash
-git archive --format=tar.gz --prefix=blockcraft-2.0.0/ -o blockcraft-2.0.0.tar.gz HEAD
+git archive --format=tar.gz --prefix=blockcraft-2.2.0/ -o blockcraft-2.2.0.tar.gz HEAD
 ```
 
 ## 测试
@@ -214,4 +235,4 @@ pnpm typecheck && pnpm build && pnpm test
 - **不管理 Paper 插件**（只提示 `plugins/` 路径，不解析插件兼容性）
 - **管不了光影 / 客户端资源包**：那是客户端渲染的事，服务端不加载
 - **Java 版与基岩版协议不通**：这个面板只管 Java 版服务端
-- 离线模式（`online-mode=false`）下服务端不向 Mojang 校验账号，玩家皮肤只能按**同名正版账号**推测，界面上会标注「推测」，也可以手动上传
+- 离线模式（`online-mode=false`）下服务端不向 Mojang 校验账号；SkinsRestorer 文件存储、BlockCraft 绑定、同名正版推测依次兜底。SkinsRestorer 使用数据库后端时，面板无法直接读取其玩家记录

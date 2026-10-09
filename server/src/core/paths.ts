@@ -28,6 +28,7 @@ export const PANEL_CONFIG_FILE = path.join(DATA_DIR, 'panel.json');
 export const PORTS_FILE = path.join(DATA_DIR, 'ports.json');
 export const MODS_CACHE_FILE = path.join(DATA_DIR, 'mods-cache.json');
 export const PLAYERS_CACHE_FILE = path.join(DATA_DIR, 'players-cache.json');
+export const SKIN_BINDINGS_FILE = path.join(DATA_DIR, 'skin-bindings.json');
 export const JOBS_DIR = path.join(DATA_DIR, 'jobs');
 export const AUDIT_FILE = path.join(LOG_DIR, 'audit.jsonl');
 

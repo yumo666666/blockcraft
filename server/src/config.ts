@@ -45,7 +45,7 @@ export function defaultConfig(): PanelConfig {
     },
     frp: {
       enabled: Boolean(secrets.FRPS_HOST),
-      binary: path.join(PROJECT_ROOT, 'bin', 'frpc'),
+      binary: path.join(PROJECT_ROOT, 'bin', process.platform === 'win32' ? 'frpc.exe' : 'frpc'),
       serverAddr: secrets.FRPS_HOST || '',
       serverPort: Number(secrets.FRPS_BIND_PORT || 7000),
       token: secrets.FRPS_TOKEN || '',

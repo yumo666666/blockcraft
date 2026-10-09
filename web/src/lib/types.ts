@@ -31,33 +31,21 @@ export interface InstanceSummary {
   lastError: string | null;
 }
 
-export interface DeviceInfo {
-  model: string;
-  android: string;
-  battery: number | null;
-  charging: boolean | null;
-  network: string;
-  screen: string;
-  storageFree: number | null;
-  storageTotal: number | null;
-  memoryFree: number | null;
-  memoryTotal: number | null;
-}
-
 export interface SystemSnapshot {
-  device: DeviceInfo | null;
   memory: {
     totalMb: number;
     usedMb: number;
     availableMb: number;
     swapTotalMb: number;
     swapUsedMb: number;
+    swapAvailable: boolean;
     loadAvgAvailable: boolean;
     loadAvg: number | null;
   };
   disk: { totalGb: number; freeGb: number; usedGb: number };
   panel: { pid: number; rss: number; cpu: number; uptime: number };
   cpuCount: number;
+  cpuPercent: number | null;
   platform: string;
   arch: string;
   hostname: string;

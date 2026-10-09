@@ -1,12 +1,12 @@
 {
   "name": "@blockcraft/server",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.2.0",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "dev": "node --watch src/index.ts",
-    "start": "node src/index.ts"
+    "dev": "node --experimental-strip-types --watch src/index.ts",
+    "start": "node --experimental-strip-types src/index.ts"
   },
   "dependencies": {
     "express": "^4.21.2",

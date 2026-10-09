@@ -8,8 +8,8 @@ import { atomicWriteFileSync } from '../core/fsx.ts';
 import { busy, conflict, notFound } from '../core/errors.ts';
 import { createLogger } from '../core/logger.ts';
 import { withLock } from '../core/lock.ts';
-import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile, writeLaunchScript } from '../launcher/index.ts';
-import { processStat } from './systemService.ts';
+import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile } from '../launcher/index.ts';
+import { processCommandLine, processStat } from './systemService.ts';
 import { latestCrashReport } from '../core/crashReport.ts';
 import { evCrash, evReady, evStart, evStop } from './eventLog.ts';
 import { pingServer } from '../core/mcping.ts';
@@ -89,6 +89,10 @@ class ConsoleBuffer extends EventEmitter {
 
   text(): string {
     return this.lines.map((l) => l.text).join('\n');
+  }
+
+  textSince(seq: number): string {
+    return this.lines.filter((line) => line.seq > seq).map((line) => line.text).join('\n');
   }
 }
 
@@ -213,6 +217,7 @@ interface RunningProc {
   child: ChildProcess;
   pid: number;
   startedAt: number;
+  logSeqAtStart: number;
   intentional: boolean;
 }
 
@@ -250,7 +255,7 @@ export function alivePid(id: string): number | null {
   if (!isAlive(pid)) return null;
   // 校验 cmdline 里确实是我们的服务端，避免 PID 复用误判
   try {
-    const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    const cmd = processCommandLine(pid) ?? '';
     if (!/java/.test(cmd) || !/(nogui|unix_args)/.test(cmd)) return null;
   } catch {
     return null;
@@ -308,7 +313,9 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
   let status: InstanceStatus = pid ? 'starting' : 'stopped';
 
   if (pid) {
-    const { status: logStatus, progress: p } = detectPhase(console_(id).text());
+    const runningProc = procs.get(id);
+    const logText = runningProc ? console_(id).textSince(runningProc.logSeqAtStart) : console_(id).text();
+    const { status: logStatus, progress: p } = detectPhase(logText);
     progress = p;
     if (logStatus === 'running') {
       status = 'running';
@@ -494,11 +501,11 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
       return { ok: false, error: `缺少服务端文件：${check.missing.join('、')}。请先在「配置」里重新安装这个世界的服务端。` };
     }
 
-    // 3) 生成 JVM 参数与启动脚本
+    // 3) 生成 JVM 参数。Node 直接启动 Java，Windows 和 Linux 使用同一条路径。
     writeJvmArgsFile(serverDir, check.plan);
-    const script = writeLaunchScript({ instanceDir: dir, serverDir, javaPath, plan: check.plan, useArgFile: check.plan.useArgFile });
-    atomicWriteFileSync(path.join(dir, 'launch.sh'), script);
-    fs.chmodSync(path.join(dir, 'launch.sh'), 0o755);
+    const javaArgs = check.plan.useArgFile
+      ? ['@user_jvm_args.txt', ...check.plan.serverArgs]
+      : [...check.plan.jvmArgs, ...check.plan.serverArgs];
     try {
       fs.unlinkSync(intentFile(id));
     } catch {
@@ -515,29 +522,30 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
       return { ok: false, error: `游戏端口 ${cfg.port} 已被占用，请到「显示端口」里重新分配。` };
     }
 
-    const logStream = fs.createWriteStream(path.join(dir, 'logs', 'launch.log'), { flags: 'a' });
-    const child = spawn('/bin/bash', [path.join(dir, 'launch.sh')], {
+    const logFile = path.join(dir, 'logs', 'server.out');
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    const logFd = fs.openSync(logFile, 'a');
+    startTail(id);
+    const logSeqAtStart = console_(id).seq;
+    const child = spawn(javaPath, javaArgs, {
       cwd: serverDir,
       detached: true,
-      // 服务端自己的输出由 launch.sh 写进 logs/server.out，面板只 tail 它
-      stdio: ['ignore', 'ignore', 'ignore'],
+      windowsHide: true,
+      // 留着一个未关闭的输入管道，避免服务端控制台线程在 EOF 后空转；游戏命令走 RCON。
+      // stdout/stderr 直写文件，面板重启后仍可从文件尾部续读。
+      stdio: ['pipe', logFd, logFd],
     });
+    fs.closeSync(logFd);
     child.unref();
+    const stdin = child.stdin as (typeof child.stdin & { unref?: () => void }) | null;
+    stdin?.unref?.();
     if (!child.pid) return { ok: false, error: '进程启动失败' };
     const pid = child.pid;
-    procs.set(id, { child, pid, startedAt: Date.now() / 1000, intentional: false });
+    const startedAt = Date.now() / 1000;
+    procs.set(id, { child, pid, startedAt, logSeqAtStart, intentional: false });
     atomicWriteFileSync(pidFile(id), String(pid));
     attachOutput(child, id);
-    startTail(id);
-    const buf = console_(id);
-    buf.on('line', (l: ConsoleLine) => {
-      try {
-        logStream.write(l.text + '\n');
-      } catch {
-        /* ignore */
-      }
-    });
-    I.saveState(id, { status: 'starting', pid, startedAt: Date.now() / 1000, phase: '正在启动', lastError: null, intentionalStop: false, players: 0 });
+    I.saveState(id, { status: 'starting', pid, startedAt, phase: '正在启动', lastError: null, intentionalStop: false, players: 0 });
     evStart({ id, name: cfg.name }, `${cfg.loader} ${cfg.mc}，Xmx ${cfg.memoryMb}M`);
     logger.info(`世界 ${id} 启动中（PID ${pid}，${check.plan.how}）`);
 
@@ -837,7 +845,7 @@ export function reconcile(): void {
     if (pid && isAlive(pid)) {
       let cmdline = '';
       try {
-        cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+        cmdline = processCommandLine(pid) ?? '';
       } catch {
         /* ignore */
       }
