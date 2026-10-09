@@ -1,0 +1,48 @@
+name: Windows Release Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to package (for example v2.2.0)
+        required: true
+        type: string
+        default: v2.2.0
+
+permissions:
+  contents: write
+
+jobs:
+  windows-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.24.2
+
+      - name: Build Windows x64 package
+        run: ./packaging/windows/build.sh
+
+      - name: Create checksum
+        run: sha256sum dist-release/BlockCraft-Windows-x64.zip > dist-release/BlockCraft-Windows-x64.zip.sha256
+
+      - name: Attach package to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            dist-release/BlockCraft-Windows-x64.zip
+            dist-release/BlockCraft-Windows-x64.zip.sha256
+          overwrite_files: true
