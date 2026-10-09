@@ -80,16 +80,16 @@ function proxyBlock(name: string, localPort: number, remotePort: number): string
 }
 
 /** 面板通道：只有一个代理，只有用户显式改「面板隧道」时才重写 */
-export function renderPanelConfig(panel: PanelConfig): string {
+export function renderPanelConfig(panel: PanelConfig, proxyName = 'panel'): string {
   const lines = channelHeader(panel, 'panel');
   if (panel.frp.exposePanel && panel.frp.enabled) {
-    lines.push(...proxyBlock('panel', panel.panel.port, panel.frp.panelRemotePort));
+    lines.push(...proxyBlock(proxyName, panel.panel.port, panel.frp.panelRemotePort));
   }
   return lines.join('\n');
 }
 
 /** 世界通道：所有世界代理。文件名里带上世界的「显示名」，方便在 frps 上认人 */
-export function renderWorldsConfig(panel: PanelConfig): string {
+export function renderWorldsConfig(panel: PanelConfig, proxyNames: Record<string, string> = {}): string {
   const lines = channelHeader(panel, 'worlds');
   for (const id of I.listInstanceIds()) {
     let cfg;
@@ -101,9 +101,103 @@ export function renderWorldsConfig(panel: PanelConfig): string {
     if (!cfg.frp.enabled) continue;
     const remote = cfg.frp.remotePort;
     if (!remote) continue;
-    lines.push(...proxyBlock(`mc-${id}`, cfg.port, remote));
+    lines.push(...proxyBlock(proxyNames[id] ?? `mc-${id}`, cfg.port, remote));
   }
   return lines.join('\n');
+}
+
+function frpClientSuffix(): string {
+  const file = path.join(DATA_DIR, 'frp-client-id');
+  try {
+    const existing = fs.readFileSync(file, 'utf8').trim();
+    if (/^[a-f0-9]{8}$/.test(existing)) return existing;
+  } catch {
+    /* first FRP use */
+  }
+  const suffix = crypto.randomBytes(4).toString('hex');
+  atomicWriteFileSync(file, `${suffix}\n`);
+  return suffix;
+}
+
+function suffixedProxyName(base: string, suffix: string, attempt = 1): string {
+  const extra = attempt === 1 ? '' : `-${attempt}`;
+  const tail = `-${suffix}${extra}`;
+  return `${base.slice(0, Math.max(1, 120 - tail.length))}${tail}`;
+}
+
+function isCurrentProxyName(name: string, base: string, suffix: string): boolean {
+  if (name === base) return true;
+  const match = name.match(/-([a-f0-9]{8})(?:-(\d+))?$/);
+  if (!match || match[1] !== suffix) return false;
+  const attempt = match[2] ? Number(match[2]) : 1;
+  return Number.isSafeInteger(attempt) && attempt >= 1 && suffixedProxyName(base, suffix, attempt) === name;
+}
+
+/**
+ * FRPS proxy names are server-wide. Keep a free legacy name when the Dashboard
+ * confirms it is available; otherwise namespace it by this portable install.
+ * If the Dashboard is unavailable, use the namespace by default because the
+ * client has no other way to enumerate names owned by other FRPC processes.
+ */
+async function proxyNamesForChannel(channel: ChannelName, panel: PanelConfig): Promise<{ panelName: string; worldNames: Record<string, string> }> {
+  const bases = channel === 'panel'
+    ? (panel.frp.enabled && panel.frp.exposePanel ? ['panel'] : [])
+    : I.listInstanceIds().flatMap((id) => {
+      try {
+        const cfg = I.getConfig(id);
+        return cfg.frp.enabled && cfg.frp.remotePort ? [`mc-${id}`] : [];
+      } catch {
+        return [];
+      }
+    });
+  if (bases.length === 0) return { panelName: 'panel', worldNames: {} };
+
+  const [dashboard, localStatus] = await Promise.all([
+    dashboardProxies(),
+    apiCall(channel, '/api/status'),
+  ]);
+  const local = ((localStatus.data as { tcp?: { name?: string; status?: string }[] } | null)?.tcp ?? [])
+    .filter((proxy) => proxy.status === 'running' && proxy.name)
+    .map((proxy) => proxy.name!);
+  const occupied = new Set(dashboard.available ? dashboard.proxies.map((proxy) => proxy.name) : []);
+  // A proxy that is already running in this channel belongs to this BlockCraft
+  // instance, even though the FRPS Dashboard also lists it.
+  for (const name of local) occupied.delete(name);
+
+  const suffix = frpClientSuffix();
+  const assigned = new Map<string, string>();
+  for (const base of bases) {
+    const current = local.find((name) => isCurrentProxyName(name, base, suffix));
+    if (current) {
+      assigned.set(base, current);
+      continue;
+    }
+    if (dashboard.available && !occupied.has(base)) {
+      assigned.set(base, base);
+      occupied.add(base);
+      continue;
+    }
+    let attempt = 1;
+    let candidate = suffixedProxyName(base, suffix, attempt);
+    while (occupied.has(candidate)) {
+      attempt += 1;
+      candidate = suffixedProxyName(base, suffix, attempt);
+    }
+    assigned.set(base, candidate);
+    occupied.add(candidate);
+  }
+
+  return {
+    panelName: assigned.get('panel') ?? 'panel',
+    worldNames: Object.fromEntries([...assigned.entries()].filter(([base]) => base.startsWith('mc-')).map(([base, name]) => [base.slice(3), name])),
+  };
+}
+
+async function renderChannelConfig(channel: ChannelName, panel = loadConfig()): Promise<string> {
+  const names = await proxyNamesForChannel(channel, panel);
+  return channel === 'panel'
+    ? renderPanelConfig(panel, names.panelName)
+    : renderWorldsConfig(panel, names.worldNames);
 }
 
 function writeWithBackup(file: string, content: string): void {
@@ -206,6 +300,12 @@ export async function startChannel(name: ChannelName, opts: { force?: boolean } 
   const existing = readPid(name);
   if (existing && !opts.force) {
     runtime[name].pid = existing;
+    const desired = await renderChannelConfig(name, panel);
+    const current = fs.existsSync(cfgFile(name)) ? fs.readFileSync(cfgFile(name), 'utf8') : '';
+    if (current !== desired) {
+      const reloaded = await reloadChannel(name);
+      if (!reloaded.ok) logger.warn(`frpc(${name}) 检测到代理名称变化，但热重载失败`, { error: reloaded.error });
+    }
     return;
   }
   if (existing && opts.force) {
@@ -223,7 +323,7 @@ export async function startChannel(name: ChannelName, opts: { force?: boolean } 
       return;
     }
   }
-  const config = name === 'panel' ? renderPanelConfig(panel) : renderWorldsConfig(panel);
+  const config = await renderChannelConfig(name, panel);
   writeWithBackup(cfgFile(name), config);
   fs.mkdirSync(path.dirname(logFile(name)), { recursive: true });
   const out = fs.openSync(logFile(name), 'a');
@@ -262,7 +362,7 @@ export function stopChannel(name: ChannelName): void {
 /** 热重载（增量，不会拆掉已有连接）。失败时按配置决定是否回滚上一版 */
 export async function reloadChannel(name: ChannelName, opts: { rollback?: boolean } = {}): Promise<{ ok: boolean; error?: string }> {
   const panel = loadConfig();
-  const config = name === 'panel' ? renderPanelConfig(panel) : renderWorldsConfig(panel);
+  const config = await renderChannelConfig(name, panel);
   const file = cfgFile(name);
   const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
   writeWithBackup(file, config);
@@ -343,6 +443,7 @@ export interface FrpStatus {
 }
 
 let lastLatency: number | null = null;
+let selfCheckInProgress = false;
 
 async function tcpRtt(host: string, port: number, timeoutMs = 3000): Promise<number | null> {
   return new Promise((resolve) => {
@@ -435,7 +536,7 @@ export async function status(): Promise<FrpStatus> {
   }
   const reachable = panel.frp.serverAddr ? await tcpRtt(panel.frp.serverAddr, panel.frp.serverPort) : null;
   if (reachable !== null) lastLatency = reachable;
-  const panelProxy = proxies.find((p) => p.name === 'panel');
+  const panelProxy = proxies.find((p) => p.name === 'panel' || p.name.startsWith('panel-'));
   return {
     enabled: panel.frp.enabled,
     configured: Boolean(panel.frp.serverAddr),
@@ -491,8 +592,8 @@ export async function ensureRemotePort(id: string): Promise<number> {
 
 export async function removeInstance(id: string): Promise<void> {
   const panel = loadConfig();
-  writeWithBackup(cfgFile('worlds'), renderWorldsConfig(panel));
   if (panel.frp.enabled) await reloadChannel('worlds');
+  else writeWithBackup(cfgFile('worlds'), await renderChannelConfig('worlds', panel));
 }
 
 // ------------------------------------------------------------------ 自检（数据回环）
@@ -514,40 +615,71 @@ export async function selfCheck(): Promise<SelfCheckResult> {
   if (!panel.frp.serverAddr) {
     return { ok: false, steps: [{ step: '配置', ok: false, detail: '还没填 FRP 服务器地址' }], latencyMs: null, error: '未配置' };
   }
+  if (selfCheckInProgress) {
+    return { ok: false, steps: [{ step: '自检', ok: false, detail: '已有一次 FRP 回环检查正在运行' }], latencyMs: null, error: '自检进行中' };
+  }
+  selfCheckInProgress = true;
   // 1) 候选端口：取段内最后一个，尽量不占用常用端口
   const candidate = panel.portRanges.frpRemote[1];
   steps.push({ step: '选择候选端口', ok: true, detail: `使用远端端口 ${candidate}` });
 
   // 2) 本地 echo 服务
   const nonce = crypto.randomBytes(8).toString('hex');
+  const echoSockets = new Set<net.Socket>();
   const server = net.createServer((sock) => {
-    sock.on('data', (d: Buffer) => sock.write(Buffer.concat([Buffer.from('ECHO:'), d])));
+    echoSockets.add(sock);
+    // The test client intentionally closes its socket during cleanup. FRP can
+    // propagate that close as ECONNRESET; every accepted socket must consume it.
+    sock.on('error', () => {});
+    sock.once('close', () => echoSockets.delete(sock));
+    sock.on('data', (d: Buffer) => {
+      if (sock.destroyed) return;
+      sock.write(Buffer.concat([Buffer.from('ECHO:'), d]), (error) => {
+        if (error) sock.destroy();
+      });
+    });
   });
-  const localPort = await new Promise<number>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port));
-  });
-
-  // 3) 临时 frpc 通道
-  const tmpName = 'selftest';
-  const tmpCfg = path.join(DATA_DIR, 'frpc-selftest.toml');
-  const adminTmp = 7499;
-  const lines = [
-    `serverAddr = ${tomlString(panel.frp.serverAddr)}`,
-    `serverPort = ${panel.frp.serverPort}`,
-    'auth.method = "token"',
-    `auth.token = ${tomlString(panel.frp.token)}`,
-    `transport.tls.enable = ${panel.frp.tls}`,
-    'webServer.addr = "127.0.0.1"',
-    `webServer.port = ${adminTmp}`,
-    ...proxyBlock('bc-selftest', localPort, candidate),
-  ];
-  atomicWriteFileSync(tmpCfg, lines.join('\n'));
-  const bin = binaryPath();
   let child: ReturnType<typeof spawn> | null = null;
+  let childSpawnError: Error | null = null;
+  let serverListening = false;
+  const tmpCfg = path.join(DATA_DIR, `frpc-selftest-${nonce}.toml`);
   try {
+    const localPort = await new Promise<number>((resolve, reject) => {
+      const onError = (error: Error) => reject(error);
+      server.once('error', onError);
+      server.on('error', (error) => logger.warn('FRP 回环 echo 服务错误', { error: String(error) }));
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', onError);
+        serverListening = true;
+        resolve((server.address() as net.AddressInfo).port);
+      });
+    });
+    const adminTmp = await new Promise<number>((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', () => {
+        const address = probe.address() as net.AddressInfo;
+        probe.close((error) => error ? reject(error) : resolve(address.port));
+      });
+    });
+
+    // 3) 临时 frpc 通道；name 和 admin port 都独立，避免与已有连接/并行检查冲突。
+    const tmpName = `bc-selftest-${nonce}`;
+    const lines = [
+      `serverAddr = ${tomlString(panel.frp.serverAddr)}`,
+      `serverPort = ${panel.frp.serverPort}`,
+      'auth.method = "token"',
+      `auth.token = ${tomlString(panel.frp.token)}`,
+      `transport.tls.enable = ${panel.frp.tls}`,
+      'webServer.addr = "127.0.0.1"',
+      `webServer.port = ${adminTmp}`,
+      ...proxyBlock(tmpName, localPort, candidate),
+    ];
+    atomicWriteFileSync(tmpCfg, lines.join('\n'));
+    const bin = binaryPath();
     if (!fs.existsSync(bin)) throw bad('本机还没有 frpc，请先在 FRP 设置里下载');
     child = spawn(bin, ['-c', tmpCfg], { detached: true, stdio: 'ignore' });
+    child.once('error', (error) => { childSpawnError = error; });
     child.unref();
     steps.push({ step: '启动临时通道', ok: true, detail: `候选端口 ${candidate} → 本地 ${localPort}` });
 
@@ -556,8 +688,11 @@ export async function selfCheck(): Promise<SelfCheckResult> {
     const auth = Buffer.from(`${panel.frp.adminUser}:${panel.frp.adminPassword}`).toString('base64');
     for (let i = 0; i < 12; i++) {
       await sleep(700);
+      if (childSpawnError) throw childSpawnError;
+      if (child.exitCode !== null || child.signalCode !== null) break;
       try {
         const res = await fetch(`http://127.0.0.1:${adminTmp}/api/status`, { headers: { authorization: `Basic ${auth}` } });
+        if (!res.ok) continue;
         const json = (await res.json()) as { tcp?: { status?: string }[] };
         if (json.tcp?.[0]?.status === 'running') {
           online = true;
@@ -578,21 +713,25 @@ export async function selfCheck(): Promise<SelfCheckResult> {
     const rtt = await new Promise<number | null>((resolve) => {
       const t0 = Date.now();
       const sock = net.createConnection({ host: panel.frp.serverAddr, port: candidate });
+      let settled = false;
+      let received = '';
+      const finish = (value: number | null) => {
+        if (settled) return;
+        settled = true;
+        sock.destroy();
+        resolve(value);
+      };
       sock.setTimeout(6000);
-      sock.once('connect', () => sock.write(Buffer.from(`PING-${nonce}`)));
-      sock.once('data', (d) => {
-        const text = d.toString();
-        sock.destroy();
-        resolve(text.includes(`ECHO:PING-${nonce}`) ? Date.now() - t0 : null);
+      sock.once('connect', () => sock.write(Buffer.from(`PING-${nonce}`), (error) => {
+        if (error) finish(null);
+      }));
+      sock.on('data', (d) => {
+        received += d.toString();
+        if (received.includes(`ECHO:PING-${nonce}`)) finish(Date.now() - t0);
       });
-      sock.once('error', () => {
-        sock.destroy();
-        resolve(null);
-      });
-      sock.once('timeout', () => {
-        sock.destroy();
-        resolve(null);
-      });
+      sock.once('error', () => finish(null));
+      sock.once('timeout', () => finish(null));
+      sock.once('close', () => finish(null));
     });
     steps.push({
       step: '公网数据回环',
@@ -604,19 +743,23 @@ export async function selfCheck(): Promise<SelfCheckResult> {
     steps.push({ step: '自检异常', ok: false, detail: String(err) });
     return { ok: false, steps, latencyMs: null, error: String(err) };
   } finally {
-    if (child?.pid) {
+    if (child?.pid && child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>((resolve) => child!.once('exit', () => resolve()));
       try {
-        process.kill(child.pid, 'SIGTERM');
+        child.kill('SIGTERM');
       } catch {
         /* ignore */
       }
+      await Promise.race([exited, sleep(1500)]);
     }
-    server.close();
+    for (const sock of echoSockets) sock.destroy();
+    if (serverListening) await new Promise<void>((resolve) => server.close(() => resolve()));
     try {
       fs.unlinkSync(tmpCfg);
     } catch {
       /* ignore */
     }
+    selfCheckInProgress = false;
   }
 }
 
@@ -631,7 +774,7 @@ export async function startFrpService(): Promise<void> {
   await startChannel('worlds');
   // 世界配置可能过了很久，热重载一次保证与登记表一致
   if (isAlive(readPid('worlds'))) {
-    const diff = fs.existsSync(cfgFile('worlds')) && fs.readFileSync(cfgFile('worlds'), 'utf8') !== renderWorldsConfig(panel);
+    const diff = fs.existsSync(cfgFile('worlds')) && fs.readFileSync(cfgFile('worlds'), 'utf8') !== await renderChannelConfig('worlds', panel);
     if (diff) await reloadChannel('worlds');
   }
 }
