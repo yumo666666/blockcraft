@@ -14,7 +14,7 @@ import { latestCrashReport } from '../core/crashReport.ts';
 import { evCrash, evReady, evStart, evStop } from './eventLog.ts';
 import { pingServer } from '../core/mcping.ts';
 import * as systemService from './systemService.ts';
-import { autoJava } from './javaService.ts';
+import { autoJava, inspectJava, selectCompatibleJava } from './javaService.ts';
 import * as frp from './frpService.ts';
 import * as I from './instanceService.ts';
 import type { InstanceConfig, InstanceState, InstanceStatus } from '../types.ts';
@@ -242,10 +242,15 @@ function readPidFile(id: string): number | null {
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  // kill(pid, 0) also succeeds for a Linux zombie; it has exited and cannot be stopped again.
+  if (process.platform === 'linux') {
+    const stat = processStat(pid);
+    return stat !== null && stat.state !== 'Z' && stat.state !== 'X';
+  }
+  return true;
 }
 
 export function alivePid(id: string): number | null {
@@ -487,16 +492,24 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
 
     // 1) Java 解析
     const java = autoJava(cfg.mc, cfg.loader);
-    if (!java.runtime) throw conflict(java.reason);
-    if (cfg.javaPath && fs.existsSync(cfg.javaPath) && cfg.javaMajor && java.runtime.major >= (cfg.javaMajor ?? 0)) {
-      // 用户手动指定且满足要求时优先用它
-    } else if (cfg.javaMajor !== java.required || !cfg.javaPath) {
-      I.saveConfig(id, { javaMajor: java.required, javaPath: java.runtime.path });
+    const configuredJava = cfg.javaPath && fs.existsSync(cfg.javaPath) ? inspectJava(cfg.javaPath) : null;
+    const selectedJava = selectCompatibleJava(configuredJava, java.runtime ? [java.runtime] : [], java.required);
+    if (!selectedJava) {
+      const configuredHint = cfg.javaPath && fs.existsSync(cfg.javaPath) && configuredJava
+        ? `当前配置的 Java ${configuredJava.major} 低于要求的 Java ${java.required}。`
+        : '';
+      throw conflict(`${configuredHint}${java.reason}`);
     }
-    const javaPath = cfg.javaPath && fs.existsSync(cfg.javaPath) ? cfg.javaPath : java.runtime.path;
+    // 配置里保存的 javaMajor 不能证明 javaPath 实际指向该版本；启动前直接探测路径，
+    // 避免世界迁移或系统 Java 更新后继续误用旧 Java。
+    const launchCfg: InstanceConfig = { ...cfg, javaMajor: selectedJava.major, javaPath: selectedJava.path };
+    if (cfg.javaMajor !== selectedJava.major || cfg.javaPath !== selectedJava.path) {
+      I.saveConfig(id, { javaMajor: selectedJava.major, javaPath: selectedJava.path });
+    }
+    const javaPath = selectedJava.path;
 
     // 2) 产物校验
-    const check = validateInstall(cfg, serverDir);
+    const check = validateInstall(launchCfg, serverDir);
     if (!check.ok) {
       return { ok: false, error: `缺少服务端文件：${check.missing.join('、')}。请先在「配置」里重新安装这个世界的服务端。` };
     }

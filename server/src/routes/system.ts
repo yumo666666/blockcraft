@@ -13,6 +13,8 @@ import { javaSummary, listJava, autoJava } from '../services/javaService.ts';
 import * as I from '../services/instanceService.ts';
 import { dirSizeCached } from '../services/overview.ts';
 
+let shutdownAfterWorldsInProgress = false;
+
 export function registerSystemRoutes(app: Express): void {
   app.get('/api/panel', (_req, res) => {
     const cfg = loadConfig();
@@ -179,6 +181,45 @@ export function registerSystemRoutes(app: Express): void {
   app.post('/api/panel/shutdown', (_req, res) => {
     res.json({ ok: true, message: '面板即将退出（不会结束正在运行的世界）' });
     setTimeout(() => process.exit(0), 300);
+  });
+
+  /** Windows 托盘退出：先并行安全停止所有活动世界，全部成功后再退出面板。 */
+  app.post('/api/panel/shutdown-after-worlds', async (_req, res) => {
+    if (shutdownAfterWorldsInProgress) {
+      res.status(409).json({ error: { code: 'BUSY', message: '正在停止世界，请稍候' } });
+      return;
+    }
+    shutdownAfterWorldsInProgress = true;
+    try {
+      const worlds = await summarizeAll();
+      const active = worlds.filter((world) => ['running', 'starting', 'stopping', 'stuck'].includes(world.status));
+      const results = await Promise.all(
+        active.map(async (world) => ({
+          world,
+          result: await sup.stop(world.id, { message: 'BlockCraft 正在关闭，服务器即将停止', timeoutSec: 120 }).catch((error) => ({
+            ok: false,
+            graceful: false,
+            error: String(error),
+          })),
+        })),
+      );
+      const failed = results.filter(({ result }) => !result.ok);
+      if (failed.length) {
+        shutdownAfterWorldsInProgress = false;
+        res.status(409).json({
+          error: {
+            code: 'CONFLICT',
+            message: `以下世界未能停止，面板仍保持运行：${failed.map(({ world }) => world.name).join('、')}`,
+          },
+        });
+        return;
+      }
+      res.json({ ok: true, stopped: active.length });
+      setTimeout(() => process.exit(0), 350);
+    } catch (error) {
+      shutdownAfterWorldsInProgress = false;
+      res.status(500).json({ error: { code: 'INTERNAL', message: String(error) } });
+    }
   });
 
   app.get('/api/versions', async (_req, res) => {

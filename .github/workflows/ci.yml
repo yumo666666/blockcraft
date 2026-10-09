@@ -20,6 +20,10 @@ jobs:
           node-version: '24'
           cache: pnpm
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.24.2
+
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
@@ -35,3 +39,7 @@ jobs:
 
       - name: 服务端跨平台启动参数检查
         run: pnpm test:server
+
+      - name: 编译 Windows 托盘启动器
+        working-directory: packaging/windows
+        run: GOOS=windows GOARCH=amd64 go build -mod=readonly -trimpath -o /tmp/BlockCraft.exe .

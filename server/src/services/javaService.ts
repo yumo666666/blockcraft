@@ -55,7 +55,7 @@ function javaMajorFromVersionOutput(out: string): number | null {
  * 注意：`java -version` 把版本打到 **stderr**（stdout 是空的），而且退出码是 0，
  * 所以不能用 execFileSync 成功时的 stdout —— 必须两个流都收。这里用 spawnSync。
  */
-function probeJava(bin: string): JavaRuntime | null {
+export function inspectJava(bin: string): JavaRuntime | null {
   let stdout = '';
   let stderr = '';
   try {
@@ -89,7 +89,7 @@ export function listJava(force = false): JavaRuntime[] {
   const found = new Map<number, JavaRuntime>();
   const check = (bin: string) => {
     if (!fs.existsSync(bin)) return;
-    const rt = probeJava(bin);
+    const rt = inspectJava(bin);
     if (!rt) return;
     const cur = found.get(rt.major);
     // managed 优先，其次版本号更高的
@@ -131,13 +131,19 @@ export function requiredJavaFor(mc: string, loader: Loader): number {
   return 17;
 }
 
-/** 向上取最近的可用版本（1.17 声明 16 → 用 17；没有 17 就用 21） */
+/** 选兼容版本：优先用户配置的 Java，否则选已检测到的最低兼容版本。 */
+export function selectCompatibleJava(
+  configured: JavaRuntime | null,
+  available: JavaRuntime[],
+  required: number,
+): JavaRuntime | null {
+  if (configured && configured.major >= required) return configured;
+  return available.filter((runtime) => runtime.major >= required).sort((a, b) => a.major - b.major)[0] ?? null;
+}
+
+/** 向上取最近的可用版本（1.17 声明 16 → 用 17；没有兼容版本就明确失败） */
 export function resolveJava(required: number): JavaRuntime | null {
-  const all = listJava();
-  if (!all.length) return null;
-  const exactOrHigher = all.filter((j) => j.major >= required);
-  if (exactOrHigher.length) return exactOrHigher[0];
-  return all[all.length - 1];
+  return selectCompatibleJava(null, listJava(), required);
 }
 
 export interface JavaResolution {
@@ -150,7 +156,11 @@ export function autoJava(mc: string, loader: Loader): JavaResolution {
   const required = requiredJavaFor(mc, loader);
   const runtime = resolveJava(required);
   if (!runtime) {
-    return { runtime: null, required, reason: `需要 Java ${required}，但本机没有检测到任何 Java。请安装 JDK，或在设置里手动指定 java 路径。` };
+    const installed = listJava();
+    const reason = installed.length
+      ? `这个世界需要 Java ${required}，但检测到的最高版本只有 Java ${installed.at(-1)!.major}。请安装 Java ${required} 或更高版本，或指定兼容的 java 路径。`
+      : `需要 Java ${required}，但本机没有检测到 Java。请安装 JDK，或指定 java 路径。`;
+    return { runtime: null, required, reason };
   }
   const reason =
     runtime.major === required
@@ -205,7 +215,7 @@ export async function downloadJava(major: number): Promise<JavaRuntime> {
   const extracted = fs.readdirSync(JDK_DIR).find((d) => d.startsWith('jdk-'));
   if (!extracted) throw new Error('JDK 解压后没有找到目录');
   cache = null;
-  const rt = probeJava(path.join(JDK_DIR, extracted, 'bin', javaFileName()));
+  const rt = inspectJava(path.join(JDK_DIR, extracted, 'bin', javaFileName()));
   if (!rt) throw new Error('下载的 JDK 无法执行');
   logger.info(`JDK ${major} 已就绪`, { path: rt.path });
   return rt;

@@ -354,7 +354,7 @@ async function killWorld(id: string) {
           <div class="card-head"><h3>关于</h3></div>
           <div class="card-body col gap-2">
             <div class="kv">
-              <div class="kv-row"><span class="kv-key">版本</span><span class="kv-val">BlockCraft 2.2.2</span></div>
+              <div class="kv-row"><span class="kv-key">版本</span><span class="kv-val">BlockCraft 2.2.3</span></div>
               <div class="kv-row"><span class="kv-key">项目目录</span><span class="kv-val mono small ellipsis">{{ panel.projectRoot }}</span></div>
               <div class="kv-row"><span class="kv-key">数据目录</span><span class="kv-val mono small ellipsis">{{ panel.dataDir }}</span></div>
               <div class="kv-row"><span class="kv-key">世界目录</span><span class="kv-val mono small ellipsis">{{ panel.instanceDir }}</span></div>

@@ -157,7 +157,7 @@ export function detectFailure(logText: string): string | null {
   const tail = logText.slice(-64 * 1024);
   const rules: [RegExp, string][] = [
     [/java\.lang\.UnsupportedClassVersionError/i, 'Java 版本过低，请提高该世界的 Java 版本'],
-    [/Could not find or load main class/i, '找不到主类，服务端安装可能不完整（Java 8 不支持 @argfile）'],
+    [/(?:Could not find or load main class|找不到或无法加载主类).*?(?:@user_jvm_args\.txt)?/i, 'Java 版本过低或启动参数文件无法识别，请使用该 MC 版本要求的 Java（例如 1.20.1 需要 Java 17）'],
     [/Missing or unsupported mandatory dependencies/i, '缺少模组依赖，启动被 Forge 拒绝'],
     [/has failed to load correctly/i, '有模组加载失败，请看日志详情'],
     [/Address already in use/i, '端口被占用，请重新分配端口'],

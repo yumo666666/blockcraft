@@ -57,17 +57,19 @@ with zipfile.ZipFile(archive) as bundle:
         target.write(source.read())
 PY
 
-GO111MODULE=off GOOS=windows GOARCH=amd64 "$GO_BIN" build -trimpath -ldflags='-s -w -H=windowsgui' -o "$OUT/BlockCraft.exe" ./packaging/windows
+(cd packaging/windows && GO111MODULE=on GOOS=windows GOARCH=amd64 "$GO_BIN" build -mod=readonly -trimpath -ldflags='-s -w -H=windowsgui' -o "$OUT/BlockCraft.exe" .)
 cat > "$OUT/README.txt" <<'EOF'
 BlockCraft Windows x64
 
 Unzip the complete folder and double-click BlockCraft.exe.
 The first start opens the local management panel in your default browser.
+BlockCraft stays in the Windows notification area. Right-click its icon to
+open the panel or stop all worlds and exit after a confirmation prompt.
 Worlds, settings, and uploaded skins are saved under:
 %LOCALAPPDATA%\BlockCraft\
 
-The bundled Node.js runtime starts the panel. Java is installed from the panel
-when a world needs it, or you can select a Java installation in Settings.
+The bundled Node.js runtime starts the panel. Install a Java version required
+by your Minecraft world, or select a compatible Java executable in Settings.
 EOF
 
 python3 - "$OUT" "$ZIP" <<'PY'
