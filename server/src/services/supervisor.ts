@@ -14,7 +14,7 @@ import { latestCrashReport } from '../core/crashReport.ts';
 import { evCrash, evReady, evStart, evStop } from './eventLog.ts';
 import { pingServer } from '../core/mcping.ts';
 import * as systemService from './systemService.ts';
-import { autoJava, inspectJava, selectCompatibleJava } from './javaService.ts';
+import { ensureJava, inspectJava, selectCompatibleJava } from './javaService.ts';
 import * as frp from './frpService.ts';
 import * as I from './instanceService.ts';
 import type { InstanceConfig, InstanceState, InstanceStatus } from '../types.ts';
@@ -222,6 +222,7 @@ interface RunningProc {
 }
 
 const procs = new Map<string, RunningProc>();
+const javaPreparing = new Map<string, string>();
 
 function pidFile(id: string): string {
   return path.join(instanceDir(id), 'server.pid');
@@ -365,6 +366,10 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
   if (st.status === 'stopping' || st.status === 'crashed') {
     status = st.status === 'stopping' ? 'stopped' : 'crashed';
   }
+  const javaPhase = javaPreparing.get(id);
+  if (javaPhase) {
+    return { status: 'starting', pid: null, listening: false, phase: javaPhase, progress: null, players: 0, uptime: 0, cpu: 0, rss: 0, detectedFrom: 'memory' };
+  }
   return { status, pid: null, listening: false, phase: st.phase || '', progress: null, players: 0, uptime: 0, cpu: 0, rss: 0, detectedFrom: 'memory' };
 }
 
@@ -490,8 +495,14 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
       return { ok: false, error: `世界 ${id} 已经在运行中` };
     }
 
-    // 1) Java 解析
-    const java = autoJava(cfg.mc, cfg.loader);
+    // 1) Java 解析；本机没有兼容版本时自动下载 Temurin 后继续启动。
+    javaPreparing.set(id, '正在检查 Java 环境');
+    let java: Awaited<ReturnType<typeof ensureJava>>;
+    try {
+      java = await ensureJava(cfg.mc, cfg.loader, (message) => javaPreparing.set(id, message));
+    } finally {
+      javaPreparing.delete(id);
+    }
     const configuredJava = cfg.javaPath && fs.existsSync(cfg.javaPath) ? inspectJava(cfg.javaPath) : null;
     const selectedJava = selectCompatibleJava(configuredJava, java.runtime ? [java.runtime] : [], java.required);
     if (!selectedJava) {

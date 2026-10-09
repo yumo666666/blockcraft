@@ -65,11 +65,14 @@ Unzip the complete folder and double-click BlockCraft.exe.
 The first start opens the local management panel in your default browser.
 BlockCraft stays in the Windows notification area. Right-click its icon to
 open the panel or stop all worlds and exit after a confirmation prompt.
-Worlds, settings, and uploaded skins are saved under:
-%LOCALAPPDATA%\BlockCraft\
+Everything BlockCraft creates is kept inside this extracted folder:
+  data\       settings, logs, downloads, Java runtimes, backups
+  instances\  Minecraft worlds and server files
+Extract the whole archive to a writable folder. Do not run it from inside the ZIP
+or from a read-only location such as Program Files.
 
-The bundled Node.js runtime starts the panel. Install a Java version required
-by your Minecraft world, or select a compatible Java executable in Settings.
+The bundled Node.js runtime starts the panel. If a world needs a Java version
+that is not installed, BlockCraft downloads Temurin into data\jdk automatically.
 EOF
 
 python3 - "$OUT" "$ZIP" <<'PY'

@@ -55,7 +55,7 @@
 
 ### Windows
 
-解压 Windows x64 发布包后，双击 `BlockCraft.exe`。程序会启动内置 Node.js 并打开浏览器；世界、设置与皮肤保存在 `%LOCALAPPDATA%\BlockCraft`。
+解压 Windows x64 发布包到可写文件夹后，双击 `BlockCraft.exe`。程序会启动内置 Node.js 并打开浏览器；设置、日志、下载和 Java 运行时保存在发布包旁的 `data` 文件夹，Minecraft 世界保存在 `instances` 文件夹。旧版 `%LOCALAPPDATA%\BlockCraft` 数据会在首次启动时复制到便携目录，旧文件会保留作备份。
 
 从源码生成发布包（需要 Node.js ≥ 22.6、pnpm、Go 与网络）：
 
@@ -129,7 +129,7 @@ bin/stop.sh     # 只停面板（不会结束正在运行的世界）
 
 - Ubuntu 与 Windows x64 都能管理多个世界；项目依赖不要求 `zip`、`unzip` 或 `sqlite3`
 - 世界目录、日志、配置与皮肤文件分别保存在 BlockCraft 数据目录
-- Java 缺失时可以在面板设置里指定路径，也可以按需下载对应版本
+- 找不到 Minecraft 所需的兼容 Java 时，面板会自动下载 Temurin 到数据目录
 - Docker、VPS、树莓派等环境仍可用；具体 Java 版本取决于加载器与 Minecraft 版本
 
 ## FRP 穿透
@@ -199,7 +199,7 @@ instances/<世界id>/        每个世界一份，完全独立
 自己出一份源码包：
 
 ```bash
-git archive --format=tar.gz --prefix=blockcraft-2.2.3/ -o blockcraft-2.2.3.tar.gz HEAD
+git archive --format=tar.gz --prefix=blockcraft-2.2.4/ -o blockcraft-2.2.4.tar.gz HEAD
 ```
 
 ## 测试

@@ -1,5 +1,10 @@
 # 更新记录
 
+## 2.2.4 — 2026-10-09
+
+- 本机没有 Minecraft 所需的兼容 Java 时，自动下载 Temurin 到 BlockCraft 数据目录；Forge / Fabric 安装和世界启动都会使用这项能力，并报告下载进度。
+- Windows 改为便携目录布局：设置、缓存、日志和 Java 放在 `data`，世界放在 `instances`，都与 `BlockCraft.exe` 同级；首次运行会复制旧 AppData 数据，旧文件保留作备份。
+
 ## 2.2.3 — 2026-10-09
 
 - 修复世界保存的 Java 路径与实际版本不一致时仍启动旧 Java 的问题；没有兼容 Java 时会在启动前明确说明要求版本，并识别中文参数文件错误。

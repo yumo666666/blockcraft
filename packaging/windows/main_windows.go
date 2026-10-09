@@ -36,12 +36,6 @@ func showError(message string) {
 	proc.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x10)
 }
 
-func setDefaultEnv(key, value string) {
-	if _, exists := os.LookupEnv(key); !exists {
-		_ = os.Setenv(key, value)
-	}
-}
-
 func readPanelConfig(file string) panelFile {
 	var config panelFile
 	data, err := os.ReadFile(file)
@@ -160,14 +154,17 @@ func run() int {
 		userHome, _ := os.UserHomeDir()
 		localAppData = filepath.Join(userHome, "AppData", "Local")
 	}
-	userDir := filepath.Join(localAppData, "BlockCraft")
-	dataDir := filepath.Join(userDir, "data")
-	instanceDir := filepath.Join(userDir, "instances")
+	legacyUserDir := filepath.Join(localAppData, "BlockCraft")
+	dataDir, instanceDir := portableDirectories(releaseDir)
+	if err := migrateLegacyData(releaseDir, legacyUserDir); err != nil {
+		showError("无法迁移旧数据到便携文件夹：\n" + err.Error() + "\n\n请确认 BlockCraft 文件夹有写入权限。旧数据仍保留在原位置。")
+		return 1
+	}
 	_ = os.MkdirAll(filepath.Join(dataDir, "logs"), 0o755)
 	_ = os.MkdirAll(instanceDir, 0o755)
-	setDefaultEnv("BC_ROOT", appDir)
-	setDefaultEnv("BC_DATA_DIR", dataDir)
-	setDefaultEnv("BC_INSTANCE_DIR", instanceDir)
+	_ = os.Setenv("BC_ROOT", appDir)
+	_ = os.Setenv("BC_DATA_DIR", dataDir)
+	_ = os.Setenv("BC_INSTANCE_DIR", instanceDir)
 	if url, ok := browserURL(dataDir); ok {
 		openBrowser(url)
 		return 0
@@ -175,7 +172,7 @@ func run() int {
 
 	logFile, err := os.OpenFile(filepath.Join(dataDir, "logs", "launcher.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		showError("无法创建日志文件。请检查用户目录是否可写。")
+		showError("无法在 BlockCraft 文件夹内创建日志。请检查文件夹是否可写，并避免放在只读目录。")
 		return 1
 	}
 	defer logFile.Close()
@@ -187,7 +184,7 @@ func run() int {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	if err := cmd.Start(); err != nil {
 		_, _ = fmt.Fprintln(logFile, "启动 Node.js 失败:", err)
-		showError("BlockCraft 服务没有启动。请查看 %LOCALAPPDATA%\\BlockCraft\\data\\logs\\launcher.log。")
+		showError("BlockCraft 服务没有启动。请查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
 		return 1
 	}
 
@@ -200,7 +197,7 @@ func run() int {
 		case err := <-wait:
 			if err != nil {
 				_, _ = fmt.Fprintln(logFile, "BlockCraft 服务退出:", err)
-				showError("BlockCraft 服务意外退出。请查看 %LOCALAPPDATA%\\BlockCraft\\data\\logs\\launcher.log。")
+				showError("BlockCraft 服务意外退出。请查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
 				return 1
 			}
 			return 0
@@ -216,7 +213,7 @@ func run() int {
 	if !opened {
 		_ = cmd.Process.Kill()
 		_, _ = fmt.Fprintln(logFile, "等待面板启动超时")
-		showError("等待面板启动超时。请检查 %LOCALAPPDATA%\\BlockCraft\\data\\logs\\launcher.log。")
+		showError("等待面板启动超时。请检查 BlockCraft 文件夹内 data\\logs\\launcher.log。")
 		return 1
 	}
 
@@ -247,7 +244,7 @@ func run() int {
 					if panelURL, ok := browserURL(dataDir); ok {
 						openBrowser(panelURL)
 					} else {
-						showError("BlockCraft 面板暂时无法连接。请稍候再试，或查看 %LOCALAPPDATA%\\BlockCraft\\data\\logs\\launcher.log。")
+						showError("BlockCraft 面板暂时无法连接。请稍候再试，或查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
 					}
 				case <-quitItem.ClickedCh:
 					if !confirmStopWorldsAndExit() {
@@ -270,7 +267,7 @@ func run() int {
 		}()
 	}, func() {})
 	if err := <-serverExited; err != nil {
-		showError("BlockCraft 服务意外退出。请查看 %LOCALAPPDATA%\\BlockCraft\\data\\logs\\launcher.log。")
+		showError("BlockCraft 服务意外退出。请查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
 		return 1
 	}
 	return 0

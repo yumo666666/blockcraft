@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { JDK_DIR } from '../core/paths.ts';
 import { createLogger } from '../core/logger.ts';
@@ -174,8 +176,8 @@ export function javaByMajor(major: number): JavaRuntime | null {
   return all.find((j) => j.major === major) ?? resolveJava(major);
 }
 
-/** Adoptium 下载（可选能力：本机没装对应 JDK 时才需要） */
-export async function downloadJava(major: number): Promise<JavaRuntime> {
+/** Adoptium 下载（本机没有兼容版本时由安装/启动流程按需调用） */
+export async function downloadJava(major: number, onProgress?: (message: string) => void): Promise<JavaRuntime> {
   const archMap: Record<string, string> = { arm64: 'aarch64', x64: 'x64', arm: 'arm' };
   const osMap: Record<string, string> = { linux: 'linux', darwin: 'mac', win32: 'windows' };
   const arch = archMap[process.arch] ?? 'x64';
@@ -184,41 +186,109 @@ export async function downloadJava(major: number): Promise<JavaRuntime> {
   fs.mkdirSync(JDK_DIR, { recursive: true });
   const windows = process.platform === 'win32';
   const target = path.join(JDK_DIR, `temurin-${major}.${windows ? 'zip' : 'tar.gz'}`);
+  const partial = `${target}.part`;
   logger.info(`下载 JDK ${major}`, { url });
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok || !res.body) throw new Error(`下载 JDK 失败：HTTP ${res.status}`);
-  const fileStream = fs.createWriteStream(target);
-  await new Promise<void>((resolve, reject) => {
-    const reader = res.body!.getReader();
-    const pump = (): void => {
-      reader
-        .read()
-        .then(({ done, value }) => {
-          if (done) {
-            fileStream.end();
-            resolve();
-            return;
+  try {
+    onProgress?.(`正在下载 Temurin Java ${major}…`);
+    const res = await fetch(url, { redirect: 'follow' });
+    if (!res.ok || !res.body) throw new Error(`下载 JDK 失败：HTTP ${res.status}`);
+    const expected = Number(res.headers.get('content-length') ?? 0);
+    let received = 0;
+    let lastPercent = -1;
+    const progress = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        received += chunk.length;
+        if (expected > 0) {
+          const percent = Math.floor((received / expected) * 100);
+          if (percent >= lastPercent + 10 || percent === 100) {
+            lastPercent = percent;
+            onProgress?.(`正在下载 Temurin Java ${major}：${percent}%`);
           }
-          fileStream.write(Buffer.from(value), (err) => (err ? reject(err) : pump()));
-        })
-        .catch(reject);
-    };
-    pump();
-  });
-  if (windows) {
-    const quote = (value: string) => value.replaceAll("'", "''");
-    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${quote(target)}' -DestinationPath '${quote(JDK_DIR)}' -Force`], { stdio: 'ignore' });
-  } else {
-    execFileSync('tar', ['xzf', target, '-C', JDK_DIR]);
+        }
+        callback(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(res.body as never), progress, fs.createWriteStream(partial));
+    const actual = fs.statSync(partial).size;
+    if (!actual || (expected > 0 && actual !== expected)) {
+      throw new Error(`Java ${major} 下载不完整：${actual}/${expected || '未知'} 字节`);
+    }
+    fs.renameSync(partial, target);
+
+    onProgress?.(`Java ${major} 下载完成，正在解压…`);
+    if (windows) {
+      const quote = (value: string) => value.replaceAll("'", "''");
+      execFileSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${quote(target)}' -DestinationPath '${quote(JDK_DIR)}' -Force`],
+        { stdio: 'ignore' },
+      );
+    } else {
+      execFileSync('tar', ['xzf', target, '-C', JDK_DIR]);
+    }
+
+    const extracted = fs
+      .readdirSync(JDK_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('jdk-'))
+      .map((entry) => inspectJava(path.join(JDK_DIR, entry.name, 'bin', javaFileName())))
+      .find((runtime) => runtime?.major === major);
+    if (!extracted) throw new Error(`Java ${major} 解压后未找到可运行的对应版本`);
+    fs.unlinkSync(target);
+    cache = null;
+    summaryCache = null;
+    logger.info(`JDK ${major} 已就绪`, { path: extracted.path });
+    onProgress?.(`Java ${major} 已安装`);
+    return extracted;
+  } catch (err) {
+    try {
+      fs.rmSync(partial, { force: true });
+      fs.rmSync(target, { force: true });
+    } catch {
+      /* ignore cleanup errors */
+    }
+    throw err;
   }
-  fs.unlinkSync(target);
-  const extracted = fs.readdirSync(JDK_DIR).find((d) => d.startsWith('jdk-'));
-  if (!extracted) throw new Error('JDK 解压后没有找到目录');
-  cache = null;
-  const rt = inspectJava(path.join(JDK_DIR, extracted, 'bin', javaFileName()));
-  if (!rt) throw new Error('下载的 JDK 无法执行');
-  logger.info(`JDK ${major} 已就绪`, { path: rt.path });
-  return rt;
+}
+
+const javaDownloads = new Map<number, Promise<JavaRuntime>>();
+
+/** 缺少兼容 Java 时自动下载 Temurin，并返回可启动的运行时。 */
+export async function ensureJava(
+  mc: string,
+  loader: Loader,
+  onProgress?: (message: string) => void,
+): Promise<JavaResolution> {
+  const required = requiredJavaFor(mc, loader);
+  const installed = resolveJava(required);
+  if (installed) {
+    const reason = installed.major === required ? `使用 Java ${installed.major}` : `${mc} 建议 Java ${required}，本机取最近的 Java ${installed.major}`;
+    return { runtime: installed, required, reason };
+  }
+
+  let pending = javaDownloads.get(required);
+  if (!pending) {
+    pending = downloadJava(required, onProgress);
+    javaDownloads.set(required, pending);
+  } else {
+    onProgress?.(`正在等待 Java ${required} 下载完成…`);
+  }
+
+  try {
+    const runtime = await pending;
+    return { runtime, required, reason: `已自动安装并使用 Java ${runtime.major}` };
+  } catch (err) {
+    const installedVersions = listJava(true);
+    const local = installedVersions.length
+      ? `本机已有 Java ${installedVersions.map((j) => j.major).join('、')}，但都不兼容。`
+      : '本机没有可用的 Java。';
+    return {
+      runtime: null,
+      required,
+      reason: `${local}自动下载 Java ${required} 失败：${String(err)}。请检查网络连接后重试。`,
+    };
+  } finally {
+    if (javaDownloads.get(required) === pending) javaDownloads.delete(required);
+  }
 }
 
 /** 环境自检用：本机 Java 概览 */

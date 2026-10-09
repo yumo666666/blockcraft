@@ -9,7 +9,7 @@ import { atomicWriteFileSync, readJsonSync } from '../core/fsx.ts';
 import { bad, conflict, notFound } from '../core/errors.ts';
 import { createLogger } from '../core/logger.ts';
 import { loadConfig } from '../config.ts';
-import { autoJava } from './javaService.ts';
+import { ensureJava } from './javaService.ts';
 import * as I from './instanceService.ts';
 import { hasLoaderEntry, loaderArgsPath } from '../launcher/index.ts';
 import type { InstanceConfig, Loader } from '../types.ts';
@@ -133,7 +133,7 @@ async function installFabric(cfg: InstanceConfig, onLog: (s: string) => void): P
   if (!fs.existsSync(installerCache)) await downloadTo(installerUrl, installerCache, onLog);
   else onLog('复用已下载的 Fabric 安装器');
 
-  const { runtime: java, reason } = autoJava(cfg.mc, 'fabric');
+  const { runtime: java, reason } = await ensureJava(cfg.mc, 'fabric', onLog);
   if (!java) throw conflict(reason || '未找到可用于 Fabric 安装的 Java');
 
   // Fabric 的 server/jar API 已不可用。运行官方安装器生成真正的
@@ -227,7 +227,7 @@ function isFabricLauncher(file: string): boolean {
 async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void, neo: boolean): Promise<void> {
   const serverDir = instanceServerDir(cfg.id);
   const panel = loadConfig();
-  const java = autoJava(cfg.mc, cfg.loader);
+  const java = await ensureJava(cfg.mc, cfg.loader, onLog);
   if (!java.runtime) throw conflict(java.reason);
 
   const version = cfg.loaderVersion;
