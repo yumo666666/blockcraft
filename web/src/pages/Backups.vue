@@ -8,6 +8,8 @@ import type { BackupEntry, InstanceDetail } from '../lib/types.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import Modal from '../components/Modal.vue';
 
+defineOptions({ name: 'Backups' });
+
 const props = defineProps<{ id: string }>();
 const router = useRouter();
 

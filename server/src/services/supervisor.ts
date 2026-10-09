@@ -224,6 +224,10 @@ interface RunningProc {
 const procs = new Map<string, RunningProc>();
 const javaPreparing = new Map<string, string>();
 
+export function isTrackedChildAlive(tracked: Pick<RunningProc, 'child' | 'pid'> | undefined, pid: number): boolean {
+  return Boolean(tracked && tracked.pid === pid && tracked.child.exitCode === null && tracked.child.signalCode === null);
+}
+
 function pidFile(id: string): string {
   return path.join(instanceDir(id), 'server.pid');
 }
@@ -255,9 +259,13 @@ function isAlive(pid: number): boolean {
 }
 
 export function alivePid(id: string): number | null {
-  const fromMap = procs.get(id)?.pid;
+  const tracked = procs.get(id);
+  const fromMap = tracked?.pid;
   const pid = fromMap ?? readPidFile(id);
   if (!pid) return null;
+  // 该进程由当前面板直接创建，PID 已确定；Windows 进程信息查询偶发失败时，
+  // 不能因此把世界误判为停止并拒绝命令。面板重启后只剩 PID 文件时仍需检查命令行，避免 PID 复用。
+  if (isTrackedChildAlive(tracked, pid)) return pid;
   if (!isAlive(pid)) return null;
   // 校验 cmdline 里确实是我们的服务端，避免 PID 复用误判
   try {

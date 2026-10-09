@@ -145,7 +145,9 @@ defineExpose({});
     </header>
 
     <router-view v-slot="{ Component }">
-      <component :is="Component" />
+      <KeepAlive :include="['Overview', 'Console', 'Backups', 'Mods', 'Players']" :max="5">
+        <component :is="Component" />
+      </KeepAlive>
     </router-view>
 
     <ToastHost />

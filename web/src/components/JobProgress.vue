@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue';
+import { nextTick, onUnmounted, ref, watch } from 'vue';
 import { subscribe } from '../lib/api.ts';
 import type { Job } from '../lib/types.ts';
 import Modal from './Modal.vue';
@@ -8,6 +8,8 @@ const props = defineProps<{ open: boolean; jobId: string | null }>();
 const emit = defineEmits<{ close: [] }>();
 
 const job = ref<Job | null>(null);
+const logEl = ref<HTMLElement | null>(null);
+const followLog = ref(true);
 let off: (() => void) | null = null;
 
 watch(
@@ -15,11 +17,15 @@ watch(
   ([open, id]) => {
     off?.();
     off = null;
+    job.value = null;
+    followLog.value = true;
     if (!open || !id) return;
     off = subscribe<Job>(`/api/jobs/${id}/stream`, (data) => {
       job.value = data;
+      void nextTick(scrollLogToBottom);
     });
   },
+  { immediate: true },
 );
 
 onUnmounted(() => off?.());
@@ -29,6 +35,17 @@ function stageClass(status: string): string {
   if (status === 'failed') return 'badge-danger';
   if (status === 'running') return 'badge-warn';
   return 'badge-outline';
+}
+
+function scrollLogToBottom(): void {
+  const el = logEl.value;
+  if (el && followLog.value) el.scrollTop = el.scrollHeight;
+}
+
+function onLogScroll(event: Event): void {
+  const el = event.currentTarget as HTMLElement;
+  // 人为向上翻时先暂停；滚回底部（24px 容差）后自动恢复跟随。
+  followLog.value = el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
 }
 </script>
 
@@ -52,7 +69,7 @@ function stageClass(status: string): string {
 
       <div v-if="job.error" class="badge badge-danger">{{ job.error }}</div>
 
-      <div class="console" style="height: 200px">
+      <div ref="logEl" class="console" data-testid="job-log" style="height: 200px" @scroll="onLogScroll">
         <div v-for="(l, i) in job.lines" :key="i" class="console-line">{{ l }}</div>
         <div v-if="!job.lines.length" class="console-empty">暂无输出</div>
       </div>

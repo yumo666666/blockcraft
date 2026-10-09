@@ -8,6 +8,8 @@ import type { InstanceDetail, InstanceSummary, ModInfo } from '../lib/types.ts';
 import Modal from '../components/Modal.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 
+defineOptions({ name: 'Mods' });
+
 const props = defineProps<{ id: string }>();
 const router = useRouter();
 

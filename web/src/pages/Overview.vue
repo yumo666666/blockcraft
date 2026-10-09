@@ -13,12 +13,31 @@ import CopyDialog from '../components/CopyDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import JobProgress from '../components/JobProgress.vue';
 
+defineOptions({ name: 'Overview' });
+
 const router = useRouter();
 const snap = ref<SystemSnapshot | null>(null);
 const instances = ref<InstanceSummary[]>([]);
 const frp = ref<FrpStatus | null>(null);
-const activeId = ref<string | null>(null);
+const ACTIVE_WORLD_KEY = 'blockcraft.overview.activeWorld';
+function readActiveWorld(): string | null {
+  try {
+    return sessionStorage.getItem(ACTIVE_WORLD_KEY);
+  } catch {
+    return null;
+  }
+}
+const activeId = ref<string | null>(readActiveWorld());
 const busyId = ref<string | null>(null);
+
+watch(activeId, (id) => {
+  try {
+    if (id) sessionStorage.setItem(ACTIVE_WORLD_KEY, id);
+    else sessionStorage.removeItem(ACTIVE_WORLD_KEY);
+  } catch {
+    /* session storage may be disabled; the in-memory selection still works */
+  }
+});
 
 /** 选中的世界标签滚进视野（世界多了以后，当前看的世界可能被挤出可见区域） */
 const tabsEl = ref<HTMLElement | null>(null);
@@ -66,7 +85,9 @@ onMounted(() => {
     (data) => {
       snap.value = data.snap;
       instances.value = data.instances;
-      if (!activeId.value && data.instances.length) activeId.value = data.instances[0].id;
+      if (!activeId.value || !data.instances.some((item) => item.id === activeId.value)) {
+        activeId.value = data.instances[0]?.id ?? null;
+      }
     },
     {
       onError: () => {

@@ -9,6 +9,8 @@ import type { InstanceDetail, InstanceSummary, PlayerInfo } from '../lib/types.t
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import Modal from '../components/Modal.vue';
 
+defineOptions({ name: 'Players' });
+
 const props = defineProps<{ id: string }>();
 const router = useRouter();
 

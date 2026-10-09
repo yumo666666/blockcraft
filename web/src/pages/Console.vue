@@ -8,6 +8,8 @@ import type { ConsoleLine, InstanceDetail, ScheduleInfo } from '../lib/types.ts'
 import { applySuggestion, suggest, type Suggestion } from '../lib/commands.ts';
 import { ANNOUNCE_COLORS, DEFAULT_ANNOUNCE_COLOR, buildAnnounce, previewAnnounce } from '../lib/announce.ts';
 
+defineOptions({ name: 'Console' });
+
 const props = defineProps<{ id: string }>();
 const router = useRouter();
 
