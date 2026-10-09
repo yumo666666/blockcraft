@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import type { FrpStatus } from '../lib/types.ts';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
@@ -8,6 +8,24 @@ import { fmtBytes } from '../lib/format.ts';
 
 const props = defineProps<{ status: FrpStatus | null }>();
 const emit = defineEmits<{ refresh: [] }>();
+
+const connectionBadge = computed(() => {
+  const status = props.status;
+  if (!status?.configured) return { label: '未配置', className: 'badge-outline', title: '尚未配置 FRP 服务器' };
+  if (!status.enabled) return { label: '未启用', className: 'badge-outline', title: 'FRP 当前未启用' };
+  if (!status.server.reachable) return { label: '服务器不可达', className: 'badge-warn', title: 'FRPS 服务器端口当前不可达' };
+  const stopped = status.channels.filter((channel) => !channel.running);
+  const failedProxy = status.proxies.some((proxy) => proxy.status !== 'running');
+  if (stopped.length || failedProxy || (status.exposePanel && !status.panelProxy?.online)) {
+    const names = stopped.map((channel) => channel.name === 'panel' ? '面板通道' : '世界通道');
+    return {
+      label: '通道异常',
+      className: 'badge-danger',
+      title: `FRPS 服务器可达，但${names.length ? `${names.join('、')}未运行` : '至少一条代理未就绪'}`,
+    };
+  }
+  return { label: '已连接', className: 'badge-ok', title: 'FRPS 服务器可达，通道与代理均正常' };
+});
 
 const showSettings = ref(false);
 const showCheck = ref(false);
@@ -73,10 +91,20 @@ async function runCheck() {
   }
 }
 
-async function reload(channel: string) {
+async function reload(channel: 'panel' | 'worlds') {
+  const channelLabel = channel === 'panel' ? '面板通道' : '世界通道';
   try {
+    const current = props.status?.channels.find((item) => item.name === channel);
+    if (current && !current.running) {
+      const restarted = await api.post<FrpStatus>('/api/frp/restart', { channel });
+      const next = restarted.channels.find((item) => item.name === channel);
+      if (next?.running) toast('ok', `${channelLabel}已启动`);
+      else toast('warn', `${channelLabel}启动失败`, next?.error ?? '请查看 frpc 日志');
+      emit('refresh');
+      return;
+    }
     const r = await api.post<{ ok: boolean; error?: string }>('/api/frp/reload', { channel });
-    if (r.ok) toast('ok', `${channel === 'panel' ? '面板通道' : '世界通道'}已重载`);
+    if (r.ok) toast('ok', `${channelLabel}已重载`);
     else toast('warn', '重载失败（已回滚）', r.error);
     emit('refresh');
   } catch (err) {
@@ -111,8 +139,8 @@ async function copyPublicAddress() {
   <div class="card frp-card">
     <div class="card-head">
       <h3>FRP 穿透</h3>
-      <span class="badge" :class="status?.server.reachable ? 'badge-ok' : status?.configured ? 'badge-warn' : 'badge-outline'">
-        {{ status?.server.reachable ? '已连接' : status?.configured ? '连接异常' : '未配置' }}
+      <span class="badge" :class="connectionBadge.className" :title="connectionBadge.title">
+        {{ connectionBadge.label }}
       </span>
     </div>
     <div class="card-body col gap-3">
@@ -145,13 +173,14 @@ async function copyPublicAddress() {
                 <span v-if="ch.name === 'panel' && status.panelProxy"> · 端口 {{ status.panelProxy.remotePort }}</span>
               </div>
             </div>
-            <button class="btn btn-ghost btn-sm" title="热重载" @click="reload(ch.name)">重载</button>
+            <button class="btn btn-ghost btn-sm" :title="ch.running ? '热重载通道配置' : '启动 FRPC 通道'" @click="reload(ch.name)">{{ ch.running ? '重载' : '启动' }}</button>
           </div>
         </div>
 
-        <button v-if="status.panelProxy" class="mono-block small public-address-copy" type="button" title="点击复制公网面板地址" @click="copyPublicAddress">
+        <button v-if="status.panelProxy?.online" class="mono-block small public-address-copy" type="button" title="点击复制公网面板地址" @click="copyPublicAddress">
           公网面板地址：http://{{ status.server.addr }}:{{ status.panelProxy.remotePort }}
         </button>
+        <div v-else-if="status.panelProxy" class="badge badge-warn">面板代理尚未上线，公网地址暂不可用（端口 {{ status.panelProxy.remotePort }}）</div>
 
         <div v-if="status.dashboard.available" class="text-3 small">
           服务端侧可见 {{ status.dashboard.proxies.filter((p) => p.status === 'online').length }} 条在线代理

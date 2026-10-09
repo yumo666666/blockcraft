@@ -57,7 +57,7 @@ export interface FrpStatus {
   exposePanel: boolean;
   panelRemotePort: number;
   binaryReady: boolean;
-  channels: { name: string; running: boolean; pid: number | null; error: string | null; proxyCount: number; lastReload: number | null }[];
+  channels: { name: 'panel' | 'worlds'; running: boolean; pid: number | null; error: string | null; proxyCount: number; lastReload: number | null }[];
   proxies: { name: string; status: string; localAddr: string; remoteAddr: string; err: string }[];
   panelProxy: { remotePort: number; localPort: number; online: boolean } | null;
   remoteRange: [number, number];
