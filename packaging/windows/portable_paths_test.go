@@ -58,3 +58,38 @@ func TestMigrateLegacyDataIntoPortableFolder(t *testing.T) {
 		t.Fatalf("legacy data was recopied after migration: %v", err)
 	}
 }
+
+func TestCopyTreeResolvesSymlinksAsRegularFilesAndDirectories(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	destination := filepath.Join(root, "portable-copy")
+	targetDir := filepath.Join(root, "linked-target")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "target.txt"), []byte("linked file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "inside.txt"), []byte("linked directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "target.txt"), filepath.Join(source, "linked-file.txt")); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	if err := os.Symlink(targetDir, filepath.Join(source, "linked-directory")); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+
+	if err := copyTreeMissing(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(destination, "linked-file.txt")); err != nil || string(got) != "linked file" {
+		t.Fatalf("linked file not copied as a regular file: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(destination, "linked-directory", "inside.txt")); err != nil || string(got) != "linked directory" {
+		t.Fatalf("linked directory not copied: %q, %v", got, err)
+	}
+}

@@ -60,70 +60,91 @@ func samePath(a, b string) bool {
 }
 
 func copyTreeMissing(source, destination string) error {
-	return filepath.WalkDir(source, func(from string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	return copyNode(source, destination, make(map[string]bool))
+}
+
+// Windows can't reliably recreate symlinks without extra privileges. Resolve them
+// while copying so the portable copy contains ordinary files and directories.
+func copyNode(from, to string, activeDirs map[string]bool) error {
+	linkInfo, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+	actualPath := from
+	if linkInfo.Mode()&os.ModeSymlink != 0 {
+		actualPath, err = filepath.EvalSymlinks(from)
+		if err != nil {
+			return fmt.Errorf("读取符号链接目标失败（%s）：%w", from, err)
 		}
-		relative, err := filepath.Rel(source, from)
+	}
+	info, err := os.Stat(actualPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		absolute, err := filepath.Abs(actualPath)
 		if err != nil {
 			return err
 		}
-		to := destination
-		if relative != "." {
-			to = filepath.Join(destination, relative)
+		key := filepath.Clean(absolute)
+		if activeDirs[key] {
+			return fmt.Errorf("检测到循环目录链接：%s", from)
 		}
-		info, err := entry.Info()
+		activeDirs[key] = true
+		defer delete(activeDirs, key)
+
+		if err := os.MkdirAll(to, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(actualPath)
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("不支持复制符号链接：%s", from)
-		}
-		if info.IsDir() {
-			if err := os.MkdirAll(to, info.Mode().Perm()); err != nil {
+		for _, entry := range entries {
+			if err := copyNode(filepath.Join(actualPath, entry.Name()), filepath.Join(to, entry.Name()), activeDirs); err != nil {
 				return err
 			}
-			return nil
 		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("不支持复制特殊文件：%s", from)
-		}
-		if existing, err := os.Stat(to); err == nil {
-			if !existing.Mode().IsRegular() {
-				return fmt.Errorf("目标文件类型冲突：%s", to)
-			}
-			return nil
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
-			return err
-		}
-		input, err := os.Open(from)
-		if err != nil {
-			return err
-		}
-		output, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
-		if err != nil {
-			_ = input.Close()
-			if os.IsExist(err) {
-				return nil
-			}
-			return err
-		}
-		_, copyErr := io.Copy(output, input)
-		closeOutputErr := output.Close()
-		closeInputErr := input.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeOutputErr != nil {
-			return closeOutputErr
-		}
-		if closeInputErr != nil {
-			return closeInputErr
-		}
-		_ = os.Chtimes(to, info.ModTime(), info.ModTime())
 		return nil
-	})
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("不支持复制特殊文件：%s", from)
+	}
+	if existing, err := os.Stat(to); err == nil {
+		if !existing.Mode().IsRegular() {
+			return fmt.Errorf("目标文件类型冲突：%s", to)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return err
+	}
+	input, err := os.Open(actualPath)
+	if err != nil {
+		return err
+	}
+	output, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	if err != nil {
+		_ = input.Close()
+		if os.IsExist(err) {
+			return nil
+		}
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeOutputErr := output.Close()
+	closeInputErr := input.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeOutputErr != nil {
+		return closeOutputErr
+	}
+	if closeInputErr != nil {
+		return closeInputErr
+	}
+	_ = os.Chtimes(to, info.ModTime(), info.ModTime())
+	return nil
 }
