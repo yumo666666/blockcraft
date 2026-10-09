@@ -30,6 +30,11 @@ const SHORTCUTS_DEFAULT: Shortcut[] = [
   { group: '时间天气', label: '开始下雨', cmd: 'weather rain' },
   { group: '时间天气', label: '雷暴', cmd: 'weather thunder' },
 
+  { group: '世界难度', label: '和平', cmd: 'difficulty peaceful', hint: '切换到和平难度' },
+  { group: '世界难度', label: '简单', cmd: 'difficulty easy', hint: '切换到简单难度' },
+  { group: '世界难度', label: '普通', cmd: 'difficulty normal', hint: '切换到普通难度' },
+  { group: '世界难度', label: '困难', cmd: 'difficulty hard', hint: '切换到困难难度' },
+
   { group: '玩家管理', label: '给管理员', cmd: 'op ', needsArg: true, hint: '需要填玩家名' },
   { group: '玩家管理', label: '取消管理员', cmd: 'deop ', needsArg: true },
   { group: '玩家管理', label: '踢出世界', cmd: 'kick ', needsArg: true },
