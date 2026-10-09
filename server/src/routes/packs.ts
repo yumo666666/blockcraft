@@ -8,6 +8,7 @@ import { installServer } from '../services/installService.ts';
 import * as I from '../services/instanceService.ts';
 import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
+import { ensureSkinSupport, skinSupportInstallStageLabel } from '../services/skinSupportService.ts';
 
 const PACKS_DIR = path.join(STORE_DIR, 'packs');
 
@@ -98,6 +99,7 @@ export function registerPackRoutes(app: Express): void {
       stages: [
         { key: 'install', label: '安装服务端与加载器', status: 'pending' },
         { key: 'extract', label: '解压整合包内容', status: 'pending' },
+        { key: 'skin', label: skinSupportInstallStageLabel(), status: 'pending' },
         { key: 'frp', label: '映射远端端口', status: 'pending' },
         { key: 'start', label: '启动世界', status: 'pending' },
       ],
@@ -111,6 +113,9 @@ export function registerPackRoutes(app: Express): void {
         const { extractPack } = await import('../services/packService.ts');
         await extractPack(packFile, cfg.id, (line) => logJob(job.id, line));
         setStage(job.id, 'extract', 'done');
+        setStage(job.id, 'skin', 'running');
+        await ensureSkinSupport(cfg.id, (line) => logJob(job.id, line));
+        setStage(job.id, 'skin', 'done');
         setStage(job.id, 'frp', 'running');
         const remote = await frp.ensureRemotePort(cfg.id);
         await frp.syncWorlds().catch(() => undefined);

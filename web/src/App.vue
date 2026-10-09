@@ -145,7 +145,7 @@ defineExpose({});
     </header>
 
     <router-view v-slot="{ Component }">
-      <KeepAlive :include="['Overview', 'Console', 'Backups', 'Mods', 'Players']" :max="5">
+      <KeepAlive :include="['Overview', 'Wizard', 'Events', 'Settings', 'Console', 'Backups', 'Mods', 'Players']" :max="16">
         <component :is="Component" />
       </KeepAlive>
     </router-view>

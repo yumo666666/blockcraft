@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
@@ -41,7 +41,6 @@ interface Shortcut {
 const shortcuts = ref<Shortcut[]>([]);
 const cmd = ref('');
 const sending = ref(false);
-const history = ref<string[]>([]);
 
 /** 按 group 分组后的快捷命令，模板里按组渲染 */
 const shortcutGroups = computed(() => {
@@ -60,9 +59,10 @@ const suggestIndex = ref(0);
 const suggestOpen = ref(false);
 const inputEl = ref<HTMLInputElement | null>(null);
 const onlinePlayers = ref<string[]>([]);
+const serverCommands = ref<string[]>([]);
 
 function refreshSuggest(): void {
-  suggestions.value = suggest(cmd.value, onlinePlayers.value);
+  suggestions.value = suggest(cmd.value, onlinePlayers.value, serverCommands.value);
   suggestIndex.value = 0;
   suggestOpen.value = suggestions.value.length > 0 && cmd.value.trim().length > 0;
 }
@@ -76,6 +76,17 @@ async function loadOnlinePlayers(): Promise<void> {
   }
 }
 
+async function loadServerCommands(): Promise<void> {
+  const id = props.id;
+  try {
+    const r = await api.get<{ commands: string[] }>(`/api/instances/${id}/command-roots`);
+    if (props.id === id) serverCommands.value = r.commands ?? [];
+  } catch {
+    if (props.id === id) serverCommands.value = [];
+  }
+  if (props.id === id) refreshSuggest();
+}
+
 /** 当前高亮的候选（用于底部那行中文说明） */
 const currentHint = computed(() => suggestions.value[suggestIndex.value] ?? null);
 
@@ -83,7 +94,7 @@ function pickSuggestion(s?: Suggestion): void {
   const target = s ?? suggestions.value[suggestIndex.value];
   if (!target) return;
   cmd.value = applySuggestion(cmd.value, target);
-  suggestions.value = suggest(cmd.value, onlinePlayers.value);
+  suggestions.value = suggest(cmd.value, onlinePlayers.value, serverCommands.value);
   suggestIndex.value = 0;
   suggestOpen.value = false;
   nextTick(() => inputEl.value?.focus());
@@ -167,6 +178,18 @@ let lastSeq = 0;
 let closed = false;
 
 const instance = computed(() => detail.value?.instance ?? null);
+const commandScopeLabel = computed(() => {
+  if (!instance.value) return '当前世界';
+  const loaderNames: Record<string, string> = {
+    vanilla: 'Vanilla',
+    paper: 'Paper',
+    forge: 'Forge',
+    neoforge: 'NeoForge',
+    fabric: 'Fabric',
+  };
+  const loader = loaderNames[instance.value.loader] ?? instance.value.loader;
+  return `${instance.value.mc} · ${loader}${instance.value.loaderVersion ? ` ${instance.value.loaderVersion}` : ''}`;
+});
 const running = computed(() => (instance.value ? RUNNING_STATUS.includes(instance.value.status) : false));
 
 const filteredLines = computed(() => {
@@ -201,8 +224,14 @@ function badgeClass(status: string): string {
 
 async function scrollToBottom(): Promise<void> {
   await nextTick();
-  const el = consoleEl.value;
-  if (el && autoScroll.value) el.scrollTop = el.scrollHeight;
+  if (!autoScroll.value) return;
+  // The first render can finish before the flex layout has its final height.
+  // Wait for two paint frames so initial entry and KeepAlive activation land at
+  // the actual bottom instead of the first buffered line.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const el = consoleEl.value;
+    if (el && autoScroll.value) el.scrollTop = el.scrollHeight;
+  }));
 }
 
 function pushLine(row: ConsoleLine): void {
@@ -289,10 +318,6 @@ function togglePause(): void {
 
 // ---------------------------------------------------------------- 命令
 
-function remember(text: string): void {
-  history.value = [text, ...history.value.filter((h) => h !== text)].slice(0, 8);
-}
-
 async function send(text: string): Promise<void> {
   const value = (text ?? '').trim();
   if (!value || sending.value) return;
@@ -303,7 +328,6 @@ async function send(text: string): Promise<void> {
     cmd.value = '';
     suggestions.value = [];
     suggestOpen.value = false;
-    remember(value);
     autoScroll.value = true;
     void scrollToBottom();
     void loadOnlinePlayers();
@@ -421,10 +445,12 @@ function reset(): void {
   streaming.value = '';
   detail.value = null;
   sched.value = null;
+  serverCommands.value = [];
 }
 
 async function boot(): Promise<void> {
   await Promise.all([loadDetail(), loadShortcuts(), loadSchedule(), loadOnlinePlayers()]);
+  void loadServerCommands();
   await fetchConsole();
   if (closed) return;
   connect();
@@ -433,7 +459,12 @@ async function boot(): Promise<void> {
 onMounted(async () => {
   await boot();
   if (closed) return;
+  void scrollToBottom();
   pollTimer = window.setInterval(loadDetail, 8000);
+});
+
+onActivated(() => {
+  void scrollToBottom();
 });
 
 onUnmounted(() => {
@@ -552,7 +583,7 @@ watch(
                   {{ currentHint.desc || '按 Tab 补全' }}
                 </template>
                 <template v-else>
-                  支持 Tab 补全、↑↓ 选择、回车发送；打一半按回车会先补全。参数位会提示在线玩家与常用取值。
+                  {{ commandScopeLabel }} 的命令名按本世界服务端 /help 同步（含已注册插件 / 模组命令）；参数位目前是通用提示。RCON 不提供游戏客户端的 Brigadier 参数建议，物品和模组参数无法保证与游戏内完全一致。
                 </template>
               </div>
             </div>
@@ -634,15 +665,6 @@ watch(
             </div>
             <div v-else class="text-3 small">没有可用的快捷命令</div>
 
-            <div class="divider" />
-
-
-            <div v-if="history.length" class="col gap-1">
-              <div class="field-label">最近用过（点击回填）</div>
-              <div class="chips">
-                <button v-for="h in history" :key="h" class="chip" @click="cmd = h">{{ h }}</button>
-              </div>
-            </div>
           </div>
         </div>
       </div>

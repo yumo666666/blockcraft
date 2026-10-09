@@ -57,6 +57,36 @@ const SHORTCUTS_DEFAULT: Shortcut[] = [
   { group: '存档安全', label: '清空掉落物', cmd: 'kill @e[type=item]', danger: true, hint: '删掉地上所有掉落物，找回 TPS' },
 ];
 
+const COMMAND_ROOT_TTL_MS = 30_000;
+const commandRootCache = new Map<string, { at: number; commands: string[] }>();
+
+function parseCommandRoots(output: string): string[] {
+  const plain = output.replace(/§[0-9a-fk-or]/gi, '').replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
+  const names = new Set<string>();
+  for (const match of plain.matchAll(/(?:^|\s)\/([a-zA-Z0-9_:.+-]+)(?=[\s,;]|$)/gm)) {
+    names.add(match[1].toLowerCase());
+  }
+  return [...names];
+}
+
+async function readCommandRoots(id: string): Promise<string[]> {
+  const found = new Set<string>();
+  // Vanilla and Bukkit help output paginate command roots. Walk until a page
+  // adds nothing so plugin commands beyond page one are included as well.
+  for (let page = 1; page <= 20; page++) {
+    const output = await sup.rcon(id, page === 1 ? 'help' : `help ${page}`);
+    const roots = parseCommandRoots(output);
+    let added = 0;
+    for (const root of roots) {
+      if (found.has(root)) continue;
+      found.add(root);
+      added++;
+    }
+    if (page > 1 && added === 0) break;
+  }
+  return [...found];
+}
+
 export function registerConsoleRoutes(app: Express): void {
   app.get('/api/instances/:id/console', (req, res) => {
     const id = req.params.id;
@@ -121,6 +151,30 @@ export function registerConsoleRoutes(app: Express): void {
 
   app.get('/api/instances/:id/shortcuts', (req, res) => {
     res.json({ shortcuts: SHORTCUTS_DEFAULT });
+  });
+
+  // RCON does not implement Minecraft's Brigadier suggestion protocol. `/help`
+  // is the server-side, version/loader-aware list of executable command roots;
+  // the browser combines it with argument hints for common vanilla commands.
+  app.get('/api/instances/:id/command-roots', async (req, res) => {
+    const id = req.params.id;
+    I.getConfig(id);
+    if (!sup.isRunning(id)) {
+      res.json({ commands: [] });
+      return;
+    }
+    const cached = commandRootCache.get(id);
+    if (cached && Date.now() - cached.at < COMMAND_ROOT_TTL_MS) {
+      res.json({ commands: cached.commands });
+      return;
+    }
+    try {
+      const commands = await readCommandRoots(id);
+      commandRootCache.set(id, { at: Date.now(), commands });
+      res.json({ commands });
+    } catch {
+      res.json({ commands: cached?.commands ?? [] });
+    }
   });
 
   app.get('/api/instances/:id/schedule', (req, res) => {

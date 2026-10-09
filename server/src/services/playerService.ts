@@ -3,16 +3,21 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import net from 'node:net';
-import { PLAYERS_CACHE_FILE, SKIN_BINDINGS_FILE, instanceServerDir, DATA_DIR } from '../core/paths.ts';
+import { PLAYERS_CACHE_FILE, SKIN_BINDINGS_FILE, instanceDir, instanceServerDir, DATA_DIR } from '../core/paths.ts';
 import { atomicWriteJsonWithBackupSync, atomicWriteFileSync, readJsonSync } from '../core/fsx.ts';
 import { createLogger } from '../core/logger.ts';
+import { loadConfig } from '../config.ts';
 import * as I from './instanceService.ts';
 import * as sup from './supervisor.ts';
+import { detectSkinSupport, type SkinSupportKind } from './skinSupportService.ts';
 import type { PlayerInfo } from '../types.ts';
 
 const logger = createLogger('player');
 
 const SKIN_CACHE_DIR = path.join(DATA_DIR, 'skins');
+const SKIN_POOL_DIR = path.join(DATA_DIR, 'skin-pool');
+const SKIN_POOL_FILE = path.join(DATA_DIR, 'skin-pool.json');
+const SKIN_ASSIGNMENT_DIR = path.join(DATA_DIR, 'skin-assignments');
 const TTL = 24 * 3600 * 1000;
 
 interface CacheEntry {
@@ -24,10 +29,31 @@ interface CacheEntry {
 interface SkinBinding {
   uuid: string;
   name: string;
-  kind: 'upload' | 'url' | 'mojang';
+  kind: 'upload' | 'url' | 'mojang' | 'pool';
   url?: string;
   mojangUuid?: string;
+  poolId?: string;
+  worldId?: string;
+  token?: string;
+  variant?: 'classic' | 'slim';
+  serverApplied?: boolean;
   updatedAt: number;
+}
+
+export interface SkinPoolItem {
+  id: string;
+  name: string;
+  model: 'classic' | 'slim';
+  bytes: number;
+  createdAt: number;
+}
+
+type SkinPool = Record<string, SkinPoolItem>;
+
+interface MineSkinUploadResponse {
+  error?: string;
+  errorCode?: string;
+  data?: { texture?: { url?: string; value?: string; signature?: string } };
 }
 
 type Cache = Record<string, CacheEntry>;
@@ -44,6 +70,88 @@ function loadBindings(): SkinBindings {
 }
 function saveBindings(bindings: SkinBindings): void {
   atomicWriteJsonWithBackupSync(SKIN_BINDINGS_FILE, bindings);
+}
+
+function loadSkinPool(): SkinPool {
+  return readJsonSync<SkinPool>(SKIN_POOL_FILE, {});
+}
+
+function saveSkinPool(pool: SkinPool): void {
+  atomicWriteJsonWithBackupSync(SKIN_POOL_FILE, pool);
+}
+
+function validSkinPoolId(id: string): boolean {
+  return /^[0-9a-f]{32}$/i.test(id);
+}
+
+function worldBindingKey(id: string, uuid: string): string {
+  return `${id}:${compactUuid(uuid)}`;
+}
+
+function assignmentPath(id: string, uuid: string): string {
+  return path.join(SKIN_ASSIGNMENT_DIR, id, `${compactUuid(uuid)}.png`);
+}
+
+function writeAssignment(id: string, uuid: string, data: Buffer): string {
+  const file = assignmentPath(id, uuid);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  atomicWriteFileSync(file, data);
+  return file;
+}
+
+function localAssignmentUrl(id: string, uuid: string, token: string): string {
+  const port = loadConfig().panel.port;
+  return `http://127.0.0.1:${port}/internal/skin-assignments/${encodeURIComponent(id)}/${compactUuid(uuid)}/${token}.png`;
+}
+
+function ensureAssignmentToken(binding: SkinBinding): string {
+  binding.token ??= crypto.randomBytes(24).toString('hex');
+  return binding.token;
+}
+
+export function listSkinPool(): SkinPoolItem[] {
+  return Object.values(loadSkinPool()).sort((a, b) => a.name.localeCompare(b.name) || a.createdAt - b.createdAt);
+}
+
+export function addSkinToPool(name: string, model: 'classic' | 'slim', data: Buffer): SkinPoolItem {
+  validateSkinPng(data);
+  const cleanName = path.basename(name.trim()).replace(/\.png$/i, '').trim().slice(0, 64);
+  if (!cleanName) throw new Error('请填写皮肤名称');
+  if (!['classic', 'slim'].includes(model)) throw new Error('皮肤模型只能是 Steve（经典）或 Alex（纤细）');
+  fs.mkdirSync(SKIN_POOL_DIR, { recursive: true });
+  const id = crypto.randomBytes(16).toString('hex');
+  const item: SkinPoolItem = { id, name: cleanName, model, bytes: data.length, createdAt: Date.now() };
+  atomicWriteFileSync(path.join(SKIN_POOL_DIR, `${id}.png`), data);
+  const pool = loadSkinPool();
+  pool[id] = item;
+  saveSkinPool(pool);
+  return item;
+}
+
+export function skinPoolImage(id: string): Buffer | null {
+  if (!validSkinPoolId(id)) return null;
+  try { return fs.readFileSync(path.join(SKIN_POOL_DIR, `${id}.png`)); } catch { return null; }
+}
+
+export function removeSkinFromPool(id: string): boolean {
+  if (!validSkinPoolId(id)) return false;
+  const pool = loadSkinPool();
+  if (!pool[id]) return false;
+  delete pool[id];
+  saveSkinPool(pool);
+  try { fs.unlinkSync(path.join(SKIN_POOL_DIR, `${id}.png`)); } catch { /* ignore */ }
+  // A selected copy is kept under the player binding, so removing a library entry
+  // will not reset an already assigned skin in a world.
+  return true;
+}
+
+export function skinAssignmentImage(id: string, uuid: string, token: string): Buffer | null {
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(id) || !/^[0-9a-f]{32}$/i.test(uuid) || !/^[0-9a-f]{48}$/i.test(token)) return null;
+  const bindings = loadBindings();
+  const binding = bindings[worldBindingKey(id, uuid)];
+  if (!binding?.token || binding.token.length !== token.length) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(binding.token), Buffer.from(token))) return null;
+  try { return fs.readFileSync(assignmentPath(id, uuid)); } catch { return null; }
 }
 
 function readJsonFile<T>(file: string, fallback: T): T {
@@ -215,6 +323,18 @@ function skinsRestorerRoots(serverDir: string): string[] {
   return roots;
 }
 
+function hasSkinsRestorer(serverDir: string): boolean {
+  for (const parentName of ['plugins', 'mods', 'config']) {
+    const parent = path.join(serverDir, parentName);
+    try {
+      if (fs.readdirSync(parent).some((entry) => /skins.?restorer/i.test(entry))) return true;
+    } catch {
+      /* Optional server integration directory. */
+    }
+  }
+  return false;
+}
+
 export function playerUuid(id: string, name: string): string {
   const rows = readJsonFile<{ name: string; uuid?: string }[]>(path.join(instanceServerDir(id), 'usercache.json'), []);
   const entry = rows.find((row) => row.name.toLowerCase() === name.toLowerCase());
@@ -281,22 +401,48 @@ function skinsRestorerSkin(serverDir: string, name: string, uuid: string): strin
   return null;
 }
 
+/** Read Skin Restorer's per-player saved profile data from the world or global storage folder. */
+function skinRestorerModSkin(id: string, name: string, uuid: string): string | null {
+  const serverDir = instanceServerDir(id);
+  const configFile = path.join(serverDir, 'config', 'skinrestorer', 'config.json');
+  const config = readJsonFile<{ storage?: { location?: string } }>(configFile, {});
+  const global = String(config.storage?.location ?? 'world').toLowerCase() === 'global';
+  const levelName = I.getConfig(id).levelName || 'world';
+  const worldDirs = global
+    ? [path.join(serverDir, 'config', 'skinrestorer', 'saved_skins')]
+    : [path.join(serverDir, levelName, 'skinrestorer'), path.join(serverDir, 'world', 'skinrestorer')];
+  const uuids = [...new Set([withDashes(uuid), withDashes(offlineUuid(name))])];
+  for (const dir of worldDirs) {
+    for (const playerId of uuids) {
+      const record = readJsonFile<{ value?: { value?: string }; skin?: { value?: string } } | null>(path.join(dir, `${playerId}.json`), null);
+      const propertyValue = record?.value?.value ?? record?.skin?.value;
+      const url = textureUrl(propertyValue);
+      if (url) return url;
+    }
+  }
+  return null;
+}
+
 interface SkinResolution {
   uuid: string | null;
   skinUrl: string | null;
   source: PlayerInfo['skinSource'];
   localPath?: string;
+  appliedToServer?: boolean;
 }
 
 async function resolveMojangSkin(name: string, onlineMode: boolean, identityUuid?: string): Promise<CacheEntry> {
+  // Only use a profile UUID supplied by online-mode authentication. Looking up
+  // a same-name account is ambiguous, even when the server itself is online-mode.
+  if (!onlineMode || !identityUuid || compactUuid(identityUuid) === compactUuid(offlineUuid(name))) {
+    return { at: Date.now(), uuid: identityUuid ? withDashes(identityUuid) : offlineUuid(name), skinUrl: null };
+  }
   const cache = loadCache();
   const key = name.toLowerCase();
   const hit = cache[key];
   if (hit && Date.now() - hit.at < TTL && (!onlineMode || !identityUuid || compactUuid(hit.uuid ?? '') === compactUuid(identityUuid))) return hit;
 
-  const profile = onlineMode && identityUuid && compactUuid(identityUuid) !== compactUuid(offlineUuid(name))
-    ? await mojangProfile(identityUuid, true)
-    : await mojangProfile(name, false);
+  const profile = await mojangProfile(identityUuid, true);
   const entry: CacheEntry = {
     at: Date.now(),
     uuid: profile?.uuid ?? (identityUuid ? withDashes(identityUuid) : offlineUuid(name)),
@@ -311,23 +457,24 @@ async function resolvePlayerSkin(id: string, name: string, onlineMode: boolean, 
   identityUuid ??= playerUuid(id, name);
   const uuid = identityUuid ? withDashes(identityUuid) : offlineUuid(name);
   const actual = skinsRestorerSkin(instanceServerDir(id), name, uuid);
-  if (actual) return { uuid, skinUrl: actual, source: 'server' };
+  if (actual) return { uuid, skinUrl: actual, source: 'server', appliedToServer: true };
+  const modActual = skinRestorerModSkin(id, name, uuid);
+  if (modActual) return { uuid, skinUrl: modActual, source: 'server', appliedToServer: true };
 
-  const binding = loadBindings()[compactUuid(offlineUuid(name))];
+  const allBindings = loadBindings();
+  const binding = allBindings[worldBindingKey(id, offlineUuid(name))] ?? allBindings[compactUuid(offlineUuid(name))];
   if (binding) {
-    if (binding.kind === 'upload' || binding.kind === 'url') {
-      const localPath = boundSkinPath(binding.uuid);
-      if (fs.existsSync(localPath)) return { uuid, skinUrl: binding.url ?? null, source: 'bound', localPath };
+    if (binding.kind === 'upload' || binding.kind === 'url' || binding.kind === 'pool') {
+      const localPath = binding.worldId ? assignmentPath(binding.worldId, binding.uuid) : boundSkinPath(binding.uuid);
+      if (fs.existsSync(localPath)) return { uuid, skinUrl: binding.url ?? null, source: 'bound', localPath, appliedToServer: Boolean(binding.serverApplied) };
     } else if (binding.kind === 'mojang' && binding.mojangUuid) {
       const profile = await mojangProfile(binding.mojangUuid, true);
-      if (profile) return { uuid, skinUrl: profile.skinUrl, source: 'bound' };
-      const cached = await resolveMojangSkin(binding.name, false, binding.mojangUuid);
-      if (cached.skinUrl) return { uuid, skinUrl: cached.skinUrl, source: 'bound' };
+      if (profile) return { uuid, skinUrl: profile.skinUrl, source: 'bound', appliedToServer: Boolean(binding.serverApplied) };
     }
   }
 
   const profile = await resolveMojangSkin(name, onlineMode, identityUuid);
-  return { uuid: profile.uuid, skinUrl: profile.skinUrl, source: profile.skinUrl ? (onlineMode ? 'mojang' : 'guess') : 'none' };
+  return { uuid: profile.uuid, skinUrl: profile.skinUrl, source: profile.skinUrl ? 'mojang' : 'none', appliedToServer: Boolean(profile.skinUrl && onlineMode) };
 }
 
 export interface SkinResult {
@@ -337,6 +484,7 @@ export interface SkinResult {
   /** 面板内部代理地址，前端直接当图片用 */
   url: string | null;
   manual: boolean;
+  appliedToServer: boolean;
 }
 
 export async function skinOf(id: string, name: string, onlineMode: boolean, identityUuid?: string): Promise<SkinResult> {
@@ -347,6 +495,7 @@ export async function skinOf(id: string, name: string, onlineMode: boolean, iden
     source: result.source,
     url: result.skinUrl || result.localPath ? `/api/instances/${encodeURIComponent(id)}/players/${encodeURIComponent(name)}/skin` : null,
     manual: result.source === 'bound',
+    appliedToServer: Boolean(result.appliedToServer),
   };
 }
 
@@ -369,24 +518,167 @@ export async function skinBytesForPlayer(id: string, name: string, onlineMode: b
   }
 }
 
-export async function bindSameNameMojangSkin(name: string): Promise<void> {
-  const profile = await mojangProfile(name, false);
-  if (!profile) throw new Error(`没有找到 ${name} 的正版皮肤`);
-  const bindings = loadBindings();
-  const uuid = offlineUuid(name);
-  bindings[compactUuid(uuid)] = { uuid, name, kind: 'mojang', mojangUuid: profile.uuid, updatedAt: Date.now() };
-  saveBindings(bindings);
-  logger.info(`已把 ${name} 绑定到正版账号 ${profile.uuid}`);
+export interface SkinChangeResult {
+  appliedToServer: boolean;
+  message: string;
 }
 
-export async function bindSkinUrl(name: string, url: string): Promise<void> {
+async function signUploadedSkin(data: Buffer): Promise<string> {
+  const body = new FormData();
+  body.set('file', new Blob([new Uint8Array(data)], { type: 'image/png' }), 'skin.png');
+  body.set('visibility', '1'); // private in MineSkin's API; never add user skins to the public gallery
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90_000);
+  try {
+    const apiKey = loadConfig().skins.mineskinApiKey;
+    const response = await fetch('https://api.mineskin.org/generate/upload', {
+      method: 'POST',
+      headers: {
+        'user-agent': 'BlockCraft/2.2',
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body,
+      signal: controller.signal,
+    });
+    const result = await response.json().catch(() => null) as MineSkinUploadResponse | null;
+    if (!response.ok) {
+      const detail = result?.error ?? result?.errorCode ?? `HTTP ${response.status}`;
+      throw new Error(`MineSkin 签名服务返回 ${detail}`);
+    }
+    const texture = result?.data?.texture;
+    const url = texture?.url;
+    if (!texture?.value || !texture.signature || !url || !/^https:\/\/textures\.minecraft\.net\/texture\/[0-9a-f]{32,64}$/i.test(url)) {
+      throw new Error('MineSkin 没有返回有效的已签名 Minecraft 皮肤纹理');
+    }
+    return url;
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') throw new Error('MineSkin 签名请求超时，请稍后重试');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function commandRejected(output: string): boolean {
+  return !output.trim() || /unknown or incomplete command|unknown command|not a valid|permission|denied|could not|failed|error|未知|不完整的命令|没有权限|无权限|失败|无效|无法|未找到/i.test(output);
+}
+
+function putWorldBinding(id: string, name: string, kind: SkinBinding['kind'], fields: Partial<SkinBinding> = {}): SkinBinding {
+  const uuid = offlineUuid(name);
+  const bindings = loadBindings();
+  const key = worldBindingKey(id, uuid);
+  const prior = bindings[key];
+  const binding: SkinBinding = {
+    uuid,
+    name,
+    kind,
+    worldId: id,
+    token: prior?.token ?? crypto.randomBytes(24).toString('hex'),
+    serverApplied: false,
+    updatedAt: Date.now(),
+    ...fields,
+  };
+  bindings[key] = binding;
+  saveBindings(bindings);
+  return binding;
+}
+
+function saveWorldBinding(binding: SkinBinding): void {
+  if (!binding.worldId) return;
+  const bindings = loadBindings();
+  bindings[worldBindingKey(binding.worldId, binding.uuid)] = binding;
+  saveBindings(bindings);
+}
+
+function clearWorldBinding(id: string, name: string): void {
+  const uuid = offlineUuid(name);
+  const bindings = loadBindings();
+  delete bindings[worldBindingKey(id, uuid)];
+  // Remove the old global-format entry too, so legacy manual bindings do not mask restore.
+  delete bindings[compactUuid(uuid)];
+  saveBindings(bindings);
+  try { fs.unlinkSync(assignmentPath(id, uuid)); } catch { /* Ignore an absent copy. */ }
+}
+
+async function applyModSkin(id: string, name: string, binding: SkinBinding): Promise<SkinChangeResult> {
+  if (!sup.isRunning(id)) return { appliedToServer: false, message: '世界没有运行；皮肤选择已保存到 BlockCraft，启动世界后需要重新应用。' };
+  const token = ensureAssignmentToken(binding);
+  saveWorldBinding(binding);
+  const url = localAssignmentUrl(id, binding.uuid, token);
+  try {
+    // The server mod downloads this localhost URL itself, then sends the PNG bytes
+    // to MineSkin for signing. No client installation or public image host is needed.
+    await sup.rcon(id, 'skin config reload').catch(() => '');
+    const command = binding.kind === 'mojang'
+      ? `skin set mojang ${name} ${name}`
+      : `skin set web ${binding.variant ?? 'classic'} ${url} ${name}`;
+    const output = await sup.rcon(id, command);
+    if (commandRejected(output)) return { appliedToServer: false, message: `Skin Restorer 没有接受皮肤设置：${output.slice(0, 240)}` };
+    return { appliedToServer: true, message: 'Skin Restorer 已接受设置并将皮肤保存到服务端玩家档案；在线玩家会更新，退出后重连仍会保留。' };
+  } catch (err) {
+    return { appliedToServer: false, message: `未能连接 Skin Restorer：${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function applyPluginSkin(id: string, name: string, skinInput: string, isUrl = false, variant: 'classic' | 'slim' = 'classic'): Promise<SkinChangeResult> {
+  if (!sup.isRunning(id)) return { appliedToServer: false, message: '世界没有运行；皮肤选择已保存到 BlockCraft，启动世界后需要重新应用。' };
+  try {
+    let selectedSkin = skinInput;
+    if (isUrl) {
+      const customName = `bc_${crypto.createHash('sha256').update(`${id}:${name.toLowerCase()}`).digest('hex').slice(0, 12)}`;
+      const createOutput = await sup.rcon(id, `sr createcustom ${customName} ${JSON.stringify(skinInput)} ${variant}`);
+      if (commandRejected(createOutput)) return { appliedToServer: false, message: `SkinsRestorer 没有创建自定义皮肤：${createOutput.slice(0, 240)}` };
+      selectedSkin = customName;
+    }
+    const output = await sup.rcon(id, `skin set ${JSON.stringify(selectedSkin)} ${name}`);
+    if (commandRejected(output)) return { appliedToServer: false, message: `服务端未能应用皮肤：${output.slice(0, 240)}` };
+    return { appliedToServer: true, message: 'SkinsRestorer 已接受设置并保存玩家的皮肤选择；在线玩家会更新，退出后重连仍会保留。' };
+  } catch (err) {
+    return { appliedToServer: false, message: `未能连接 SkinsRestorer：${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function applyBoundSkin(id: string, name: string, binding: SkinBinding, pluginUrl?: string): Promise<SkinChangeResult> {
+  if (!sup.isRunning(id)) return { appliedToServer: false, message: '世界没有运行；皮肤已保存在 BlockCraft，启动后可再次选择并应用。' };
+  const support: SkinSupportKind = await detectSkinSupport(id);
+  let result: SkinChangeResult;
+  if (support === 'skin-restorer-mod') result = await applyModSkin(id, name, binding);
+  else if (support === 'skins-restorer-plugin') {
+    if (binding.kind === 'mojang') result = await applyPluginSkin(id, name, name);
+    else {
+      let source = pluginUrl ?? binding.url ?? '';
+      if (binding.kind === 'pool' || binding.kind === 'upload') {
+        const data = fs.readFileSync(assignmentPath(id, binding.uuid));
+        source = await signUploadedSkin(data);
+      }
+      result = source
+        ? await applyPluginSkin(id, name, source, true, binding.variant ?? 'classic')
+        : { appliedToServer: false, message: '皮肤图片已保存，但没有可用于 SkinsRestorer 的图片来源。' };
+    }
+  } else {
+    result = { appliedToServer: false, message: `皮肤已保存在 BlockCraft 供面板预览。${I.getConfig(id).loader === 'vanilla' ? '纯 Vanilla 不能加载服务端皮肤组件；可换 Paper 或 Fabric、Forge、NeoForge。' : '当前世界没有可用的服务端皮肤组件。'}` };
+  }
+  binding.serverApplied = result.appliedToServer;
+  binding.updatedAt = Date.now();
+  saveWorldBinding(binding);
+  return result;
+}
+
+export async function bindSameNameMojangSkin(id: string, name: string): Promise<SkinChangeResult> {
+  const profile = await mojangProfile(name, false);
+  if (!profile) throw new Error(`没有找到 ${name} 的正版皮肤`);
+  const binding = putWorldBinding(id, name, 'mojang', { mojangUuid: profile.uuid });
+  const result = await applyBoundSkin(id, name, binding);
+  logger.info(`已把 ${name} 绑定到正版账号 ${profile.uuid}`);
+  return result;
+}
+
+export async function bindSkinUrl(id: string, name: string, url: string, variant: 'classic' | 'slim' = 'classic'): Promise<SkinChangeResult> {
   const data = await fetchSkinPng(url);
   const uuid = offlineUuid(name);
-  fs.mkdirSync(SKIN_CACHE_DIR, { recursive: true });
-  atomicWriteFileSync(boundSkinPath(uuid), data);
-  const bindings = loadBindings();
-  bindings[compactUuid(uuid)] = { uuid, name, kind: 'url', url, updatedAt: Date.now() };
-  saveBindings(bindings);
+  writeAssignment(id, uuid, data);
+  const binding = putWorldBinding(id, name, 'url', { url, variant });
+  return applyBoundSkin(id, name, binding, url);
 }
 
 export function saveManualSkin(name: string, data: Buffer): void {
@@ -395,26 +687,61 @@ export function saveManualSkin(name: string, data: Buffer): void {
   fs.mkdirSync(SKIN_CACHE_DIR, { recursive: true });
   atomicWriteFileSync(boundSkinPath(uuid), data);
   const bindings = loadBindings();
-  bindings[compactUuid(uuid)] = { uuid, name, kind: 'upload', updatedAt: Date.now() };
+  bindings[compactUuid(uuid)] = { uuid, name, kind: 'upload', serverApplied: false, updatedAt: Date.now() };
   saveBindings(bindings);
 }
 
-export function invalidatePlayer(name: string): void {
-  const key = compactUuid(offlineUuid(name));
+export async function bindUploadedSkin(id: string, name: string, data: Buffer, variant: 'classic' | 'slim' = 'classic'): Promise<SkinChangeResult> {
+  validateSkinPng(data);
+  writeAssignment(id, offlineUuid(name), data);
+  const binding = putWorldBinding(id, name, 'upload', { variant });
+  return applyBoundSkin(id, name, binding);
+}
+
+export async function selectPoolSkin(id: string, name: string, poolId: string): Promise<SkinChangeResult> {
+  if (!validSkinPoolId(poolId)) throw new Error('皮肤池条目不存在');
+  const poolItem = loadSkinPool()[poolId];
+  const data = skinPoolImage(poolId);
+  if (!poolItem || !data) throw new Error('皮肤池条目不存在或图片已损坏');
+  writeAssignment(id, offlineUuid(name), data);
+  const binding = putWorldBinding(id, name, 'pool', { poolId, variant: poolItem.model });
+  return applyBoundSkin(id, name, binding);
+}
+
+export async function restorePlayerSkin(id: string, name: string): Promise<SkinChangeResult> {
+  const support = await detectSkinSupport(id);
+  if (!sup.isRunning(id)) {
+    return { appliedToServer: false, message: '世界没有运行，无法通知服务端清除皮肤。重新启动世界后，请再次点“恢复自动来源”。' };
+  }
+  if (!support) {
+    clearWorldBinding(id, name);
+    invalidatePlayer(name, id);
+    return { appliedToServer: false, message: '已清除 BlockCraft 预览绑定，但此世界没有可用的服务端皮肤组件。' };
+  }
+  try {
+    const command = support === 'skin-restorer-mod' ? `skin reset ${name}` : `skin clear ${name}`;
+    const output = await sup.rcon(id, command);
+    if (commandRejected(output)) return { appliedToServer: false, message: `服务端没有恢复玩家皮肤：${output.slice(0, 240)}` };
+    clearWorldBinding(id, name);
+    invalidatePlayer(name, id);
+    return { appliedToServer: true, message: '服务端已清除已保存的皮肤选择；玩家重连后会恢复自动来源。' };
+  } catch (err) {
+    return { appliedToServer: false, message: `未能通知服务端恢复皮肤：${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+export function invalidatePlayer(name: string, id?: string): void {
+  const uuid = offlineUuid(name);
   const cache = loadCache();
   delete cache[name.toLowerCase()];
   saveCache(cache);
-  const bindings = loadBindings();
-  delete bindings[key];
-  saveBindings(bindings);
-  for (const candidate of [boundSkinPath(offlineUuid(name)), path.join(SKIN_CACHE_DIR, `${name.toLowerCase()}.png`)]) {
-    try {
-      fs.unlinkSync(candidate);
-    } catch {
-      /* Ignore a missing image. */
-    }
+  if (id) {
+    const bindings = loadBindings();
+    delete bindings[worldBindingKey(id, uuid)];
+    saveBindings(bindings);
+    try { fs.unlinkSync(assignmentPath(id, uuid)); } catch { /* Ignore a missing image. */ }
   }
-  logger.debug(`已清除 ${name} 的皮肤绑定与缓存`);
+  logger.debug(`已清除 ${name} 的皮肤缓存${id ? `（${id}）` : ''}`);
 }
 
 export interface PlayerList {
@@ -454,6 +781,7 @@ export async function listPlayers(id: string): Promise<PlayerList> {
       lastSeen: null,
       skinUrl: skin?.url ?? null,
       skinSource: skin?.source ?? 'none',
+      skinAppliedToServer: Boolean(skin?.appliedToServer),
       playtimeSeconds: null,
     });
   }

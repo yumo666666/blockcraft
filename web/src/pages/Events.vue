@@ -3,6 +3,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../lib/api.ts';
 import { toastError } from '../lib/toast.ts';
 
+defineOptions({ name: 'Events' });
+
 /**
  * 事件总日志：所有世界的启动 / 就绪 / 关闭 / 崩溃都记在这里，按类型上不同颜色。
  * 只保留最近 200 行，超出的从上面挤掉（用户要求：与控制台一致，窗口内滚动）。

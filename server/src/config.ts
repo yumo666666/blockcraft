@@ -74,6 +74,9 @@ export function defaultConfig(): PanelConfig {
       forgeMaven: ['https://maven.minecraftforge.net', 'https://bmclapi2.bangbang93.com/maven'],
       githubMirror: 'https://gh-proxy.com/',
     },
+    skins: {
+      mineskinApiKey: process.env.BC_MINESKIN_API_KEY || '',
+    },
     ui: {
       accent: '#3b7f5f',
       trashRetentionDays: 7,
@@ -146,6 +149,10 @@ export function publicConfig(cfg: PanelConfig) {
     mirrors: {
       ...cfg.mirrors,
       curseforgeApiKey: cfg.mirrors.curseforgeApiKey ? '••••••' : '',
+    },
+    skins: {
+      ...cfg.skins,
+      mineskinApiKey: cfg.skins.mineskinApiKey ? '••••••' : '',
     },
   };
 }

@@ -13,6 +13,37 @@ function skinError(err: unknown): never {
 }
 
 export function registerPlayerRoutes(app: Express): void {
+  app.get('/api/skin-pool', (_req, res) => {
+    res.json({ skins: P.listSkinPool().map((skin) => ({ ...skin, imageUrl: `/api/skin-pool/${skin.id}/image` })) });
+  });
+
+  app.post('/api/skin-pool', (req, res) => {
+    const body = req.body as { name?: string; model?: string; data?: string };
+    if (!body.data?.startsWith('data:image/png;base64,')) throw bad('请上传 PNG 皮肤');
+    let skin: P.SkinPoolItem;
+    try {
+      skin = P.addSkinToPool(body.name ?? '', body.model === 'slim' ? 'slim' : 'classic', Buffer.from(body.data.split(',')[1], 'base64'));
+    } catch (err) {
+      skinError(err);
+    }
+    audit({ ip: req.ip, action: 'skin-pool.add', target: skin!.id, detail: { name: skin!.name } });
+    res.json({ ok: true, skin: { ...skin!, imageUrl: `/api/skin-pool/${skin!.id}/image` } });
+  });
+
+  app.get('/api/skin-pool/:id/image', (req, res) => {
+    const bytes = P.skinPoolImage(req.params.id);
+    if (!bytes) throw bad('皮肤池图片不存在');
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(bytes);
+  });
+
+  app.delete('/api/skin-pool/:id', (req, res) => {
+    if (!P.removeSkinFromPool(req.params.id)) throw bad('皮肤池条目不存在');
+    audit({ ip: req.ip, action: 'skin-pool.delete', target: req.params.id });
+    res.json({ ok: true });
+  });
+
   app.get('/api/instances/:id/players/online', async (req, res) => {
     const list = await P.listPlayers(req.params.id);
     res.json({ online: list.onlineNames.length, names: list.onlineNames, serverOnline: list.serverOnline });
@@ -41,42 +72,47 @@ export function registerPlayerRoutes(app: Express): void {
     const { id, name } = req.params;
     I.getConfig(id);
     requirePlayerName(name);
-    const body = req.body as { data?: string };
-    if (!body.data || !body.data.startsWith('data:image/png;base64,')) throw bad('请上传 PNG 图片');
-    const buf = Buffer.from(body.data.split(',')[1], 'base64');
+    const body = req.body as { data?: string; variant?: string; poolId?: string };
+    let result: P.SkinChangeResult;
     try {
-      P.saveManualSkin(name, buf);
+      if (body.poolId) result = await P.selectPoolSkin(id, name, body.poolId);
+      else {
+        if (!body.data || !body.data.startsWith('data:image/png;base64,')) throw bad('请上传 PNG 图片');
+        result = await P.bindUploadedSkin(id, name, Buffer.from(body.data.split(',')[1], 'base64'), body.variant === 'slim' ? 'slim' : 'classic');
+      }
     } catch (err) {
       skinError(err);
     }
-    audit({ ip: req.ip, action: 'player.skin.bind-upload', target: `${id}/${name}` });
-    res.json({ ok: true });
+    audit({ ip: req.ip, action: body.poolId ? 'player.skin.select-pool' : 'player.skin.bind-upload', target: `${id}/${name}`, detail: body.poolId ? { poolId: body.poolId } : undefined });
+    res.json({ ok: true, ...result! });
   });
 
   app.put('/api/instances/:id/players/:name/skin', async (req, res) => {
     const { id, name } = req.params;
     I.getConfig(id);
     requirePlayerName(name);
-    const body = req.body as { kind?: string; url?: string };
+    const body = req.body as { kind?: string; url?: string; variant?: string };
     try {
-      if (body.kind === 'mojang') await P.bindSameNameMojangSkin(name);
-      else if (body.kind === 'url' && body.url) await P.bindSkinUrl(name, body.url);
+      let result: P.SkinChangeResult;
+      if (body.kind === 'mojang') result = await P.bindSameNameMojangSkin(id, name);
+      else if (body.kind === 'url' && body.url) result = await P.bindSkinUrl(id, name, body.url, body.variant === 'slim' ? 'slim' : 'classic');
       else throw bad('请选择同名正版皮肤或填写皮肤 URL');
+      audit({ ip: req.ip, action: `player.skin.bind-${body.kind}`, target: `${id}/${name}` });
+      res.json({ ok: true, ...result });
+      return;
     } catch (err) {
       if (err && typeof err === 'object' && 'status' in err) throw err;
       skinError(err);
     }
-    audit({ ip: req.ip, action: `player.skin.bind-${body.kind}`, target: `${id}/${name}` });
-    res.json({ ok: true });
   });
 
-  app.delete('/api/instances/:id/players/:name/skin', (req, res) => {
+  app.delete('/api/instances/:id/players/:name/skin', async (req, res) => {
     const { id, name } = req.params;
     I.getConfig(id);
     requirePlayerName(name);
-    P.invalidatePlayer(name);
+    const result = await P.restorePlayerSkin(id, name);
     audit({ ip: req.ip, action: 'player.skin.restore', target: `${id}/${name}` });
-    res.json({ ok: true });
+    res.json({ ok: true, ...result });
   });
 
   app.post('/api/instances/:id/players/:name/:action', async (req, res) => {

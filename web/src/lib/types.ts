@@ -153,6 +153,16 @@ export interface PlayerInfo {
   banned: boolean;
   lastSeen: number | null;
   skinUrl: string | null;
-  skinSource: string;
+  skinSource: 'server' | 'bound' | 'mojang' | 'none';
+  skinAppliedToServer: boolean;
   playtimeSeconds: number | null;
+}
+
+export interface SkinPoolEntry {
+  id: string;
+  name: string;
+  model: 'classic' | 'slim';
+  bytes: number;
+  createdAt: number;
+  imageUrl: string;
 }

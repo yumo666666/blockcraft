@@ -36,6 +36,7 @@ export function registerSystemRoutes(app: Express): void {
     if (body.limits) patch.limits = body.limits;
     if (body.ui) patch.ui = body.ui;
     if (body.mirrors) patch.mirrors = body.mirrors;
+    if (body.skins) patch.skins = body.skins;
     if (body.portRanges) patch.portRanges = body.portRanges;
     const next = saveConfig(patch);
     res.json({ ok: true, config: publicConfig(next) });

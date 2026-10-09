@@ -6,6 +6,8 @@ import { toast, toastError } from '../lib/toast.ts';
 import { fmtBytes } from '../lib/format.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 
+defineOptions({ name: 'Settings' });
+
 const router = useRouter();
 const panel = ref<{
   config: Record<string, never>;
@@ -25,6 +27,7 @@ const storage = ref<{
 } | null>(null);
 const frpBinary = ref(false);
 const busy = ref(false);
+const appVersion = ref('');
 
 const form = ref({
   maxRunningInstances: 3,
@@ -33,6 +36,9 @@ const form = ref({
   trashRetentionDays: 7,
   curseforgeApiKey: '',
   curseforgeApiUrl: 'https://api.curseforge.com/v1',
+  mineskinApiKey: '',
+  mineskinApiKeyConfigured: false,
+  clearMineSkinApiKey: false,
   githubMirror: 'https://gh-proxy.com/',
   exposePanel: false,
   panelRemotePort: 26000,
@@ -50,13 +56,22 @@ const cleanTarget = ref<'trash' | 'logs'>('trash');
 const cleanFreed = ref(0);
 
 async function load() {
-  const p = await api.get<typeof panel.value>('/api/panel');
+  const [p, disk, frp, ping] = await Promise.all([
+    api.get<typeof panel.value>('/api/panel'),
+    api.get<typeof storage.value>('/api/system/storage'),
+    api.get<{ binaryReady: boolean }>('/api/frp/status').catch(() => null),
+    api.get<{ version: string }>('/api/ping').catch(() => null),
+  ]);
   panel.value = p;
+  storage.value = disk;
+  frpBinary.value = frp?.binaryReady ?? false;
+  appVersion.value = ping?.version ?? '';
   const cfg = p?.config as unknown as {
     limits: { maxRunningInstances: number; memoryBudgetMb: number | 'auto' };
     panel: { sessionHours: number };
     ui: { trashRetentionDays: number };
     mirrors: { curseforgeApiKey: string; curseforgeApi: string; githubMirror: string };
+    skins: { mineskinApiKey: string };
     frp: { exposePanel: boolean; panelRemotePort: number; configRollback: boolean };
     portRanges: { game: [number, number]; frpRemote: [number, number] };
   };
@@ -67,6 +82,9 @@ async function load() {
     form.value.trashRetentionDays = cfg.ui.trashRetentionDays;
     form.value.curseforgeApiKey = cfg.mirrors.curseforgeApiKey === '••••••' ? '' : cfg.mirrors.curseforgeApiKey;
     form.value.curseforgeApiUrl = cfg.mirrors.curseforgeApi;
+    form.value.mineskinApiKeyConfigured = cfg.skins.mineskinApiKey === '••••••';
+    form.value.mineskinApiKey = '';
+    form.value.clearMineSkinApiKey = false;
     form.value.githubMirror = cfg.mirrors.githubMirror;
     form.value.exposePanel = cfg.frp.exposePanel;
     form.value.panelRemotePort = cfg.frp.panelRemotePort;
@@ -76,9 +94,6 @@ async function load() {
     form.value.frpRangeStart = cfg.portRanges.frpRemote[0];
     form.value.frpRangeEnd = cfg.portRanges.frpRemote[1];
   }
-  storage.value = await api.get('/api/system/storage');
-  const st = await api.get<{ binaryReady: boolean }>('/api/frp/status').catch(() => null);
-  frpBinary.value = st?.binaryReady ?? false;
 }
 
 onMounted(() => {
@@ -110,12 +125,18 @@ async function saveAll() {
         githubMirror: form.value.githubMirror,
         ...(form.value.curseforgeApiKey ? { curseforgeApiKey: form.value.curseforgeApiKey } : {}),
       },
+      skins: form.value.mineskinApiKey
+        ? { mineskinApiKey: form.value.mineskinApiKey }
+        : form.value.clearMineSkinApiKey ? { mineskinApiKey: '' } : undefined,
     });
     await api.put('/api/frp/config', {
       exposePanel: form.value.exposePanel,
       panelRemotePort: form.value.panelRemotePort,
       configRollback: form.value.configRollback,
     });
+    form.value.mineskinApiKey = '';
+    form.value.clearMineSkinApiKey = false;
+    await load();
     toast('ok', '设置已保存', '端口段改动会在下次分配端口时生效');
   } catch (err) {
     toastError(err, '保存失败');
@@ -314,6 +335,43 @@ async function killWorld(id: string) {
           </div>
         </div>
 
+        <!-- 皮肤签名 -->
+        <div class="card settings-skins">
+          <div class="card-head"><h3>游戏内皮肤</h3></div>
+          <div class="card-body col gap-3">
+            <div class="field">
+              <label class="field-label">MineSkin API Key（可选）</label>
+              <input
+                v-model="form.mineskinApiKey"
+                class="input mono"
+                type="password"
+                autocomplete="new-password"
+                placeholder="留空则沿用已保存的密钥或公共额度"
+                @input="form.clearMineSkinApiKey = false"
+              />
+              <span class="field-hint">
+                上传 PNG 时，BlockCraft 会把图片发送给 MineSkin 生成签名纹理，再尝试让已安装的 SkinsRestorer 应用到玩家资料。MineSkin API Key 可在
+                <a href="https://mineskin.org/apikey" target="_blank" rel="noreferrer">mineskin.org</a>
+                申请；图片按私有可见性提交。
+              </span>
+            </div>
+            <div class="row-between wrap gap-2">
+              <span class="text-3 small">{{ form.mineskinApiKeyConfigured && !form.clearMineSkinApiKey ? '已保存 MineSkin 密钥' : form.clearMineSkinApiKey ? '保存时将移除已保存的密钥' : '未保存 MineSkin 密钥' }}</span>
+              <button
+                v-if="form.mineskinApiKeyConfigured || form.clearMineSkinApiKey"
+                class="btn btn-sm"
+                :class="form.clearMineSkinApiKey ? 'btn-soft' : 'btn-danger'"
+                @click="form.clearMineSkinApiKey = !form.clearMineSkinApiKey"
+              >
+                {{ form.clearMineSkinApiKey ? '保留密钥' : '移除密钥' }}
+              </button>
+            </div>
+            <p class="text-3 small">
+              离线 Java 客户端不会向服务器上传本地皮肤。这里的“应用”是服务器向所有客户端发送已签名的玩家皮肤；不会修改玩家设备或启动器里的本地文件。需要世界运行并安装兼容该加载器的 SkinsRestorer。
+            </p>
+          </div>
+        </div>
+
         <!-- 存储 -->
         <div class="card settings-storage">
           <div class="card-head"><h3>存储</h3></div>
@@ -354,7 +412,7 @@ async function killWorld(id: string) {
           <div class="card-head"><h3>关于</h3></div>
           <div class="card-body col gap-2">
             <div class="kv">
-              <div class="kv-row"><span class="kv-key">版本</span><span class="kv-val">BlockCraft 2.2.7</span></div>
+              <div class="kv-row"><span class="kv-key">版本</span><span class="kv-val">BlockCraft {{ appVersion || '—' }}</span></div>
               <div class="kv-row"><span class="kv-key">项目目录</span><span class="kv-val mono small ellipsis">{{ panel.projectRoot }}</span></div>
               <div class="kv-row"><span class="kv-key">数据目录</span><span class="kv-val mono small ellipsis">{{ panel.dataDir }}</span></div>
               <div class="kv-row"><span class="kv-key">世界目录</span><span class="kv-val mono small ellipsis">{{ panel.instanceDir }}</span></div>
@@ -400,9 +458,10 @@ async function killWorld(id: string) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
     'access source'
-    'limits java'
-    'frp ports'
-    'storage about';
+    'skins java'
+    'limits frp'
+    'ports storage'
+    'about about';
   gap: var(--sp-4);
   align-items: stretch;
 }
@@ -410,6 +469,7 @@ async function killWorld(id: string) {
 .settings-grid > .card > .card-body { flex: 1; min-width: 0; }
 .settings-access { grid-area: access; }
 .settings-source { grid-area: source; }
+.settings-skins { grid-area: skins; }
 .settings-limits { grid-area: limits; }
 .settings-java { grid-area: java; }
 .settings-frp { grid-area: frp; }
@@ -439,7 +499,7 @@ async function killWorld(id: string) {
 @media (max-width: 760px) {
   .settings-grid {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: 'access' 'source' 'limits' 'java' 'frp' 'ports' 'storage' 'about';
+    grid-template-areas: 'access' 'source' 'skins' 'limits' 'java' 'frp' 'ports' 'storage' 'about';
   }
   .settings-java > .card-body { justify-content: flex-start; }
 }

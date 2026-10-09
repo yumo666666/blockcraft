@@ -6,6 +6,8 @@ import { toast, toastError } from '../lib/toast.ts';
 import type { InstanceSummary } from '../lib/types.ts';
 import JobProgress from '../components/JobProgress.vue';
 
+defineOptions({ name: 'Wizard' });
+
 interface LoaderAvailability {
   loader: string;
   label: string;
@@ -81,6 +83,14 @@ const copyForm = ref({ source: '', name: '新世界副本', levelSeed: '', memor
 
 const steps = ['基本信息', '版本与加载器', '世界参数', '性能', '确认'];
 const currentLoader = computed(() => loaders.value.find((l) => l.loader === form.value.loader));
+const newSkinSupportHint = computed(() => skinSupportHint(form.value.loader));
+const importSkinSupportHint = computed(() => skinSupportHint(importForm.value.loader));
+
+function skinSupportHint(loader: string): string {
+  if (loader === 'vanilla') return '原版 Vanilla 不支持服务端模组或插件，因此不能应用服务器皮肤。要让离线玩家互相看到皮肤，请选择 Paper、Fabric、Forge 或 NeoForge。';
+  if (loader === 'paper') return '创建后会检查整合包是否已有 SkinsRestorer；缺少时会自动安装兼容的 Paper 插件。客户端无需安装模组。';
+  return '创建后会检查整合包是否已有 Skin Restorer；缺少时会自动安装对应 Minecraft 版本与加载器的服务端模组。客户端无需安装模组。';
+}
 
 onMounted(async () => {
   try {
@@ -313,6 +323,7 @@ async function submitCopy() {
           </div>
           <div v-if="loadingVersions" class="row gap-2"><span class="spinner" /> 正在查询可用版本…</div>
           <div v-else-if="currentLoader" class="badge badge-info">{{ currentLoader.note }} · 需要 Java {{ currentLoader.javaMajor }}</div>
+          <p class="text-3 small skin-support-hint">{{ newSkinSupportHint }} 只有上游发布了该组合的兼容版本时才能自动安装。</p>
         </template>
 
         <!-- 3 世界参数 -->
@@ -472,6 +483,7 @@ async function submitCopy() {
             </div>
           </div>
           <label class="switch"><input v-model="importForm.start" type="checkbox" /><span class="switch-track" /><span class="switch-text">导入完成后立即启动</span></label>
+          <p class="text-3 small skin-support-hint">{{ importSkinSupportHint }} 如果整合包已包含组件会保留；只有上游发布了兼容版本时才会补装。</p>
         </template>
       </div>
       <div class="card-foot row-between">
@@ -527,6 +539,16 @@ async function submitCopy() {
   gap: var(--sp-4);
 }
 .wizard-page { min-height: calc(100vh - var(--header-h)); justify-content: center; }
+.skin-support-hint {
+  max-width: 860px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  line-height: 1.6;
+}
 .wizard-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
 .wizard-step { max-width: 100%; }
 .choice {

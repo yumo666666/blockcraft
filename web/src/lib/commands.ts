@@ -1,7 +1,6 @@
 /**
- * Minecraft 命令补全字典。
- * 目标：在面板里敲命令，尽量接近游戏内 Tab 补全的体验 ——
- * 输一半就能看到候选、每个候选带中文说明、Tab 补全、方向键选择、Esc 关掉。
+ * 常用 Minecraft 参数提示。当前世界的根命令从服务端 `/help` 同步；RCON
+ * 不包含游戏客户端的 Brigadier 建议包，所以这里的参数候选是版本通用提示。
  */
 
 export interface Suggestion {
@@ -124,7 +123,7 @@ const BOOLEANS: Suggestion[] = [
  * @param input   输入框里的完整内容
  * @param players 在线玩家名（用于玩家名补全）
  */
-export function suggest(input: string, players: string[] = []): Suggestion[] {
+export function suggest(input: string, players: string[] = [], serverCommands: string[] = []): Suggestion[] {
   const raw = input.replace(/^\//, '');
   // 末尾是空格 → 正在补下一个参数
   const trailingSpace = /\s$/.test(raw);
@@ -134,12 +133,22 @@ export function suggest(input: string, players: string[] = []): Suggestion[] {
   if (isFirstWord) {
     const prefix = (parts[0] ?? '').toLowerCase();
     const out: Suggestion[] = [];
+    const serverRoots = new Set(serverCommands.map((name) => name.toLowerCase().replace(/^\//, '')));
+    const knownRoots = new Set<string>();
     for (const c of MC_COMMANDS) {
       const names = [c.name, ...(c.aliases ?? [])];
       if (!names.some((n) => n.startsWith(prefix))) continue;
+      if (serverRoots.size && !names.some((n) => serverRoots.has(n))) continue;
+      knownRoots.add(c.name);
       out.push({ value: `${c.name} `, label: c.name, desc: c.desc, kind: 'command' });
     }
-    return out.slice(0, 14);
+    if (serverRoots.size) {
+      for (const name of serverRoots) {
+        if (!name.startsWith(prefix) || knownRoots.has(name)) continue;
+        out.push({ value: `${name} `, label: name, desc: '此世界当前注册的服务端命令', kind: 'command' });
+      }
+    }
+    return out.slice(0, 30);
   }
 
   const head = parts[0].toLowerCase();
@@ -149,18 +158,31 @@ export function suggest(input: string, players: string[] = []): Suggestion[] {
   const lower = current.toLowerCase();
 
   // 玩家名补全：命令本身要玩家名，或参数位置看起来像玩家名
-  const playerCmds = new Set(['op', 'deop', 'kick', 'ban', 'pardon', 'ban-ip', 'clear', 'gamemode', 'xp', 'experience', 'spawnpoint', 'tell', 'msg', 'stopsound', 'advancement', 'recipe', 'tp', 'teleport', 'give', 'effect']);
-  // 注意：whitelist 本身不在 playerCmds 里（它第一个参数是 add/remove/on/off），
-  // 玩家名在第二个参数位，所以要单独判一条 —— 之前把它挂在 playerCmds 后面，导致这条永远不成立。
-  const whitelistPlayerArg =
-    head === 'whitelist' && argIndex === 2 && ['add', 'remove'].includes(parts[1]?.toLowerCase() ?? '');
-  const wantsPlayer = (playerCmds.has(head) && argIndex === 1) || whitelistPlayerArg;
-  if (wantsPlayer && players.length) {
-    const hit = players
+  const sub = parts[1]?.toLowerCase();
+  const playerArg =
+    (['op', 'deop', 'kick', 'ban', 'pardon', 'ban-ip', 'clear', 'tell', 'msg', 'w', 'spawnpoint', 'stopsound'].includes(head) && argIndex === 1)
+    || (['gamemode', 'defaultgamemode'].includes(head) && head === 'gamemode' && argIndex === 2)
+    || (['xp', 'experience'].includes(head) && ['add', 'set', 'query'].includes(sub ?? '') && argIndex === 2)
+    || (head === 'whitelist' && argIndex === 2 && ['add', 'remove'].includes(sub ?? ''))
+    || (['advancement', 'recipe'].includes(head) && argIndex === 2)
+    || (['tp', 'teleport'].includes(head) && argIndex === 2)
+    || (head === 'give' && argIndex === 1)
+    || (head === 'effect' && ((sub === 'give' && argIndex === 2) || (sub === 'clear' && argIndex === 2)))
+    || (head === 'title' && argIndex === 1)
+    || (head === 'kill' && argIndex === 1);
+  if (playerArg) {
+    const selectors = ['@a', '@p', '@r', '@s'];
+    const selectorHits = selectors.filter((name) => name.startsWith(lower)).map<Suggestion>((name) => ({
+      value: name,
+      label: name,
+      desc: '目标选择器',
+      kind: 'value',
+    }));
+    const playerHits = players
       .filter((p) => p.toLowerCase().startsWith(lower))
       .map<Suggestion>((p) => ({ value: p, label: p, desc: '在线玩家', kind: 'player' }));
-    // 不在线但输了一部分的，也允许原样提交
-    if (hit.length) return hit.slice(0, 10);
+    const hits = [...playerHits, ...selectorHits];
+    if (hits.length) return hits.slice(0, 14);
   }
 
   if (head === 'gamerule' && argIndex === 1) {
@@ -196,6 +218,28 @@ export function suggest(input: string, players: string[] = []): Suggestion[] {
   if (head === 'whitelist' && argIndex === 1) {
     return ['add', 'remove', 'list', 'on', 'off', 'reload']
       .filter((v) => v.startsWith(lower))
+      .map<Suggestion>((v) => ({ value: `${v} `, label: v, desc: '', kind: 'value' }));
+  }
+
+  const fixedArgs: Record<string, string[]> = {
+    effect: ['give', 'clear'],
+    data: ['get', 'merge', 'modify', 'remove'],
+    execute: ['align', 'anchored', 'as', 'at', 'facing', 'in', 'on', 'positioned', 'rotated', 'store', 'summon', 'if', 'unless', 'run'],
+    scoreboard: ['objectives', 'players'],
+    'scoreboard objectives': ['add', 'list', 'modify', 'remove', 'setdisplay'],
+    'scoreboard players': ['add', 'enable', 'get', 'list', 'operation', 'reset', 'set'],
+    team: ['add', 'empty', 'join', 'leave', 'list', 'modify', 'remove'],
+    tag: ['add', 'list', 'remove'],
+    locate: ['biome', 'poi', 'structure'],
+    forceload: ['add', 'query', 'remove'],
+    time: ['add', 'query', 'set'],
+    worldborder: ['add', 'center', 'damage', 'get', 'set', 'warning'],
+  };
+  const context = head === 'scoreboard' && (sub === 'objectives' || sub === 'players') ? `${head} ${sub}` : head;
+  if (fixedArgs[context] && argIndex === (context === head ? 1 : 2)) {
+    return fixedArgs[context]
+      .map((v) => v.trim())
+      .filter((v) => v.toLowerCase().startsWith(lower))
       .map<Suggestion>((v) => ({ value: `${v} `, label: v, desc: '', kind: 'value' }));
   }
 

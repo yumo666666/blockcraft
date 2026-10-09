@@ -16,6 +16,7 @@ import { registerFrpRoutes } from './routes/frp.ts';
 import { registerBackupRoutes } from './routes/backups.ts';
 import { registerModRoutes } from './routes/mods.ts';
 import { registerPlayerRoutes } from './routes/players.ts';
+import * as playerService from './services/playerService.ts';
 import { registerPackRoutes } from './routes/packs.ts';
 import { startScheduler } from './services/scheduler.ts';
 import { startFrpService } from './services/frpService.ts';
@@ -71,6 +72,20 @@ export function boot(): void {
   app.disable('x-powered-by');
   app.use(express.json({ limit: '2mb' }));
 
+  // Skin Restorer's MineSkin integration downloads uploaded PNGs from the local
+  // panel, then sends the bytes for signing. The unguessable URL is scoped to a
+  // per-world player binding; it never exposes the whole skin pool endpoint.
+  app.get('/internal/skin-assignments/:id/:uuid/:token.png', (req, res) => {
+    const bytes = playerService.skinAssignmentImage(req.params.id, req.params.uuid, req.params.token);
+    if (!bytes) {
+      res.status(404).end();
+      return;
+    }
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(bytes);
+  });
+
   // ---- 登录（不需要鉴权）
   app.post('/api/login', (req, res) => {
     const ip = req.ip ?? 'unknown';
@@ -100,7 +115,7 @@ export function boot(): void {
   });
 
   app.get('/api/ping', (_req, res) => {
-    res.json({ ok: true, name: 'BlockCraft', version: '2.2.9' });
+    res.json({ ok: true, name: 'BlockCraft', version: '2.3.0' });
   });
 
   // ---- 鉴权中间件

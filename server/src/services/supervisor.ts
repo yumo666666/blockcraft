@@ -9,6 +9,7 @@ import { busy, conflict, notFound } from '../core/errors.ts';
 import { createLogger } from '../core/logger.ts';
 import { withLock } from '../core/lock.ts';
 import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile } from '../launcher/index.ts';
+import { ensureSkinSupport } from './skinSupportService.ts';
 import { processCommandLine, processStat } from './systemService.ts';
 import { latestCrashReport } from '../core/crashReport.ts';
 import { evCrash, evReady, evStart, evStop } from './eventLog.ts';
@@ -532,6 +533,11 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
     if (!check.ok) {
       return { ok: false, error: `缺少服务端文件：${check.missing.join('、')}。请先在「配置」里重新安装这个世界的服务端。` };
     }
+
+    // Retrofit the server-only skin component for worlds created by older
+    // BlockCraft versions. The selected loader decides whether this is a MOD,
+    // Paper plugin, or unsupported pure Vanilla.
+    await ensureSkinSupport(id, (line) => logger.info(`世界 ${id} 皮肤组件：${line}`));
 
     // 3) 生成 JVM 参数。Node 直接启动 Java，Windows 和 Linux 使用同一条路径。
     writeJvmArgsFile(serverDir, check.plan);

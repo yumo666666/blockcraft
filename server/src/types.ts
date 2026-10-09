@@ -210,6 +210,10 @@ export interface PanelConfig {
     forgeMaven: string[];
     githubMirror: string;
   };
+  skins: {
+    /** MineSkin API key. Optional for the public service, but improves limits/latency. */
+    mineskinApiKey: string;
+  };
   ui: {
     accent: string;
     trashRetentionDays: number;
@@ -272,6 +276,8 @@ export interface PlayerInfo {
   banned: boolean;
   lastSeen: number | null;
   skinUrl: string | null;
-  skinSource: 'server' | 'bound' | 'mojang' | 'guess' | 'none';
+  skinSource: 'server' | 'bound' | 'mojang' | 'none';
+  /** Whether the current binding was accepted by an installed server skin integration. */
+  skinAppliedToServer: boolean;
   playtimeSeconds: number | null;
 }

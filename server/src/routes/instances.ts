@@ -14,6 +14,7 @@ import { installServer, copyInstance } from '../services/installService.ts';
 import { validateInstall } from '../launcher/index.ts';
 import { loadConfig } from '../config.ts';
 import { memoryInfo } from '../services/systemService.ts';
+import { ensureSkinSupport, skinSupportInstallStageLabel } from '../services/skinSupportService.ts';
 
 function requireId(id: string): string {
   if (!INSTANCE_ID_RE.test(id)) throw bad('世界 id 不合法');
@@ -53,6 +54,7 @@ export function registerInstanceRoutes(app: Express): void {
       instanceId: cfg.id,
       stages: [
         { key: 'install', label: '安装服务端', status: 'pending' },
+        { key: 'skin', label: skinSupportInstallStageLabel(), status: 'pending' },
         { key: 'config', label: '生成配置', status: 'pending' },
         { key: 'frp', label: '分配并映射端口', status: 'pending' },
         { key: 'start', label: '启动世界', status: 'pending' },
@@ -64,6 +66,10 @@ export function registerInstanceRoutes(app: Express): void {
         setStage(job.id, 'install', 'running');
         await installServer(cfg.id, (line) => logJob(job.id, line));
         setStage(job.id, 'install', 'done');
+
+        setStage(job.id, 'skin', 'running');
+        await ensureSkinSupport(cfg.id, (line) => logJob(job.id, line));
+        setStage(job.id, 'skin', 'done');
 
         setStage(job.id, 'config', 'running');
         I.writeProperties(cfg.id);
@@ -295,6 +301,7 @@ export function registerInstanceRoutes(app: Express): void {
       stages: [
         { key: 'meta', label: '创建新世界条目', status: 'pending' },
         { key: 'copy', label: '复制服务端与 MOD（真实复制）', status: 'pending' },
+        { key: 'skin', label: skinSupportInstallStageLabel(), status: 'pending' },
         { key: 'config', label: '写入新配置与端口', status: 'pending' },
         { key: 'frp', label: '映射远端端口', status: 'pending' },
       ],
@@ -305,6 +312,9 @@ export function registerInstanceRoutes(app: Express): void {
         const created = await copyInstance(id, body as never, (line) => logJob(job.id, line));
         setStage(job.id, 'meta', 'done');
         setStage(job.id, 'copy', 'done');
+        setStage(job.id, 'skin', 'running');
+        await ensureSkinSupport(created.id, (line) => logJob(job.id, line));
+        setStage(job.id, 'skin', 'done');
         setStage(job.id, 'config', 'running');
         logJob(job.id, '配置已写入');
         setStage(job.id, 'config', 'done');
