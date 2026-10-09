@@ -153,6 +153,7 @@ export interface PlayerInfo {
   banned: boolean;
   lastSeen: number | null;
   skinUrl: string | null;
+  skinPreviewUrl?: string | null;
   skinSource: 'server' | 'bound' | 'mojang' | 'none';
   skinAppliedToServer: boolean;
   playtimeSeconds: number | null;
@@ -165,4 +166,6 @@ export interface SkinPoolEntry {
   bytes: number;
   createdAt: number;
   imageUrl: string;
+  previewUrl: string;
+  previewReady: boolean;
 }

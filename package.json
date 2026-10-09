@@ -1,7 +1,7 @@
 {
   "name": "blockcraft",
   "private": true,
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "BlockCraft · 多世界 Minecraft 服务器管理面板",
   "license": "MIT",
   "type": "module",

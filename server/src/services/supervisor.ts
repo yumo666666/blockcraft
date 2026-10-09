@@ -332,7 +332,12 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
     const logText = runningProc ? console_(id).textSince(runningProc.logSeqAtStart) : console_(id).text();
     const { status: logStatus, progress: p } = detectPhase(logText);
     progress = p;
-    if (logStatus === 'running') {
+    // An old "Done" line can remain in the current log window after stop was
+    // requested. The persisted stop intent is authoritative until the process exits.
+    if (st.status === 'stopping') {
+      status = 'stopping';
+      phase = '正在保存并关闭';
+    } else if (logStatus === 'running') {
       status = 'running';
       phase = '服务端已就绪';
     } else if (logStatus === 'stopping') {
@@ -352,7 +357,7 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
     }
     // 进程在、日志无进展、端口不通 —— 判定卡住
     const proc = processStat(pid);
-    if (!listening && st.startedAt && Date.now() / 1000 - st.startedAt > 180 && logStatus === 'starting') {
+    if (status !== 'stopping' && !listening && st.startedAt && Date.now() / 1000 - st.startedAt > 180 && logStatus === 'starting') {
       status = 'stuck';
       phase = '启动了 3 分钟仍未监听端口，可能卡住了';
     }

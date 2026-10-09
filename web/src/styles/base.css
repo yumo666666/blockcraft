@@ -268,6 +268,7 @@ p { margin: 0; }
 .gap-2 { gap: var(--sp-2); }
 .gap-3 { gap: var(--sp-3); }
 .gap-4 { gap: var(--sp-4); }
+.gap-5 { gap: var(--sp-5); }
 .mt-2 { margin-top: var(--sp-2); }
 .mt-3 { margin-top: var(--sp-3); }
 .mt-4 { margin-top: var(--sp-4); }
@@ -844,8 +845,10 @@ p { margin: 0; }
 
 /* ---------------------------------------------------------------- 玩家卡片 */
 
-.player-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--sp-3); }
+.player-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); gap: var(--sp-3); }
 .player-card {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -856,6 +859,17 @@ p { margin: 0; }
   border-radius: var(--r);
   box-shadow: var(--sh-1);
 }
+.player-card > * { position: relative; z-index: 1; }
+.player-card.is-offline::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  background: rgba(130, 139, 148, 0.12);
+  pointer-events: none;
+}
+.player-status-dot { position: absolute !important; top: 12px; left: 12px; z-index: 4 !important; }
 .player-skin {
   width: 96px;
   height: 148px;
@@ -866,8 +880,10 @@ p { margin: 0; }
   justify-content: center;
   overflow: hidden;
 }
-.player-skin canvas { image-rendering: pixelated; }
+.player-skin canvas, .player-skin .skin-portrait { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
 .player-name { font-weight: 650; font-size: 13.5px; }
+.player-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; width: 100%; }
+.player-actions .btn { min-width: 0; padding-inline: 5px; font-size: 11.5px; }
 
 /* ---------------------------------------------------------------- 空态 / 加载 */
 

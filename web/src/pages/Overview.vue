@@ -201,26 +201,34 @@ function openJob(id: string) {
 
     <!-- 下半：世界便签页 -->
     <div class="card">
-      <div ref="tabsEl" class="tabs" style="border-bottom: 1px solid var(--border); border-radius: 0">
-        <button
-          v-for="i in instances"
-          :key="i.id"
-          class="tab"
-          :class="{ active: active?.id === i.id }"
-          @click="activeId = i.id"
-        >
-          <i class="dot" :class="statusClass(i.status)" aria-hidden="true" />
-          {{ i.name }}
-          <span class="tab-state" :class="`tab-state-${i.status}`">{{ STATUS_TEXT[i.status] ?? i.status }}</span>
-        </button>
-        <button class="tab tab-add" @click="router.push('/new')">＋ 新建世界 / 导入整合包</button>
+      <div class="world-tab-bar">
+        <div ref="tabsEl" class="tabs world-tabs">
+          <button
+            v-for="i in instances"
+            :key="i.id"
+            class="tab"
+            :class="{ active: active?.id === i.id }"
+            @click="activeId = i.id"
+          >
+            <i class="dot" :class="statusClass(i.status)" aria-hidden="true" />
+            {{ i.name }}
+            <span class="tab-state" :class="`tab-state-${i.status}`">{{ STATUS_TEXT[i.status] ?? i.status }}</span>
+          </button>
+        </div>
+        <div class="world-quick-actions">
+          <button class="btn btn-sm" @click="router.push('/create')">＋ 新建世界</button>
+          <button class="btn btn-sm" @click="router.push('/import')">＋ 导入整合包</button>
+        </div>
       </div>
 
       <div class="card-body">
         <div v-if="!active" class="empty">
           <div class="empty-icon">🌍</div>
           <div>还没有任何世界</div>
-          <button class="btn btn-primary mt-2" @click="router.push('/new')">创建第一个世界</button>
+          <div class="row gap-2 wrap mt-2">
+            <button class="btn btn-primary" @click="router.push('/create')">新建世界</button>
+            <button class="btn" @click="router.push('/import')">导入整合包</button>
+          </div>
         </div>
 
         <WorldNote
@@ -275,6 +283,10 @@ function openJob(id: string) {
 <style scoped>
 .page { min-width: 0; }
 .page > .card { min-width: 0; }
+.world-tab-bar { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); min-width: 0; }
+.world-tabs { flex: 1 1 0; min-width: 0; border-bottom: 0; }
+.world-quick-actions { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 0; flex: none; }
+.world-quick-actions .btn { white-space: nowrap; }
 .top-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
@@ -286,5 +298,9 @@ function openJob(id: string) {
 .top-grid > * { min-width: 0; }
 @media (max-width: 940px) {
   .top-grid { grid-template-columns: minmax(0, 1fr); align-items: start; }
+}
+@media (max-width: 680px) {
+  .world-tab-bar { align-items: stretch; flex-direction: column; gap: 0; }
+  .world-quick-actions { justify-content: flex-end; padding: 0 8px 8px; }
 }
 </style>

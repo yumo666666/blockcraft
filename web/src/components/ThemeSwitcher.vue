@@ -20,7 +20,6 @@ function choose(theme: ThemeId): void {
         <circle cx="13.1" cy="6.4" r="1" />
       </svg>
       <span>主题</span>
-      <span class="theme-caret" aria-hidden="true">⌄</span>
     </summary>
 
     <div class="theme-popover" role="group" aria-label="选择面板主题">
@@ -54,7 +53,6 @@ function choose(theme: ThemeId): void {
 .theme-trigger::-webkit-details-marker { display: none; }
 .theme-trigger svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .theme-trigger svg circle { fill: currentColor; stroke: none; }
-.theme-caret { margin-left: -3px; color: var(--text-3); font-size: 13px; }
 .theme-switcher[open] .theme-trigger { color: var(--accent-hover); background: var(--accent-soft); }
 .theme-popover {
   position: absolute;

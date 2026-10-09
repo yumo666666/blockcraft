@@ -14,6 +14,14 @@ import (
 // token is a login credential, not a session id, so it must not be sent as
 // ?token=... to authenticated API endpoints.
 func trayPanelPost(port int, token, path string, timeout time.Duration) error {
+	return trayPanelRequest(port, token, http.MethodPost, path, timeout, nil)
+}
+
+func trayPanelGetJSON(port int, token, path string, timeout time.Duration, output any) error {
+	return trayPanelRequest(port, token, http.MethodGet, path, timeout, output)
+}
+
+func trayPanelRequest(port int, token, method, path string, timeout time.Duration, output any) error {
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	client := &http.Client{
 		Timeout:   timeout,
@@ -51,7 +59,7 @@ func trayPanelPost(port int, token, path string, timeout time.Duration) error {
 		return fmt.Errorf("面板登录成功，但没有返回登录会话")
 	}
 
-	request, err := http.NewRequest(http.MethodPost, baseURL+path, nil)
+	request, err := http.NewRequest(method, baseURL+path, nil)
 	if err != nil {
 		return err
 	}
@@ -62,10 +70,15 @@ func trayPanelPost(port int, token, path string, timeout time.Duration) error {
 		return fmt.Errorf("连接面板操作接口失败：%w", err)
 	}
 	defer response.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		if output != nil && len(body) > 0 {
+			if err := json.Unmarshal(body, output); err != nil {
+				return fmt.Errorf("读取面板响应失败：%w", err)
+			}
+		}
 		return nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 	return panelResponseError(body, response.StatusCode)
 }
 

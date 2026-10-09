@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
-import type { InstanceSummary } from '../lib/types.ts';
 import JobProgress from '../components/JobProgress.vue';
 
 defineOptions({ name: 'Wizard' });
@@ -19,7 +18,8 @@ interface LoaderAvailability {
 }
 
 const router = useRouter();
-const mode = ref<'choose' | 'new' | 'import' | 'copy'>('choose');
+const route = useRoute();
+const mode = ref<'new' | 'import'>(route.path === '/import' ? 'import' : 'new');
 const step = ref(1);
 const busy = ref(false);
 const showJob = ref(false);
@@ -77,10 +77,6 @@ interface PackInspection {
 const inspection = ref<PackInspection | null>(null);
 const inspecting = ref(false);
 
-// 复制
-const instances = ref<InstanceSummary[]>([]);
-const copyForm = ref({ source: '', name: '新世界副本', levelSeed: '', memoryMb: 3072 });
-
 const steps = ['基本信息', '版本与加载器', '世界参数', '性能', '确认'];
 const currentLoader = computed(() => loaders.value.find((l) => l.loader === form.value.loader));
 const newSkinSupportHint = computed(() => skinSupportHint(form.value.loader));
@@ -92,7 +88,7 @@ function skinSupportHint(loader: string): string {
   return '创建后会检查整合包是否已有 Skin Restorer；缺少时会自动安装对应 Minecraft 版本与加载器的服务端模组。客户端无需安装模组。';
 }
 
-onMounted(async () => {
+async function loadVersions() {
   try {
     const r = await api.get<{ versions: { id: string; type: string }[] }>('/api/versions');
     versions.value = r.versions;
@@ -100,15 +96,34 @@ onMounted(async () => {
   } catch (err) {
     toastError(err, '读取 Minecraft 版本列表失败（可以手动填写版本号）');
   }
-  refreshLoaders();
-  loadPacks();
-  api
-    .get<{ instances: InstanceSummary[] }>('/api/instances')
-    .then((r) => {
-      instances.value = r.instances;
-      if (r.instances.length) copyForm.value.source = r.instances[0].id;
-    })
-    .catch(() => undefined);
+  void refreshLoaders();
+}
+
+function resetFlowForm() {
+  step.value = 1;
+  inspection.value = null;
+  Object.assign(form.value, {
+    name: '', mc: '1.20.1', loader: 'forge', loaderVersion: '', memoryMb: 3072, minMemoryMb: 1024,
+    levelSeed: '', gamemode: 'survival', difficulty: 'normal', pvp: true, hardcore: false,
+    allowNether: true, generateStructures: true, onlineMode: false, whiteList: false,
+    maxPlayers: 20, motd: '', viewDistance: 6, simulationDistance: 5, autostart: false, start: true,
+  });
+  Object.assign(importForm.value, { packId: '', name: '', mc: '', loader: 'forge', loaderVersion: '', memoryMb: 4096, start: true });
+}
+
+function loadFlowOptions() {
+  resetFlowForm();
+  if (mode.value === 'new') void loadVersions();
+  else void loadPacks();
+}
+
+onMounted(loadFlowOptions);
+watch(() => route.path, (path) => {
+  if (path !== '/create' && path !== '/import') return;
+  mode.value = path === '/import' ? 'import' : 'new';
+  showJob.value = false;
+  jobId.value = null;
+  loadFlowOptions();
 });
 
 async function refreshLoaders() {
@@ -213,57 +228,24 @@ async function submitImport() {
   }
 }
 
-async function submitCopy() {
-  busy.value = true;
-  try {
-    const r = await api.post<{ jobId: string }>(`/api/instances/${copyForm.value.source}/copy`, {
-      name: copyForm.value.name,
-      levelSeed: copyForm.value.levelSeed,
-      memoryMb: copyForm.value.memoryMb,
-    });
-    jobId.value = r.jobId;
-    showJob.value = true;
-    toast('ok', '开始复制');
-  } catch (err) {
-    toastError(err, '复制失败');
-  } finally {
-    busy.value = false;
-  }
+function closeJob() {
+  showJob.value = false;
+  jobId.value = null;
+  step.value = 1;
+  resetFlowForm();
+  router.push('/');
 }
 </script>
 
 <template>
   <div class="page col gap-4 wizard-page">
     <div class="row gap-3">
-      <button class="btn btn-ghost btn-sm" @click="mode === 'choose' ? router.push('/') : (mode = 'choose')">
-        ← {{ mode === 'choose' ? '返回总览' : '重新选择' }}
-      </button>
-      <h1>新建世界 / 导入整合包</h1>
-    </div>
-
-    <!-- 第 0 步：选择 -->
-    <div v-if="mode === 'choose'" class="choice-grid">
-      <button class="choice" @click="mode = 'new'">
-        <div class="choice-icon">🌍</div>
-        <div class="choice-title">新建世界</div>
-        <div class="text-3 small">从零生成：选版本与加载器，再填世界参数，和单机「创建新世界」一样</div>
-      </button>
-      <button class="choice" @click="mode = 'import'">
-        <div class="choice-icon">📦</div>
-        <div class="choice-title">导入整合包</div>
-        <div class="text-3 small">给一个压缩包，一条龙装好加载器与 MOD 并启动</div>
-      </button>
-      <button class="choice" @click="mode = 'copy'" :disabled="!instances.length">
-        <div class="choice-icon">♻️</div>
-        <div class="choice-title">从现有世界复制</div>
-        <div class="text-3 small">
-          {{ instances.length ? '把某个世界的 MOD 与配置完整复制成一个新世界' : '还没有可复制的世界' }}
-        </div>
-      </button>
+      <button class="btn btn-ghost btn-sm" @click="router.push('/')">← 返回总览</button>
+      <h1>{{ mode === 'new' ? '新建世界' : '导入整合包' }}</h1>
     </div>
 
     <!-- 新建世界（分步） -->
-    <div v-else-if="mode === 'new'" class="card">
+    <div v-if="mode === 'new'" class="card">
       <div class="card-head">
         <h3>新建世界</h3>
         <div class="wizard-steps">
@@ -414,7 +396,7 @@ async function submitCopy() {
     </div>
 
     <!-- 导入整合包 -->
-    <div v-else-if="mode === 'import'" class="card">
+    <div v-else class="card">
       <div class="card-head"><h3>导入整合包</h3></div>
       <div class="card-body col gap-4">
         <div class="row gap-2 wrap">
@@ -494,51 +476,12 @@ async function submitCopy() {
       </div>
     </div>
 
-    <!-- 复制 -->
-    <div v-else class="card">
-      <div class="card-head"><h3>从现有世界复制</h3></div>
-      <div class="card-body col gap-4">
-        <div class="form-grid-2">
-          <div class="field">
-            <label class="field-label">源世界</label>
-            <select v-model="copyForm.source" class="select">
-              <option v-for="i in instances" :key="i.id" :value="i.id">{{ i.name }}（{{ i.modCount }} 个 MOD）</option>
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label">新世界名称</label>
-            <input v-model="copyForm.name" class="input" />
-          </div>
-          <div class="field">
-            <label class="field-label">世界种子</label>
-            <input v-model="copyForm.levelSeed" class="input mono" placeholder="留空 = 随机生成" />
-          </div>
-          <div class="field">
-            <label class="field-label">内存上限（MB）</label>
-            <input v-model.number="copyForm.memoryMb" class="input" type="number" step="256" />
-          </div>
-        </div>
-        <p class="text-3 small">
-          MOD 与配置会**逐文件真实复制**到新世界（两个世界互不影响），存档不复制（新世界会重新生成），端口与 RCON 密码会重新生成。
-        </p>
-      </div>
-      <div class="card-foot row-between">
-        <span class="text-3 small">源世界需要先停服</span>
-        <button class="btn btn-primary" :disabled="busy || !copyForm.name" @click="submitCopy">开始复制</button>
-      </div>
-    </div>
-
-    <JobProgress :open="showJob" :job-id="jobId" @close="((showJob = false), router.push('/'))" />
+    <JobProgress :open="showJob" :job-id="jobId" @close="closeJob" />
   </div>
 </template>
 
 <style scoped>
-.choice-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--sp-4);
-}
-.wizard-page { min-height: calc(100vh - var(--header-h)); justify-content: center; }
+.wizard-page { min-height: calc(100vh - var(--header-h)); justify-content: flex-start; padding-top: clamp(18px, 3vh, 34px); }
 .skin-support-hint {
   max-width: 860px;
   margin: 0;
@@ -551,25 +494,6 @@ async function submitCopy() {
 }
 .wizard-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
 .wizard-step { max-width: 100%; }
-.choice {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: var(--sp-5);
-  text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  box-shadow: var(--sh-2);
-  cursor: pointer;
-  font: inherit;
-  color: var(--text);
-  transition: transform 0.16s, box-shadow 0.16s, border-color 0.16s;
-}
-.choice:hover { transform: translateY(-2px); box-shadow: var(--sh-3); border-color: var(--accent-border); }
-.choice:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
-.choice-icon { font-size: 26px; }
-.choice-title { font-size: 15px; font-weight: 650; }
 .wizard-steps { min-width: 0; }
 .pack-row {
   display: flex;

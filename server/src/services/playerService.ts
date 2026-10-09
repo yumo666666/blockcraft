@@ -92,6 +92,10 @@ function assignmentPath(id: string, uuid: string): string {
   return path.join(SKIN_ASSIGNMENT_DIR, id, `${compactUuid(uuid)}.png`);
 }
 
+function assignmentPreviewPath(id: string, uuid: string): string {
+  return path.join(SKIN_ASSIGNMENT_DIR, id, `${compactUuid(uuid)}.preview.png`);
+}
+
 function writeAssignment(id: string, uuid: string, data: Buffer): string {
   const file = assignmentPath(id, uuid);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -113,8 +117,17 @@ export function listSkinPool(): SkinPoolItem[] {
   return Object.values(loadSkinPool()).sort((a, b) => a.name.localeCompare(b.name) || a.createdAt - b.createdAt);
 }
 
-export function addSkinToPool(name: string, model: 'classic' | 'slim', data: Buffer): SkinPoolItem {
+function validatePreviewPng(data: Buffer): void {
+  if (data.length > 512 * 1024) throw new Error('渲染预览图太大');
+  if (data.length < 24 || !data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('渲染预览不是有效的 PNG');
+  const width = data.readUInt32BE(16);
+  const height = data.readUInt32BE(20);
+  if (width < 32 || width > 512 || height < 64 || height > 512) throw new Error('渲染预览尺寸不正确');
+}
+
+export function addSkinToPool(name: string, model: 'classic' | 'slim', data: Buffer, preview?: Buffer): SkinPoolItem {
   validateSkinPng(data);
+  if (preview) validatePreviewPng(preview);
   const cleanName = path.basename(name.trim()).replace(/\.png$/i, '').trim().slice(0, 64);
   if (!cleanName) throw new Error('请填写皮肤名称');
   if (!['classic', 'slim'].includes(model)) throw new Error('皮肤模型只能是 Steve（经典）或 Alex（纤细）');
@@ -122,6 +135,7 @@ export function addSkinToPool(name: string, model: 'classic' | 'slim', data: Buf
   const id = crypto.randomBytes(16).toString('hex');
   const item: SkinPoolItem = { id, name: cleanName, model, bytes: data.length, createdAt: Date.now() };
   atomicWriteFileSync(path.join(SKIN_POOL_DIR, `${id}.png`), data);
+  if (preview) atomicWriteFileSync(path.join(SKIN_POOL_DIR, `${id}.preview.png`), preview);
   const pool = loadSkinPool();
   pool[id] = item;
   saveSkinPool(pool);
@@ -133,6 +147,49 @@ export function skinPoolImage(id: string): Buffer | null {
   try { return fs.readFileSync(path.join(SKIN_POOL_DIR, `${id}.png`)); } catch { return null; }
 }
 
+export function skinPoolPreviewReady(id: string): boolean {
+  return validSkinPoolId(id) && fs.existsSync(path.join(SKIN_POOL_DIR, `${id}.preview.png`));
+}
+
+export function skinPoolPreviewImage(id: string): Buffer | null {
+  if (!validSkinPoolId(id)) return null;
+  try { return fs.readFileSync(path.join(SKIN_POOL_DIR, `${id}.preview.png`)); } catch { return null; }
+}
+
+export function saveSkinPoolPreview(id: string, data: Buffer): boolean {
+  if (!validSkinPoolId(id) || !loadSkinPool()[id]) return false;
+  validatePreviewPng(data);
+  fs.mkdirSync(SKIN_POOL_DIR, { recursive: true });
+  atomicWriteFileSync(path.join(SKIN_POOL_DIR, `${id}.preview.png`), data);
+
+  // Keep a copy beside existing player assignments so removing a pool item
+  // cannot blank a player's already selected portrait.
+  const bindings = loadBindings();
+  let changed = false;
+  for (const binding of Object.values(bindings)) {
+    if (binding.kind !== 'pool' || binding.poolId !== id || !binding.worldId) continue;
+    fs.mkdirSync(path.dirname(assignmentPreviewPath(binding.worldId, binding.uuid)), { recursive: true });
+    atomicWriteFileSync(assignmentPreviewPath(binding.worldId, binding.uuid), data);
+    changed = true;
+  }
+  if (changed) saveBindings(bindings);
+  return true;
+}
+
+export function skinPreviewForPlayer(id: string, name: string): Buffer | null {
+  const uuid = offlineUuid(name);
+  const binding = loadBindings()[worldBindingKey(id, uuid)];
+  if (!binding || !['pool', 'upload'].includes(binding.kind)) return null;
+  try { return fs.readFileSync(assignmentPreviewPath(id, uuid)); } catch { /* Older assignment; try the pool copy below. */ }
+  if (binding.kind === 'pool' && binding.poolId) return skinPoolPreviewImage(binding.poolId);
+  return null;
+}
+
+export function skinPreviewVersionForPlayer(id: string, name: string): number | null {
+  const binding = loadBindings()[worldBindingKey(id, offlineUuid(name))];
+  return binding && ['pool', 'upload'].includes(binding.kind) && skinPreviewForPlayer(id, name) ? binding.updatedAt : null;
+}
+
 export function removeSkinFromPool(id: string): boolean {
   if (!validSkinPoolId(id)) return false;
   const pool = loadSkinPool();
@@ -140,6 +197,19 @@ export function removeSkinFromPool(id: string): boolean {
   delete pool[id];
   saveSkinPool(pool);
   try { fs.unlinkSync(path.join(SKIN_POOL_DIR, `${id}.png`)); } catch { /* ignore */ }
+  const preview = skinPoolPreviewImage(id);
+  if (preview) {
+    const bindings = loadBindings();
+    let changed = false;
+    for (const binding of Object.values(bindings)) {
+      if (binding.kind !== 'pool' || binding.poolId !== id || !binding.worldId) continue;
+      fs.mkdirSync(path.dirname(assignmentPreviewPath(binding.worldId, binding.uuid)), { recursive: true });
+      atomicWriteFileSync(assignmentPreviewPath(binding.worldId, binding.uuid), preview);
+      changed = true;
+    }
+    if (changed) saveBindings(bindings);
+  }
+  try { fs.unlinkSync(path.join(SKIN_POOL_DIR, `${id}.preview.png`)); } catch { /* ignore */ }
   // A selected copy is kept under the player binding, so removing a library entry
   // will not reset an already assigned skin in a world.
   return true;
@@ -598,6 +668,7 @@ function clearWorldBinding(id: string, name: string): void {
   delete bindings[compactUuid(uuid)];
   saveBindings(bindings);
   try { fs.unlinkSync(assignmentPath(id, uuid)); } catch { /* Ignore an absent copy. */ }
+  try { fs.unlinkSync(assignmentPreviewPath(id, uuid)); } catch { /* Ignore an absent preview. */ }
 }
 
 async function applyModSkin(id: string, name: string, binding: SkinBinding): Promise<SkinChangeResult> {
@@ -771,6 +842,7 @@ export async function listPlayers(id: string): Promise<PlayerList> {
   for (const name of names.values()) {
     const cached = usercache.find((u) => u.name.toLowerCase() === name.toLowerCase());
     const skin = await skinOf(id, name, cfg.onlineMode, cached?.uuid).catch(() => null);
+    const skinPreview = skinPreviewVersionForPlayer(id, name);
     players.push({
       name,
       uuid: cached?.uuid ?? skin?.uuid ?? null,
@@ -780,13 +852,20 @@ export async function listPlayers(id: string): Promise<PlayerList> {
       banned: banned.some((b) => b.name.toLowerCase() === name.toLowerCase()),
       lastSeen: null,
       skinUrl: skin?.url ?? null,
+      skinPreviewUrl: skinPreview ? `/api/instances/${encodeURIComponent(id)}/players/${encodeURIComponent(name)}/skin-preview?v=${skinPreview}` : null,
       skinSource: skin?.source ?? 'none',
       skinAppliedToServer: Boolean(skin?.appliedToServer),
       playtimeSeconds: null,
     });
   }
-  players.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+  players.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN-u-co-pinyin', { sensitivity: 'base', numeric: true }));
   return { online: onlineNames.length > 0, onlineNames, players, serverOnline: running };
+}
+
+export async function listOnlinePlayers(id: string): Promise<{ onlineNames: string[]; serverOnline: boolean }> {
+  const serverOnline = sup.isRunning(id);
+  const onlineNames = serverOnline ? await sup.listPlayers(id).then((r) => r.names).catch(() => []) : [];
+  return { onlineNames, serverOnline };
 }
 
 /** 玩家管理操作：能走 RCON 就走 RCON（立即生效），否则改 json 文件 */

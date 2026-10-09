@@ -118,8 +118,8 @@ defineExpose({});
         <button class="btn btn-ghost btn-sm" :class="{ 'btn-soft': $route.name === 'overview' }" @click="router.push('/')">
           总览
         </button>
-        <button class="btn btn-ghost btn-sm" :class="{ 'btn-soft': $route.name === 'wizard' }" @click="router.push('/new')">
-          新建 / 导入
+        <button class="btn btn-ghost btn-sm" :class="{ 'btn-soft': $route.name === 'websites' }" @click="router.push('/new')">
+          相关网站
         </button>
         <button
           class="btn btn-ghost btn-sm"
@@ -145,7 +145,7 @@ defineExpose({});
     </header>
 
     <router-view v-slot="{ Component }">
-      <KeepAlive :include="['Overview', 'Wizard', 'Events', 'Settings', 'Console', 'Backups', 'Mods', 'Players']" :max="16">
+      <KeepAlive :include="['Overview', 'Wizard', 'MinecraftSites', 'Events', 'Settings', 'Console', 'Backups', 'Mods', 'Players']" :max="16">
         <component :is="Component" />
       </KeepAlive>
     </router-view>

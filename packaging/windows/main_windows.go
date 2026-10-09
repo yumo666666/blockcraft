@@ -107,6 +107,30 @@ func stopWorldsAndClosePanel(dataDir string) error {
 	return trayPanelPost(port, token, "/api/panel/shutdown-after-worlds", 10*time.Minute)
 }
 
+func activeWorldNames(dataDir string) ([]string, error) {
+	port, token := panelConnection(dataDir)
+	if token == "" {
+		return nil, fmt.Errorf("没有找到面板令牌，无法确认正在运行的世界")
+	}
+	var response struct {
+		Instances []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"instances"`
+	}
+	if err := trayPanelGetJSON(port, token, "/api/instances", 15*time.Second, &response); err != nil {
+		return nil, err
+	}
+	worlds := make([]string, 0, len(response.Instances))
+	for _, world := range response.Instances {
+		switch world.Status {
+		case "running", "starting", "stopping", "stuck":
+			worlds = append(worlds, world.Name)
+		}
+	}
+	return worlds, nil
+}
+
 func restartPanelOnly(dataDir string) error {
 	port, token := panelConnection(dataDir)
 	if token == "" {
@@ -259,15 +283,33 @@ func run() int {
 					restartItem.Disable()
 					systray.SetTooltip("正在安全停止 Minecraft 世界…")
 					go func() {
-						if err := stopWorldsAndClosePanel(dataDir); err != nil {
+						worlds, err := activeWorldNames(dataDir)
+						if err != nil {
 							quitItem.Enable()
 							restartItem.Enable()
 							systray.SetTooltip("BlockCraft 世界管理面板")
-							message, _ := syscall.UTF16PtrFromString("世界尚未全部停止，BlockCraft 仍保持运行。\n\n" + err.Error())
+							message, _ := syscall.UTF16PtrFromString("无法读取正在运行的世界列表，BlockCraft 保持运行。\n\n" + err.Error())
 							title, _ := syscall.UTF16PtrFromString("无法关闭 BlockCraft")
 							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
 							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
+							return
 						}
+						closeProgress := func() {}
+						if len(worlds) > 0 {
+							closeProgress = showShutdownProgress(worlds)
+						}
+						if err := stopWorldsAndClosePanel(dataDir); err != nil {
+							closeProgress()
+							quitItem.Enable()
+							restartItem.Enable()
+							systray.SetTooltip("BlockCraft 世界管理面板")
+							message, _ := syscall.UTF16PtrFromString("世界尚未全部停止，BlockCraft 仍保持运行。\n\n请等待世界完成保存后再重试。\n" + err.Error())
+							title, _ := syscall.UTF16PtrFromString("无法关闭 BlockCraft")
+							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
+							return
+						}
+						closeProgress()
 					}()
 				}
 			}

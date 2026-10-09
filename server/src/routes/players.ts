@@ -14,28 +14,68 @@ function skinError(err: unknown): never {
 
 export function registerPlayerRoutes(app: Express): void {
   app.get('/api/skin-pool', (_req, res) => {
-    res.json({ skins: P.listSkinPool().map((skin) => ({ ...skin, imageUrl: `/api/skin-pool/${skin.id}/image` })) });
+    res.json({ skins: P.listSkinPool().map((skin) => ({
+      ...skin,
+      imageUrl: `/api/skin-pool/${skin.id}/image`,
+      previewUrl: `/api/skin-pool/${skin.id}/preview`,
+      previewReady: P.skinPoolPreviewReady(skin.id),
+    })) });
   });
 
   app.post('/api/skin-pool', (req, res) => {
-    const body = req.body as { name?: string; model?: string; data?: string };
+    const body = req.body as { name?: string; model?: string; data?: string; previewData?: string };
     if (!body.data?.startsWith('data:image/png;base64,')) throw bad('请上传 PNG 皮肤');
+    if (body.previewData && !body.previewData.startsWith('data:image/png;base64,')) throw bad('渲染预览不是有效的 PNG');
     let skin: P.SkinPoolItem;
     try {
-      skin = P.addSkinToPool(body.name ?? '', body.model === 'slim' ? 'slim' : 'classic', Buffer.from(body.data.split(',')[1], 'base64'));
+      skin = P.addSkinToPool(
+        body.name ?? '',
+        body.model === 'slim' ? 'slim' : 'classic',
+        Buffer.from(body.data.split(',')[1], 'base64'),
+        body.previewData ? Buffer.from(body.previewData.split(',')[1], 'base64') : undefined,
+      );
     } catch (err) {
       skinError(err);
     }
     audit({ ip: req.ip, action: 'skin-pool.add', target: skin!.id, detail: { name: skin!.name } });
-    res.json({ ok: true, skin: { ...skin!, imageUrl: `/api/skin-pool/${skin!.id}/image` } });
+    res.json({ ok: true, skin: {
+      ...skin!,
+      imageUrl: `/api/skin-pool/${skin!.id}/image`,
+      previewUrl: `/api/skin-pool/${skin!.id}/preview`,
+      previewReady: P.skinPoolPreviewReady(skin!.id),
+    } });
   });
 
   app.get('/api/skin-pool/:id/image', (req, res) => {
     const bytes = P.skinPoolImage(req.params.id);
     if (!bytes) throw bad('皮肤池图片不存在');
     res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     res.send(bytes);
+  });
+
+  app.get('/api/skin-pool/:id/preview', (req, res) => {
+    const bytes = P.skinPoolPreviewImage(req.params.id);
+    if (!bytes) {
+      res.status(404).end();
+      return;
+    }
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.send(bytes);
+  });
+
+  app.post('/api/skin-pool/:id/preview', (req, res) => {
+    const body = req.body as { data?: string };
+    if (!body.data?.startsWith('data:image/png;base64,')) throw bad('请上传渲染后的 PNG 预览');
+    let ok: boolean;
+    try {
+      ok = P.saveSkinPoolPreview(req.params.id, Buffer.from(body.data.split(',')[1], 'base64'));
+    } catch (err) {
+      skinError(err);
+    }
+    if (!ok!) throw bad('皮肤池条目不存在');
+    res.json({ ok: true });
   });
 
   app.delete('/api/skin-pool/:id', (req, res) => {
@@ -45,7 +85,7 @@ export function registerPlayerRoutes(app: Express): void {
   });
 
   app.get('/api/instances/:id/players/online', async (req, res) => {
-    const list = await P.listPlayers(req.params.id);
+    const list = await P.listOnlinePlayers(req.params.id);
     res.json({ online: list.onlineNames.length, names: list.onlineNames, serverOnline: list.serverOnline });
   });
 
@@ -65,6 +105,18 @@ export function registerPlayerRoutes(app: Express): void {
     }
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(bytes);
+  });
+
+  app.get('/api/instances/:id/players/:name/skin-preview', (req, res) => {
+    requirePlayerName(req.params.name);
+    const bytes = P.skinPreviewForPlayer(req.params.id, req.params.name);
+    if (!bytes) {
+      res.status(404).end();
+      return;
+    }
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     res.send(bytes);
   });
 

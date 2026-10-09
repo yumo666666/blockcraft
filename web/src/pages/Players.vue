@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { IdleAnimation, SkinViewer } from 'skinview3d';
 import { api, subscribe } from '../lib/api.ts';
@@ -13,6 +13,7 @@ defineOptions({ name: 'Players' });
 
 const props = defineProps<{ id: string }>();
 const router = useRouter();
+const playerNameCollator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base', numeric: true });
 
 const base = computed(() => `/api/instances/${encodeURIComponent(props.id)}`);
 
@@ -35,7 +36,7 @@ const skinPoolBusy = ref(false);
 const newSkinModel = ref<'classic' | 'slim'>('classic');
 
 const worldName = computed(() => instance.value?.name ?? props.id);
-const onlinePlayers = computed(() => players.value.filter((p) => p.online));
+const knownPlayers = computed(() => [...players.value].sort((a, b) => playerNameCollator.compare(a.name, b.name)));
 
 type PlayerAction = 'op' | 'deop' | 'kick' | 'ban' | 'unban' | 'whitelist-add' | 'whitelist-remove';
 
@@ -53,6 +54,8 @@ const ACTION_TEXT: Record<PlayerAction, string> = {
 
 let offStream: (() => void) | null = null;
 let disposed = false;
+let rosterTimer: number | null = null;
+let hasBeenDeactivated = false;
 
 async function loadInstance() {
   try {
@@ -83,11 +86,41 @@ async function loadPlayers() {
   }
 }
 
+function rosterKey(names: string[], isRunning: boolean): string {
+  return `${isRunning ? 'running' : 'stopped'}:${names.map((name) => name.toLocaleLowerCase()).sort().join(',')}`;
+}
+
+async function refreshOnlineRoster() {
+  const id = props.id;
+  try {
+    const r = await api.get<{ names: string[]; serverOnline: boolean }>(`/api/instances/${encodeURIComponent(id)}/players/online`);
+    if (props.id !== id || disposed) return;
+    const changed = rosterKey(onlineNames.value, serverOnline.value) !== rosterKey(r.names, r.serverOnline);
+    onlineNames.value = r.names;
+    serverOnline.value = r.serverOnline;
+    if (changed) await loadPlayers();
+  } catch {
+    // A temporary RCON disconnect should not interrupt the player page.
+  }
+}
+
+function startRosterPolling() {
+  if (rosterTimer !== null) return;
+  rosterTimer = window.setInterval(() => void refreshOnlineRoster(), 5000);
+}
+
+function stopRosterPolling() {
+  if (rosterTimer === null) return;
+  window.clearInterval(rosterTimer);
+  rosterTimer = null;
+}
+
 async function loadSkinPool() {
   try {
     const r = await api.get<{ skins: SkinPoolEntry[] }>('/api/skin-pool');
     skinPool.value = r.skins;
     if (skinPoolPage.value >= skinPoolPageCount.value) skinPoolPage.value = skinPoolPageCount.value - 1;
+    void renderMissingPoolPreviews(r.skins);
   } catch (err) {
     toastError(err, '读取公共皮肤池失败');
   }
@@ -105,6 +138,19 @@ onMounted(() => {
     },
     { onError: () => loadInstance() },
   );
+  startRosterPolling();
+});
+
+onActivated(() => {
+  if (!hasBeenDeactivated) return;
+  hasBeenDeactivated = false;
+  startRosterPolling();
+  void refreshOnlineRoster();
+});
+
+onDeactivated(() => {
+  hasBeenDeactivated = true;
+  stopRosterPolling();
 });
 
 /* ------------------------------------------------------------ 玩家操作 */
@@ -198,10 +244,13 @@ async function onSkinFile(ev: Event) {
   uploadingSkin.value = name;
   try {
     const data = await readDataUrl(file);
+    const model = newSkinModel.value;
+    const previewData = await renderSkinPreview(data, model);
     const created = await api.post<{ skin: SkinPoolEntry }>('/api/skin-pool', {
       name: file.name.replace(/\.png$/i, ''),
-      model: newSkinModel.value,
+      model,
       data,
+      previewData,
     });
     skinPool.value = [...skinPool.value.filter((s) => s.id !== created.skin.id), created.skin]
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -269,6 +318,7 @@ const skinFailed = ref<Record<string, boolean>>({});
 const canvases = new Map<string, HTMLCanvasElement>();
 const viewers = new Map<string, { viewer: SkinViewer; epoch: number }>();
 const refSetters = new Map<string, (el: unknown) => void>();
+let previewViewer: SkinViewer | null = null;
 
 function epochOf(name: string): number {
   return skinEpochs[name.toLowerCase()] ?? 0;
@@ -388,6 +438,58 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+function readBlobDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result ?? ''));
+    fr.onerror = () => reject(new Error('读取皮肤图片失败'));
+    fr.readAsDataURL(blob);
+  });
+}
+
+async function renderSkinPreview(skinDataUrl: string, model: 'classic' | 'slim'): Promise<string> {
+  const image = await loadImage(skinDataUrl);
+  if (!previewViewer) {
+    const canvas = document.createElement('canvas');
+    previewViewer = new SkinViewer({
+      canvas,
+      width: 128,
+      height: 192,
+      pixelRatio: 1,
+      fov: 38,
+      zoom: 0.86,
+      enableControls: false,
+      preserveDrawingBuffer: true,
+      renderPaused: true,
+    });
+  }
+  await previewViewer.loadSkin(image, { model: model === 'slim' ? 'slim' : 'default' });
+  previewViewer.autoRotate = false;
+  previewViewer.playerObject.rotation.set(0, 0, 0);
+  previewViewer.resetCameraPose();
+  previewViewer.render();
+  return previewViewer.canvas.toDataURL('image/png');
+}
+
+async function renderMissingPoolPreviews(items: SkinPoolEntry[]) {
+  for (const item of items) {
+    if (disposed || item.previewReady) continue;
+    try {
+      const response = await fetch(item.imageUrl, {
+        headers: { 'X-Blockcraft': '1' },
+        cache: 'force-cache',
+      });
+      if (!response.ok) throw new Error(`读取皮肤失败（HTTP ${response.status}）`);
+      const skinData = await readBlobDataUrl(await response.blob());
+      const previewData = await renderSkinPreview(skinData, item.model);
+      await api.post(`/api/skin-pool/${encodeURIComponent(item.id)}/preview`, { data: previewData });
+      skinPool.value = skinPool.value.map((skin) => skin.id === item.id ? { ...skin, previewReady: true } : skin);
+    } catch (err) {
+      toastError(err, `生成「${item.name}」的正面预览失败`);
+    }
+  }
+}
+
 let syncChain: Promise<void> = Promise.resolve();
 
 function scheduleSync() {
@@ -396,7 +498,8 @@ function scheduleSync() {
 
 async function syncViewers(): Promise<void> {
   if (disposed) return;
-  const wanted = new Set(onlinePlayers.value.map((p) => p.name));
+  const renderPlayers = knownPlayers.value.filter((p) => p.skinUrl && !p.skinPreviewUrl);
+  const wanted = new Set(renderPlayers.map((p) => p.name));
 
   // 下线、或者皮肤版本换了的 viewer 先销毁
   for (const [name, entry] of [...viewers]) {
@@ -410,7 +513,7 @@ async function syncViewers(): Promise<void> {
     }
   }
 
-  for (const p of onlinePlayers.value) {
+  for (const p of renderPlayers) {
     if (disposed || viewers.has(p.name) || skinFailed.value[p.name]) continue;
     const slot = canvasSlot(p.name);
     const canvas = canvases.get(slot);
@@ -444,10 +547,13 @@ function disposeViewers() {
     }
   }
   viewers.clear();
+  previewViewer?.dispose();
+  previewViewer = null;
 }
 
 onUnmounted(() => {
   disposed = true;
+  stopRosterPolling();
   offStream?.();
   disposeViewers();
 });
@@ -506,25 +612,24 @@ function skinLabel(p: PlayerInfo): string {
 
     <input ref="skinInput" type="file" accept="image/png" style="display: none" @change="onSkinFile" />
 
-    <!-- 在线玩家 -->
+    <!-- 在线与离线玩家合并显示 -->
     <div class="card">
       <div class="card-head">
-        <h2>
-          <i class="dot dot-ok" />
-          在线玩家
-        </h2>
-        <span class="text-3 small">{{ onlinePlayers.length }} 人在线</span>
+        <h2>全部已知玩家</h2>
+        <span class="text-3 small">{{ knownPlayers.length }} 名玩家 · {{ onlineNames.length }} 人在线</span>
       </div>
       <div class="card-body">
-        <div v-if="!onlinePlayers.length" class="empty">
+        <div v-if="!knownPlayers.length" class="empty">
           <div class="empty-icon">🫥</div>
-          <div>{{ serverOnline ? '现在没有玩家在线' : '服务端没在运行，看不到在线玩家' }}</div>
+          <div>{{ serverOnline ? '还没有已知玩家' : '服务端未运行，暂无已知玩家记录' }}</div>
         </div>
 
         <div v-else class="player-grid">
-          <div v-for="p in onlinePlayers" :key="p.name" class="player-card">
+          <div v-for="p in knownPlayers" :key="p.name" class="player-card" :class="{ 'is-offline': !p.online }">
+            <i class="dot player-status-dot" :class="p.online ? 'dot-ok' : 'dot-idle'" :title="p.online ? '在线' : '离线'" :aria-label="p.online ? '在线' : '离线'" />
             <div class="player-skin">
-              <div v-if="skinFailed[p.name]" class="skin-blank" :title="`没有可用皮肤：${p.name}`" />
+              <img v-if="p.skinPreviewUrl" class="skin-portrait" :src="p.skinPreviewUrl" :alt="`${p.name} 的正面皮肤预览`" loading="lazy" />
+              <div v-else-if="!p.skinUrl || skinFailed[p.name]" class="skin-blank" :title="`没有可用皮肤：${p.name}`" />
               <canvas v-else :key="canvasSlot(p.name)" :ref="canvasRefFor(p.name)" />
             </div>
 
@@ -544,7 +649,7 @@ function skinLabel(p: PlayerInfo): string {
 
             <div class="text-3 small">{{ skinLabel(p) }}</div>
 
-            <div class="row gap-1 wrap center" style="width: 100%">
+            <div class="player-actions">
               <button
                 class="btn btn-sm"
                 :disabled="busyName === p.name"
@@ -554,11 +659,20 @@ function skinLabel(p: PlayerInfo): string {
               </button>
               <button
                 class="btn btn-sm"
-                :disabled="busyName === p.name || !serverOnline"
-                :title="serverOnline ? '' : '踢出需要服务端在运行'"
+                :disabled="busyName === p.name || !serverOnline || !p.online"
+                :title="!serverOnline ? '踢出需要服务端在运行' : !p.online ? '玩家当前离线' : ''"
                 @click="askKick(p)"
               >
-                踢出
+                踢出服务器
+              </button>
+              <button
+                class="btn btn-sm"
+                :class="p.banned ? '' : 'btn-danger'"
+                :disabled="busyName === p.name || !serverOnline"
+                :title="serverOnline ? '' : '拉黑需要服务端在运行'"
+                @click="p.banned ? act(p.name, 'unban') : askBan(p)"
+              >
+                {{ p.banned ? '解除拉黑' : '拉黑' }}
               </button>
               <button
                 class="btn btn-sm"
@@ -567,93 +681,11 @@ function skinLabel(p: PlayerInfo): string {
               >
                 {{ p.whitelisted ? '移出白名单' : '加白名单' }}
               </button>
-              <button class="btn btn-sm btn-soft" :disabled="uploadingSkin === p.name" @click="openSkinEditor(p)">
+              <button class="btn btn-sm btn-soft" :disabled="uploadingSkin === p.name || savingSkin" @click="openSkinEditor(p)">
                 更换皮肤
               </button>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 全部已知玩家：含只在白名单 / 管理员里的 -->
-    <div class="card">
-      <div class="card-head">
-        <h2>全部已知玩家</h2>
-        <span class="text-3 small">含只在白名单 / 管理员名单里的名字</span>
-      </div>
-      <div class="card-body" style="padding: 0">
-        <div v-if="!players.length" class="empty">
-          <div class="empty-icon">📇</div>
-          <div>还没有任何玩家记录</div>
-        </div>
-        <div v-else class="tbl-wrap">
-          <table class="tbl">
-            <thead>
-              <tr>
-                <th>名字</th>
-                <th>白名单</th>
-                <th>管理员</th>
-                <th>状态</th>
-                <th>皮肤来源</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="p in players" :key="p.name">
-                <td>
-                  <div class="row gap-2">
-                    <i class="dot" :class="p.online ? 'dot-ok' : 'dot-idle'" />
-                    <span class="ellipsis">{{ p.name }}</span>
-                  </div>
-                </td>
-                <td>
-                  <span class="badge" :class="p.whitelisted ? 'badge-ok' : 'badge-outline'">{{ p.whitelisted ? '是' : '否' }}</span>
-                </td>
-                <td>
-                  <span class="badge" :class="p.op ? 'badge-accent' : 'badge-outline'">{{ p.op ? '是' : '否' }}</span>
-                </td>
-                <td>
-                  <span class="badge" :class="p.banned ? 'badge-danger' : p.online ? 'badge-ok' : 'badge-outline'">
-                    {{ p.banned ? '已拉黑' : p.online ? '在线' : '离线' }}
-                  </span>
-                </td>
-                <td>
-                  <span
-                    class="badge"
-                    :class="skinBadge(p).cls"
-                    :title="skinBadge(p).title"
-                  >
-                    {{ skinBadge(p).label }}
-                  </span>
-                </td>
-                <td>
-                  <div class="row gap-1 wrap">
-                    <button
-                      class="btn btn-sm"
-                      :disabled="busyName === p.name"
-                      @click="act(p.name, p.whitelisted ? 'whitelist-remove' : 'whitelist-add')"
-                    >
-                      {{ p.whitelisted ? '移出白名单' : '加白名单' }}
-                    </button>
-                    <button class="btn btn-sm" :disabled="busyName === p.name" @click="act(p.name, p.op ? 'deop' : 'op')">
-                      {{ p.op ? '取消管理员' : '设管理员' }}
-                    </button>
-                    <button
-                      class="btn btn-sm"
-                      :class="p.banned ? '' : 'btn-danger'"
-                      :disabled="busyName === p.name || (!p.banned && !serverOnline)"
-                      :title="!p.banned && !serverOnline ? '拉黑需要服务端在运行' : ''"
-                      @click="p.banned ? act(p.name, 'unban') : askBan(p)"
-                    >
-                      {{ p.banned ? '解除拉黑' : '拉黑' }}
-                    </button>
-                    <button class="btn btn-sm btn-soft" @click="openSkinEditor(p)">更换皮肤</button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
         </div>
       </div>
     </div>
@@ -664,9 +696,9 @@ function skinLabel(p: PlayerInfo): string {
         <span class="text-3 small">{{ skinPool.length }} 套 · 所有世界共用</span>
       </div>
       <div class="card-body col gap-3">
-        <div class="row-between wrap gap-3">
-          <p class="text-3 small skin-pool-note">添加一次后，任何世界的玩家都可以选择。新上传的 PNG 会直接保存到这里；从池中删除不会撤销已经应用给玩家的皮肤。</p>
-          <div class="row gap-2 wrap">
+        <div class="skin-pool-toolbar">
+          <p class="text-3 small skin-pool-note">所有世界共用；移除皮肤不会影响已经绑定的玩家。</p>
+          <div class="skin-pool-actions">
             <select v-model="newSkinModel" class="select" aria-label="皮肤模型">
               <option value="classic">Steve · 经典手臂</option>
               <option value="slim">Alex · 纤细手臂</option>
@@ -681,7 +713,8 @@ function skinLabel(p: PlayerInfo): string {
         </div>
         <div v-else class="skin-pool-grid">
           <div v-for="item in skinPool" :key="item.id" class="skin-pool-card">
-            <img :src="`${item.imageUrl}?v=${item.createdAt}`" :alt="item.name" />
+            <img v-if="item.previewReady" :src="item.previewUrl" :alt="`${item.name} 的正面预览`" loading="lazy" />
+            <div v-else class="skin-preview-pending" aria-label="正在生成正面预览"><span class="spinner" /></div>
             <div class="skin-pool-meta">
               <strong class="ellipsis" :title="item.name">{{ item.name }}</strong>
               <span class="text-3 small">{{ item.model === 'slim' ? 'Alex · 纤细' : 'Steve · 经典' }}</span>
@@ -725,7 +758,8 @@ function skinLabel(p: PlayerInfo): string {
               :disabled="savingSkin"
               @click="selectPoolSkin(item)"
             >
-              <img :src="`${item.imageUrl}?v=${item.createdAt}`" :alt="item.name" />
+              <img v-if="item.previewReady" :src="item.previewUrl" :alt="`${item.name} 的正面预览`" loading="lazy" />
+              <span v-else class="skin-choice-pending"><span class="spinner" /></span>
               <span class="skin-choice-name ellipsis" :title="item.name">{{ item.name }}</span>
               <span class="text-3 small">{{ item.model === 'slim' ? 'Alex' : 'Steve' }}</span>
             </button>
@@ -798,7 +832,10 @@ function skinLabel(p: PlayerInfo): string {
 .skin-help p { margin-bottom: 0; line-height: 1.55; }
 .skin-help + .btn { justify-content: center; }
 
-.skin-pool-note { margin: 0; max-width: 680px; }
+.skin-pool-toolbar { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.skin-pool-note { flex: 1 1 auto; min-width: 0; max-width: none; margin: 0; line-height: 1.45; }
+.skin-pool-actions { display: grid; grid-template-columns: minmax(150px, 220px) auto; align-items: center; gap: 8px; margin-left: auto; }
+.skin-pool-actions .btn { justify-self: end; white-space: nowrap; }
 .skin-pool-empty { min-height: 150px; }
 .skin-pool-grid {
   display: grid;
@@ -816,13 +853,14 @@ function skinLabel(p: PlayerInfo): string {
   border-radius: var(--r-sm);
   background: var(--surface-2);
 }
-.skin-pool-card > img {
+.skin-pool-card > img, .skin-preview-pending {
   width: 54px;
   height: 54px;
   object-fit: contain;
   border-radius: var(--r-xs);
   background: var(--surface);
 }
+.skin-preview-pending { display: grid; place-items: center; }
 .skin-pool-meta { min-width: 0; display: grid; gap: 3px; }
 .skin-picker {
   border: 1px solid var(--border);
@@ -852,7 +890,8 @@ function skinLabel(p: PlayerInfo): string {
 }
 .skin-choice:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-2); }
 .skin-choice:disabled { opacity: .55; cursor: wait; }
-.skin-choice img { width: 48px; height: 48px; object-fit: contain; border-radius: var(--r-xs); }
+.skin-choice img, .skin-choice-pending { width: 56px; height: 64px; object-fit: contain; border-radius: var(--r-xs); background: var(--surface-2); }
+.skin-choice-pending { display: grid; place-items: center; }
 .skin-choice-name { max-width: 100%; font-weight: 600; font-size: 12px; }
 .skin-picker-pages { padding: 8px 10px; border-top: 1px solid var(--border); }
 
@@ -884,7 +923,9 @@ function skinLabel(p: PlayerInfo): string {
 
 @media (max-width: 640px) {
   .skin-choice-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .skin-pool-toolbar { align-items: stretch; flex-direction: column; }
+  .skin-pool-actions { grid-template-columns: minmax(0, 1fr) auto; width: 100%; margin-left: 0; }
   .skin-pool-card { grid-template-columns: 46px minmax(0, 1fr) auto; }
-  .skin-pool-card > img { width: 46px; height: 46px; }
+  .skin-pool-card > img, .skin-preview-pending { width: 46px; height: 54px; }
 }
 </style>
