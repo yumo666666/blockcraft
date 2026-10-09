@@ -199,7 +199,7 @@ instances/<世界id>/        每个世界一份，完全独立
 自己出一份源码包：
 
 ```bash
-git archive --format=tar.gz --prefix=blockcraft-2.2.1/ -o blockcraft-2.2.1.tar.gz HEAD
+git archive --format=tar.gz --prefix=blockcraft-2.2.2/ -o blockcraft-2.2.2.tar.gz HEAD
 ```
 
 ## 测试

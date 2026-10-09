@@ -345,13 +345,13 @@ describe('世界卡片的崩溃提示', () => {
       lastError: '单个 tick 卡了 60.00 秒，被服务端自带看门狗判定为卡死并强制关闭',
     };
     const w = mount(WorldNote, { props: { item: base } });
-    expect(w.find('.note-crash').exists(), '有崩溃原因时应该显示提示').toBe(true);
+    expect(w.find('.note-message-error').exists(), '有崩溃原因时应该显示提示').toBe(true);
     expect(w.text()).toContain('上次崩溃');
     expect(w.text()).toContain('看门狗判定为卡死');
     w.unmount();
 
     const clean = mount(WorldNote, { props: { item: { ...base, lastError: null } } });
-    expect(clean.find('.note-crash').exists(), '正常世界不该显示崩溃提示').toBe(false);
+    expect(clean.find('.note-message-error').exists(), '正常世界不该显示崩溃提示').toBe(false);
     clean.unmount();
   });
 });

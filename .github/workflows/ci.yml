@@ -32,3 +32,6 @@ jobs:
       - name: 测试
         # 没有跑着的面板时，页面渲染测试会自动跳过，只跑纯逻辑测试
         run: pnpm test
+
+      - name: 服务端跨平台启动参数检查
+        run: pnpm test:server

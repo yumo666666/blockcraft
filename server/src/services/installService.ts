@@ -11,6 +11,7 @@ import { createLogger } from '../core/logger.ts';
 import { loadConfig } from '../config.ts';
 import { autoJava } from './javaService.ts';
 import * as I from './instanceService.ts';
+import { hasLoaderEntry, loaderArgsPath } from '../launcher/index.ts';
 import type { InstanceConfig, Loader } from '../types.ts';
 
 const logger = createLogger('install');
@@ -277,6 +278,11 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
     );
     child.on('error', reject);
   });
+  const argsFile = loaderArgsPath(cfg);
+  if (!hasLoaderEntry(cfg, serverDir)) {
+    const expectedFile = argsFile ? path.basename(argsFile) : '启动参数文件';
+    throw new Error(`${neo ? 'NeoForge' : 'Forge'} 安装器退出后没有生成当前系统需要的 ${expectedFile}，请查看上方安装日志后重新安装`);
+  }
   onLog('安装完成');
 }
 
@@ -299,10 +305,8 @@ export async function installServer(id: string, onLog: (s: string) => void, opts
       isFabricLauncher(path.join(serverDir, 'fabric-server-launch.jar')) &&
       exists('server.jar') &&
       exists(path.join('libraries', 'net', 'fabricmc', 'fabric-loader', cfg.loaderVersion || '0.16.9', `fabric-loader-${cfg.loaderVersion || '0.16.9'}.jar`)),
-    forge: () =>
-      exists(path.join('libraries', 'net', 'minecraftforge', 'forge', `${cfg.mc}-${cfg.loaderVersion}`, 'unix_args.txt')) ||
-      exists(`forge-${cfg.mc}-${cfg.loaderVersion}.jar`),
-    neoforge: () => exists(path.join('libraries', 'net', 'neoforged', 'neoforge', cfg.loaderVersion, 'unix_args.txt')),
+    forge: () => hasLoaderEntry(cfg, serverDir),
+    neoforge: () => hasLoaderEntry(cfg, serverDir),
   };
   if (!opts.force && done[cfg.loader]?.()) {
     onLog('服务端文件已存在，跳过安装');

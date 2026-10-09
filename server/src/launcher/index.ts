@@ -38,6 +38,25 @@ export function compareVersion(a: string, b: string): number {
   return 0;
 }
 
+/** Forge / NeoForge 的参数清单按安装系统区分，不能用 unix_args 代表 Windows 安装完成。 */
+export function loaderArgsPath(cfg: InstanceConfig, platform: NodeJS.Platform = process.platform): string | null {
+  const file = platform === 'win32' ? 'win_args.txt' : 'unix_args.txt';
+  if (cfg.loader === 'forge') {
+    return path.join('libraries', 'net', 'minecraftforge', 'forge', `${cfg.mc}-${cfg.loaderVersion}`, file);
+  }
+  if (cfg.loader === 'neoforge') {
+    return path.join('libraries', 'net', 'neoforged', 'neoforge', cfg.loaderVersion, file);
+  }
+  return null;
+}
+
+/** Whether a loader has the launch entry required by the current host. */
+export function hasLoaderEntry(cfg: InstanceConfig, serverDir: string, platform: NodeJS.Platform = process.platform): boolean {
+  const argsFile = loaderArgsPath(cfg, platform);
+  if (argsFile && fs.existsSync(path.join(serverDir, argsFile))) return true;
+  return cfg.loader === 'forge' && fs.existsSync(path.join(serverDir, `forge-${cfg.mc}-${cfg.loaderVersion}.jar`));
+}
+
 function findForgeLegacyJar(serverDir: string, mc: string, loaderVersion: string): string | null {
   const exact = `forge-${mc}-${loaderVersion}.jar`;
   if (fs.existsSync(path.join(serverDir, exact))) return exact;
@@ -50,7 +69,12 @@ function findForgeLegacyJar(serverDir: string, mc: string, loaderVersion: string
   return null;
 }
 
-export function planLaunch(cfg: InstanceConfig, serverDir: string, javaMajor: number): LaunchPlan {
+export function planLaunch(
+  cfg: InstanceConfig,
+  serverDir: string,
+  javaMajor: number,
+  platform: NodeJS.Platform = process.platform,
+): LaunchPlan {
   const jvmArgs: string[] = [`-Xms${cfg.minMemoryMb}M`, `-Xmx${cfg.memoryMb}M`];
   for (const line of (cfg.jvmExtra || '').split('\n')) {
     const t = line.trim();
@@ -73,19 +97,19 @@ export function planLaunch(cfg: InstanceConfig, serverDir: string, javaMajor: nu
     case 'fabric':
       return mk(['-jar', 'fabric-server-launch.jar'], ['fabric-server-launch.jar'], 'Fabric 自举启动器');
     case 'neoforge': {
-      const launcherArgs = path.join('libraries', 'net', 'neoforged', 'neoforge', cfg.loaderVersion, process.platform === 'win32' ? 'win_args.txt' : 'unix_args.txt');
-      return mk([`@${launcherArgs}`], [launcherArgs], process.platform === 'win32' ? 'NeoForge win_args 参数文件' : 'NeoForge unix_args 参数文件');
+      const launcherArgs = loaderArgsPath(cfg, platform)!;
+      return mk([`@${launcherArgs}`], [launcherArgs], platform === 'win32' ? 'NeoForge win_args 参数文件' : 'NeoForge unix_args 参数文件');
     }
     case 'forge': {
-      const launcherArgs = path.join('libraries', 'net', 'minecraftforge', 'forge', `${cfg.mc}-${cfg.loaderVersion}`, process.platform === 'win32' ? 'win_args.txt' : 'unix_args.txt');
+      const launcherArgs = loaderArgsPath(cfg, platform)!;
       if (fs.existsSync(path.join(serverDir, launcherArgs))) {
-        return mk([`@${launcherArgs}`], [launcherArgs], `Forge ${process.platform === 'win32' ? 'win_args' : 'unix_args'} 参数文件（1.17+）`);
+        return mk([`@${launcherArgs}`], [launcherArgs], `Forge ${platform === 'win32' ? 'win_args' : 'unix_args'} 参数文件（1.17+）`);
       }
       const legacy = findForgeLegacyJar(serverDir, cfg.mc, cfg.loaderVersion);
       if (legacy) {
         return mk(['-jar', legacy], [legacy], 'Forge 单体 jar（1.16.5 及更早）');
       }
-      return mk([`@${launcherArgs}`], [launcherArgs], `Forge ${process.platform === 'win32' ? 'win_args' : 'unix_args'} 参数文件（缺失，需要先安装）`);
+      return mk([`@${launcherArgs}`], [launcherArgs], `Forge ${platform === 'win32' ? 'win_args' : 'unix_args'} 参数文件（缺失，需要先安装）`);
     }
     default:
       return mk(['-jar', 'minecraft_server.jar'], ['minecraft_server.jar'], '未知加载器，按原版处理');
@@ -93,9 +117,13 @@ export function planLaunch(cfg: InstanceConfig, serverDir: string, javaMajor: nu
 }
 
 /** 启动前校验关键产物，缺什么就明确说出来，不要让它静默失败 */
-export function validateInstall(cfg: InstanceConfig, serverDir: string): { ok: boolean; missing: string[]; plan: LaunchPlan } {
+export function validateInstall(
+  cfg: InstanceConfig,
+  serverDir: string,
+  platform: NodeJS.Platform = process.platform,
+): { ok: boolean; missing: string[]; plan: LaunchPlan } {
   const javaMajor = cfg.javaMajor ?? 17;
-  const plan = planLaunch(cfg, serverDir, javaMajor);
+  const plan = planLaunch(cfg, serverDir, javaMajor, platform);
   const missing = plan.required.filter((rel) => !fs.existsSync(path.join(serverDir, rel)));
   if (cfg.loader === 'forge' && missing.length) {
     // Forge 1.16.5 及更早可能只有单体 jar，换个说法

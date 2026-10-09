@@ -1,7 +1,7 @@
 {
   "name": "blockcraft",
   "private": true,
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "BlockCraft · 多世界 Minecraft 服务器管理面板",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,7 @@
     "start": "node --experimental-strip-types server/src/index.ts",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && pnpm -C web exec vue-tsc --noEmit",
     "test": "pnpm -C web test",
+    "test:server": "node --experimental-strip-types --test server/test/*.test.mjs",
     "test:render": "pnpm -C web test",
     "lint": "pnpm typecheck"
   },
