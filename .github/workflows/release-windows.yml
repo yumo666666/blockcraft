@@ -10,7 +10,7 @@ on:
         description: Existing release tag to package (for example v2.2.0)
         required: true
         type: string
-        default: v2.3.8
+        default: v2.3.9
 
 permissions:
   contents: write

@@ -4,6 +4,7 @@ import { DATA_DIR, INSTANCES_DIR, PROJECT_ROOT } from '../core/paths.ts';
 import { dirSizeSync } from '../core/fsx.ts';
 import { loadConfig, publicConfig, saveConfig, randomToken } from '../config.ts';
 import * as sup from '../services/supervisor.ts';
+import * as frp from '../services/frpService.ts';
 import { evSystem, listEvents as evList } from '../services/eventLog.ts';
 import { bad } from '../core/errors.ts';
 import { destroyAllSessions, sessionCount } from '../core/sessions.ts';
@@ -260,11 +261,24 @@ export function registerSystemRoutes(app: Express): void {
         });
         return;
       }
+      const frpStop = await frp.stopChannelsForShutdown();
+      if (!frpStop.ok) {
+        shutdownAfterWorldsInProgress = false;
+        sup.cancelPanelShutdown();
+        res.status(409).json({
+          error: {
+            code: 'CONFLICT',
+            message: `世界已安全停止，但 FRP 通道没有全部退出，面板保持运行：${frpStop.error ?? '未知错误'}`,
+          },
+        });
+        return;
+      }
       res.json({ ok: true, stopped: active.length });
       setTimeout(() => process.exit(0), 350);
     } catch (error) {
       shutdownAfterWorldsInProgress = false;
       sup.cancelPanelShutdown();
+      frp.cancelShutdown();
       res.status(500).json({ error: { code: 'INTERNAL', message: String(error) } });
     }
   });

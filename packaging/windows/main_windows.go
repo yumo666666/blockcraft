@@ -139,6 +139,38 @@ func restartPanelOnly(dataDir string) error {
 	return trayPanelPost(port, token, "/api/panel/shutdown", 10*time.Second)
 }
 
+// After the panel confirms that all worlds stopped safely, wait for its process
+// to exit. If the shutdown response succeeded but Node does not exit, terminate
+// only the panel process so the tray cannot disappear while the panel stays up.
+func waitForPanelExit(exited <-chan struct{}, process *os.Process, timeout time.Duration) error {
+	select {
+	case <-exited:
+		return nil
+	case <-time.After(timeout):
+	}
+
+	_ = process.Kill()
+	select {
+	case <-exited:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("面板服务进程在安全停服后仍未退出")
+	}
+}
+
+func waitForPanelUnavailable(dataDir string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, available := browserURL(dataDir); !available {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 func run() int {
 	executable, err := os.Executable()
 	if err != nil {
@@ -227,15 +259,32 @@ func run() int {
 	}
 
 	serverExited := make(chan error, 1)
+	serverStopped := make(chan struct{})
 	trayReady := make(chan struct{})
 	var restartAfterExit atomic.Bool
+	var shutdownAfterWorldsRequested atomic.Bool
 	go func() {
 		err := <-wait
 		if err != nil {
 			_, _ = fmt.Fprintln(logFile, "BlockCraft 服务退出:", strings.TrimSpace(err.Error()))
 		}
 		serverExited <- err
+		close(serverStopped)
 		<-trayReady
+		if restartAfterExit.Load() {
+			systray.Quit()
+			return
+		}
+		if shutdownAfterWorldsRequested.Load() {
+			return
+		}
+		if _, stillResponding := browserURL(dataDir); stillResponding {
+			message, _ := syscall.UTF16PtrFromString("BlockCraft 面板服务进程已退出，但本地地址仍有其他进程响应。托盘保持运行，请检查端口对应的进程。")
+			title, _ := syscall.UTF16PtrFromString("BlockCraft 面板仍可访问")
+			proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+			proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x30)
+			return
+		}
 		systray.Quit()
 	}()
 
@@ -279,12 +328,14 @@ func run() int {
 					if !confirmStopWorldsAndExit() {
 						continue
 					}
+					shutdownAfterWorldsRequested.Store(true)
 					quitItem.Disable()
 					restartItem.Disable()
 					systray.SetTooltip("正在安全停止 Minecraft 世界…")
 					go func() {
 						worlds, err := activeWorldNames(dataDir)
 						if err != nil {
+							shutdownAfterWorldsRequested.Store(false)
 							quitItem.Enable()
 							restartItem.Enable()
 							systray.SetTooltip("BlockCraft 世界管理面板")
@@ -296,6 +347,7 @@ func run() int {
 						}
 						closeProgress, shown := showShutdownProgress(worlds)
 						if !shown {
+							shutdownAfterWorldsRequested.Store(false)
 							quitItem.Enable()
 							restartItem.Enable()
 							systray.SetTooltip("BlockCraft 世界管理面板")
@@ -306,6 +358,7 @@ func run() int {
 							return
 						}
 						if err := stopWorldsAndClosePanel(dataDir); err != nil {
+							shutdownAfterWorldsRequested.Store(false)
 							closeProgress()
 							quitItem.Enable()
 							restartItem.Enable()
@@ -316,7 +369,32 @@ func run() int {
 							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
 							return
 						}
+						if err := waitForPanelExit(serverStopped, cmd.Process, 5*time.Second); err != nil {
+							shutdownAfterWorldsRequested.Store(false)
+							closeProgress()
+							quitItem.Enable()
+							restartItem.Enable()
+							systray.SetTooltip("BlockCraft 世界管理面板")
+							message, _ := syscall.UTF16PtrFromString("世界已安全停止，但 BlockCraft 面板服务仍未退出。请查看 data\\logs\\launcher.log。\n\n" + err.Error())
+							title, _ := syscall.UTF16PtrFromString("BlockCraft 面板未退出")
+							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
+							return
+						}
+						if !waitForPanelUnavailable(dataDir, 3*time.Second) {
+							shutdownAfterWorldsRequested.Store(false)
+							closeProgress()
+							quitItem.Enable()
+							restartItem.Enable()
+							systray.SetTooltip("BlockCraft 世界管理面板")
+							message, _ := syscall.UTF16PtrFromString("世界已经安全停止，但 127.0.0.1 面板地址仍有进程响应，不能确认面板已关闭。托盘保持运行，请检查该端口对应的进程后重试。")
+							title, _ := syscall.UTF16PtrFromString("面板服务仍未关闭")
+							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x30)
+							return
+						}
 						closeProgress()
+						systray.Quit()
 					}()
 				}
 			}
@@ -334,7 +412,7 @@ func run() int {
 		_ = restart.Process.Release()
 		return 0
 	}
-	if serverExitErr != nil {
+	if serverExitErr != nil && !shutdownAfterWorldsRequested.Load() {
 		showError("BlockCraft 服务意外退出。请查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
 		return 1
 	}

@@ -28,6 +28,7 @@ const runtime: Record<ChannelName, ChannelRuntime> = {
   panel: { name: 'panel', pid: null, lastError: null, startedAt: null, lastReload: null },
   worlds: { name: 'worlds', pid: null, lastError: null, startedAt: null, lastReload: null },
 };
+let shuttingDown = false;
 
 function cfgFile(name: ChannelName): string {
   return path.join(DATA_DIR, `frpc-${name}.toml`);
@@ -290,6 +291,7 @@ export async function downloadBinary(): Promise<string> {
 }
 
 export async function startChannel(name: ChannelName, opts: { force?: boolean } = {}): Promise<void> {
+  if (shuttingDown) return;
   const panel = loadConfig();
   if (!panel.frp.enabled) return;
   if (!panel.frp.serverAddr) {
@@ -324,6 +326,9 @@ export async function startChannel(name: ChannelName, opts: { force?: boolean } 
     }
   }
   const config = await renderChannelConfig(name, panel);
+  // The config render above is async (Dashboard lookup); do not race a tray
+  // shutdown and spawn a fresh channel after the shutdown sweep has begun.
+  if (shuttingDown) return;
   writeWithBackup(cfgFile(name), config);
   fs.mkdirSync(path.dirname(logFile(name)), { recursive: true });
   const out = fs.openSync(logFile(name), 'a');
@@ -357,6 +362,50 @@ export function stopChannel(name: ChannelName): void {
   } catch {
     /* ignore */
   }
+}
+
+/** Stop both detached frpc children before the panel process exits. */
+export async function stopChannelsForShutdown(): Promise<{ ok: boolean; error?: string }> {
+  shuttingDown = true;
+  const stopAndWait = async (name: ChannelName): Promise<string | null> => {
+    const pid = readPid(name) ?? runtime[name].pid;
+    stopChannel(name);
+    if (!pid) return null;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && isAlive(pid)) await sleep(100);
+    if (isAlive(pid)) {
+      // Keep the PID available so a later tray-close retry can signal this
+      // channel again instead of losing track of a child that ignored SIGTERM.
+      runtime[name].pid = pid;
+      atomicWriteFileSync(pidFile(name), String(pid));
+      return `frpc(${name}) PID ${pid} 在 8 秒后仍在运行`;
+    }
+    return null;
+  };
+
+  // Close the world tunnel first; keep the panel tunnel available until the
+  // world channel is confirmed stopped, then stop the panel tunnel as well.
+  const worldError = await stopAndWait('worlds');
+  if (worldError) {
+    shuttingDown = false;
+    return { ok: false, error: worldError };
+  }
+  const panelError = await stopAndWait('panel');
+  if (panelError) {
+    shuttingDown = false;
+    const restoreError = await startChannel('worlds').then(() => null, (err) => String(err));
+    return {
+      ok: false,
+      error: restoreError
+        ? `${panelError}；恢复世界通道失败：${restoreError}`
+        : `${panelError}；世界通道已尝试恢复`,
+    };
+  }
+  return { ok: true };
+}
+
+export function cancelShutdown(): void {
+  shuttingDown = false;
 }
 
 /** 热重载（增量，不会拆掉已有连接）。失败时按配置决定是否回滚上一版 */
