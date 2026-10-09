@@ -68,6 +68,7 @@ var (
 	createWindowExW         = shutdownUser32.NewProc("CreateWindowExW")
 	showWindow              = shutdownUser32.NewProc("ShowWindow")
 	updateWindow            = shutdownUser32.NewProc("UpdateWindow")
+	setForegroundWindow     = shutdownUser32.NewProc("SetForegroundWindow")
 	getMessageW             = shutdownUser32.NewProc("GetMessageW")
 	translateMessage        = shutdownUser32.NewProc("TranslateMessage")
 	dispatchMessageW        = shutdownUser32.NewProc("DispatchMessageW")
@@ -122,7 +123,11 @@ func shutdownWindowReady() bool {
 
 func shutdownProgressText(worlds []string) string {
 	var text strings.Builder
-	text.WriteString("正在安全关闭以下世界：\r\n\r\n")
+	if len(worlds) > 0 {
+		text.WriteString("正在安全关闭以下世界：\r\n\r\n")
+	} else {
+		text.WriteString("正在确认所有世界均已停止：\r\n\r\n")
+	}
 	for _, world := range worlds {
 		text.WriteString("  • ")
 		text.WriteString(world)
@@ -134,7 +139,7 @@ func shutdownProgressText(worlds []string) string {
 
 // showShutdownProgress displays a topmost, non-dismissible native window while
 // the tray waits for the panel to finish stopping every world.
-func showShutdownProgress(worlds []string) func() {
+func showShutdownProgress(worlds []string) (func(), bool) {
 	ready := make(chan uintptr, 1)
 	go func() {
 		runtime.LockOSThread()
@@ -183,6 +188,7 @@ func showShutdownProgress(worlds []string) func() {
 		sendMessageW.Call(edit, wmSetFont, font, 1)
 		showWindow.Call(hwnd, swShow)
 		updateWindow.Call(hwnd)
+		setForegroundWindow.Call(hwnd)
 		ready <- hwnd
 
 		for {
@@ -198,9 +204,9 @@ func showShutdownProgress(worlds []string) func() {
 
 	hwnd := <-ready
 	if hwnd == 0 {
-		return func() {}
+		return func() {}, false
 	}
 	return func() {
 		postMessageW.Call(hwnd, shutdownDialogEnd, 0, 0)
-	}
+	}, true
 }

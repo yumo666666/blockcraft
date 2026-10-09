@@ -207,18 +207,21 @@ export function registerSystemRoutes(app: Express): void {
 
   /** Windows 托盘退出：先并行安全停止所有活动世界，全部成功后再退出面板。 */
   app.post('/api/panel/shutdown-after-worlds', async (_req, res) => {
-    if (shutdownAfterWorldsInProgress) {
+    if (shutdownAfterWorldsInProgress || !sup.beginPanelShutdown()) {
       res.status(409).json({ error: { code: 'BUSY', message: '正在停止世界，请稍候' } });
       return;
     }
     shutdownAfterWorldsInProgress = true;
     try {
       const worlds = await summarizeAll();
-      const active = worlds.filter((world) => ['running', 'starting', 'stopping', 'stuck'].includes(world.status));
+      const active = (await Promise.all(worlds.map(async (world) => {
+        const statusActive = ['running', 'starting', 'stopping', 'stuck'].includes(world.status);
+        return statusActive || await sup.hasActiveProcessEvidence(world.id) ? world : null;
+      }))).filter((world): world is (typeof worlds)[number] => Boolean(world));
       const results = await Promise.all(
         active.map(async (world) => ({
           world,
-          result: await sup.stop(world.id, { message: 'BlockCraft 正在关闭，服务器即将停止', timeoutSec: 120 }).catch((error) => ({
+          result: await sup.stop(world.id, { message: 'BlockCraft 正在关闭，服务器即将停止', timeoutSec: 120, safeOnly: true }).catch((error) => ({
             ok: false,
             graceful: false,
             error: String(error),
@@ -228,10 +231,31 @@ export function registerSystemRoutes(app: Express): void {
       const failed = results.filter(({ result }) => !result.ok);
       if (failed.length) {
         shutdownAfterWorldsInProgress = false;
+        sup.cancelPanelShutdown();
+        const details = failed.map(({ world, result }) => `${world.name}：${result.error || '未能确认停止'}`).join('；');
         res.status(409).json({
           error: {
             code: 'CONFLICT',
-            message: `以下世界未能停止，面板仍保持运行：${failed.map(({ world }) => world.name).join('、')}`,
+            message: `以下世界未能安全停止，面板仍保持运行：${details}`,
+          },
+        });
+        return;
+      }
+
+      // Re-check every world immediately before exiting. A stale state snapshot
+      // or an unverified PID must never make the tray quit while Java is alive.
+      const latestWorlds = await summarizeAll();
+      const stillActive = (await Promise.all(latestWorlds.map(async (world) => {
+        const statusActive = ['running', 'starting', 'stopping', 'stuck'].includes(world.status);
+        return statusActive || await sup.hasActiveProcessEvidence(world.id) ? world : null;
+      }))).filter((world): world is (typeof latestWorlds)[number] => Boolean(world));
+      if (stillActive.length) {
+        shutdownAfterWorldsInProgress = false;
+        sup.cancelPanelShutdown();
+        res.status(409).json({
+          error: {
+            code: 'CONFLICT',
+            message: `以下世界仍有进程或端口活动，面板保持运行：${stillActive.map((world) => world.name).join('、')}`,
           },
         });
         return;
@@ -240,6 +264,7 @@ export function registerSystemRoutes(app: Express): void {
       setTimeout(() => process.exit(0), 350);
     } catch (error) {
       shutdownAfterWorldsInProgress = false;
+      sup.cancelPanelShutdown();
       res.status(500).json({ error: { code: 'INTERNAL', message: String(error) } });
     }
   });

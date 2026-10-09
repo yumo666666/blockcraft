@@ -294,9 +294,16 @@ func run() int {
 							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
 							return
 						}
-						closeProgress := func() {}
-						if len(worlds) > 0 {
-							closeProgress = showShutdownProgress(worlds)
+						closeProgress, shown := showShutdownProgress(worlds)
+						if !shown {
+							quitItem.Enable()
+							restartItem.Enable()
+							systray.SetTooltip("BlockCraft 世界管理面板")
+							message, _ := syscall.UTF16PtrFromString("安全关闭进度窗口没有显示，因此没有开始关闭世界。请重试或重新启动 BlockCraft。")
+							title, _ := syscall.UTF16PtrFromString("无法安全关闭 BlockCraft")
+							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
+							return
 						}
 						if err := stopWorldsAndClosePanel(dataDir); err != nil {
 							closeProgress()

@@ -224,6 +224,21 @@ interface RunningProc {
 
 const procs = new Map<string, RunningProc>();
 const javaPreparing = new Map<string, string>();
+let panelShutdownRequested = false;
+
+export function beginPanelShutdown(): boolean {
+  if (panelShutdownRequested) return false;
+  panelShutdownRequested = true;
+  return true;
+}
+
+export function cancelPanelShutdown(): void {
+  panelShutdownRequested = false;
+}
+
+export function isPanelShutdownRequested(): boolean {
+  return panelShutdownRequested;
+}
 
 export function isTrackedChildAlive(tracked: Pick<RunningProc, 'child' | 'pid'> | undefined, pid: number): boolean {
   return Boolean(tracked && tracked.pid === pid && tracked.child.exitCode === null && tracked.child.signalCode === null);
@@ -276,6 +291,19 @@ export function alivePid(id: string): number | null {
     return null;
   }
   return pid;
+}
+
+/**
+ * Stop/exit decisions must account for worlds the panel cannot identify by
+ * command line after a restart. A live PID file or an occupied Minecraft port
+ * is enough evidence to keep the panel alive until that world is resolved.
+ */
+export async function hasActiveProcessEvidence(id: string): Promise<boolean> {
+  const cfg = I.getConfig(id);
+  if (alivePid(id)) return true;
+  const pid = readPidFile(id);
+  if (pid && isAlive(pid)) return true;
+  return portOpen(cfg.port, '127.0.0.1', 500);
 }
 
 function portOpen(port: number, host = '127.0.0.1', timeout = 1200): Promise<boolean> {
@@ -377,6 +405,27 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
     return summary;
   }
 
+  const pidFromFile = readPidFile(id);
+  const unverifiedPidAlive = Boolean(pidFromFile && isAlive(pidFromFile));
+  const listeningWithoutPid = await portOpen(cfg.port, '127.0.0.1', 500);
+  if (unverifiedPidAlive || listeningWithoutPid) {
+    status = st.status === 'stopping' ? 'stopping' : 'stuck';
+    phase = listeningWithoutPid
+      ? '游戏端口仍在监听，但面板暂时无法识别进程'
+      : '发现世界进程，但面板暂时无法确认进程身份';
+    return {
+      status,
+      pid: unverifiedPidAlive ? pidFromFile : null,
+      listening: listeningWithoutPid,
+      phase,
+      progress: null,
+      players: st.players,
+      uptime: st.startedAt ? Math.max(0, Date.now() / 1000 - st.startedAt) : 0,
+      cpu: 0,
+      rss: 0,
+      detectedFrom: 'memory',
+    };
+  }
   if (st.status === 'stopping' || st.status === 'crashed') {
     status = st.status === 'stopping' ? 'stopped' : 'crashed';
   }
@@ -498,6 +547,7 @@ export interface StartResult {
 
 export async function start(id: string, opts: { wait?: boolean } = {}): Promise<StartResult> {
   return withLock(`instance:${id}`, async () => {
+    if (panelShutdownRequested) return { ok: false, error: 'BlockCraft 正在关闭，暂时不能启动世界' };
     const cfg = I.getConfig(id);
     const dir = instanceDir(id);
     const serverDir = instanceServerDir(id);
@@ -619,6 +669,8 @@ export interface StopOptions {
   timeoutMs?: number;
   /** 定时停服时用它把公告提前发出去 */
   announce?: boolean;
+  /** 托盘安全退出时只允许 RCON 正常停服；失败或超时就保留面板和世界进程。 */
+  safeOnly?: boolean;
 }
 
 export async function stop(id: string, opts: StopOptions = {}): Promise<{ ok: boolean; graceful: boolean; error?: string }> {
@@ -629,8 +681,21 @@ export async function stop(id: string, opts: StopOptions = {}): Promise<{ ok: bo
     atomicWriteFileSync(intentFile(id), new Date().toISOString() + '\n');
     I.saveState(id, { status: 'stopping', phase: '正在保存并关闭', intentionalStop: true });
     if (!pid) {
-      I.saveState(id, { status: 'stopped', pid: null, listening: false, players: 0, phase: '已停止' });
-      return { ok: true, graceful: true };
+      const pidFromFile = readPidFile(id);
+      const pidFileAlive = Boolean(pidFromFile && isAlive(pidFromFile));
+      const listening = await portOpen(cfg.port, '127.0.0.1', 500);
+      if (!pidFileAlive && !listening) {
+        try { fs.unlinkSync(pidFile(id)); } catch { /* no stale PID file */ }
+        I.saveState(id, { status: 'stopped', pid: null, listening: false, players: 0, phase: '已停止' });
+        return { ok: true, graceful: true };
+      }
+      if (!listening) {
+        const error = '发现进程仍在运行，但游戏端口未监听且无法确认进程身份；为避免误杀其他程序，面板保持运行。';
+        I.saveState(id, { status: 'stuck', pid: pidFromFile, listening: false, phase: error, lastError: error });
+        return { ok: false, graceful: false, error };
+      }
+      // PID is unavailable/unverified, but a Minecraft server still owns the
+      // configured game port. Use its RCON endpoint and never kill an unknown PID.
     }
 
     const timeoutMs = opts.timeoutMs ?? (opts.timeoutSec ?? 120) * 1000;
@@ -657,21 +722,48 @@ export async function stop(id: string, opts: StopOptions = {}): Promise<{ ok: bo
       await rconFor(cfg).command('stop');
       graceful = true;
     } catch (err) {
-      logger.warn(`RCON 停止失败，改用 SIGTERM`, { instance: id, error: String(err) });
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch {
-        /* ignore */
+      logger.warn(opts.safeOnly ? 'RCON 停止失败，安全退出将保留世界进程' : 'RCON 停止失败，改用 SIGTERM', { instance: id, error: String(err) });
+      if (opts.safeOnly) {
+        const error = `RCON 停止失败，世界仍在运行；为保护存档，未强制结束进程：${String(err)}`;
+        I.saveState(id, { status: 'stuck', pid, listening: true, phase: error, lastError: error });
+        return { ok: false, graceful: false, error };
+      }
+      if (pid) {
+        try {
+          process.kill(pid, 'SIGTERM');
+        } catch {
+          /* ignore */
+        }
+      } else {
+        const error = `RCON 停止失败，无法确认世界进程身份，未结束任何进程：${String(err)}`;
+        I.saveState(id, { status: 'stuck', pid: null, listening: true, phase: error, lastError: error });
+        return { ok: false, graceful: false, error };
       }
     }
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (!isAlive(pid)) {
+      const stopped = pid ? !isAlive(pid) : !(await portOpen(cfg.port, '127.0.0.1', 500));
+      if (stopped) {
+        if (!pid) {
+          try { fs.unlinkSync(pidFile(id)); } catch { /* ignore */ }
+        }
         I.saveState(id, { status: 'stopped', pid: null, listening: false, players: 0, phase: '已停止' });
         return { ok: true, graceful };
       }
       await sleep(1000);
+    }
+
+    if (!pid) {
+      const error = 'Minecraft 端口在等待后仍未关闭；为避免强制结束未知进程，BlockCraft 保持运行。';
+      I.saveState(id, { status: 'stuck', pid: null, listening: true, phase: error, lastError: error });
+      return { ok: false, graceful, error };
+    }
+
+    if (opts.safeOnly) {
+      const error = '世界在等待后仍未停止；为保护存档，未强制结束进程，BlockCraft 保持运行。';
+      I.saveState(id, { status: 'stuck', pid, listening: true, phase: error, lastError: error });
+      return { ok: false, graceful, error };
     }
 
     // 超时：SIGTERM → 5 秒后 SIGKILL

@@ -37,6 +37,7 @@ export function registerInstanceRoutes(app: Express): void {
   });
 
   app.post('/api/instances', async (req, res) => {
+    if (sup.isPanelShutdownRequested()) throw conflict('BlockCraft 正在关闭，暂时不能创建世界');
     const body = req.body as Record<string, unknown> & { name?: string; mc?: string; loader?: never; install?: boolean; start?: boolean };
     if (!body.name) throw bad('请填写世界名称');
     if (!body.mc) throw bad('请选择 Minecraft 版本');
@@ -290,6 +291,7 @@ export function registerInstanceRoutes(app: Express): void {
   });
 
   app.post('/api/instances/:id/copy', async (req, res) => {
+    if (sup.isPanelShutdownRequested()) throw conflict('BlockCraft 正在关闭，暂时不能复制世界');
     const id = requireId(req.params.id);
     const body = req.body as { name?: string } & Record<string, unknown>;
     if (!body.name) throw bad('请填写新世界的名称');
@@ -334,6 +336,7 @@ export function registerInstanceRoutes(app: Express): void {
 
   /** 纳管已有世界目录：只读识别 + 建软链登记，不移动、不改动原目录 */
   app.post('/api/instances/adopt', async (req, res) => {
+    if (sup.isPanelShutdownRequested()) throw conflict('BlockCraft 正在关闭，暂时不能纳管世界');
     const body = req.body as { dir?: string; name?: string; mc?: string; loader?: never; loaderVersion?: string; memoryMb?: number; writeProperties?: boolean };
     if (!body.dir) throw bad('请提供要纳管的服务端目录');
     const adoptBody = { ...body, dir: body.dir };
