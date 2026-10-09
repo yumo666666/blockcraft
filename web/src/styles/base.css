@@ -524,6 +524,22 @@ p { margin: 0; }
   background: var(--accent);
 }
 .tab.active .dot { box-shadow: 0 0 0 3px var(--tab-dot-ring); }
+.tab-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 19px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-3);
+  background: var(--surface-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+.tab-state-running { color: var(--ok-text); background: var(--ok-soft); border-color: transparent; }
+.tab-state-starting, .tab-state-stopping { color: var(--warn-text); background: var(--warn-soft); border-color: transparent; }
+.tab-state-crashed, .tab-state-stuck { color: var(--danger-text); background: var(--danger-soft); border-color: transparent; }
 .tab-add { color: var(--accent); border: 1px dashed var(--accent-border); background: transparent; }
 .tab-add:hover { background: var(--accent-soft); }
 

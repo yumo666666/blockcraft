@@ -63,9 +63,11 @@ export function registerSystemRoutes(app: Express): void {
   });
 
   app.get('/api/system', async (_req, res) => {
+    const sampledAt = Date.now();
     const cfg = loadConfig();
     const [snap, instances] = await Promise.all([systemSnapshot(cfg.panel.port, DATA_DIR), summarizeAll()]);
     res.json({
+      sampledAt,
       ...snap,
       instances,
       addresses: connectionAddresses(cfg.panel.port),
@@ -89,21 +91,29 @@ export function registerSystemRoutes(app: Express): void {
     });
     const cfg = loadConfig();
     let closed = false;
+    let sending = false;
     req.on('close', () => {
       closed = true;
     });
     const send = async () => {
-      if (closed) return;
+      // Status summaries can take longer than three seconds while pinging many
+      // running worlds. Never let an older, slower summary be written after a
+      // newer one and roll the overview back to a stale status.
+      if (closed || sending) return;
+      sending = true;
+      const sampledAt = Date.now();
       try {
         const snap = await systemSnapshot(cfg.panel.port, DATA_DIR);
         const instances = await summarizeAll();
-        res.write(`data: ${JSON.stringify({ type: 'system', snap, instances })}\n\n`);
+        if (!closed) res.write(`data: ${JSON.stringify({ type: 'system', sampledAt, snap, instances })}\n\n`);
       } catch {
         /* ignore */
+      } finally {
+        sending = false;
       }
     };
     await send();
-    const timer = setInterval(send, 3000);
+    const timer = setInterval(() => void send(), 3000);
     req.on('close', () => clearInterval(timer));
   });
 

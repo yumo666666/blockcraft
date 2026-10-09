@@ -12,6 +12,7 @@ import PortsDialog from '../components/PortsDialog.vue';
 import CopyDialog from '../components/CopyDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import JobProgress from '../components/JobProgress.vue';
+import { STATUS_TEXT, statusClass } from '../lib/format.ts';
 
 defineOptions({ name: 'Overview' });
 
@@ -59,6 +60,32 @@ const active = computed(() => instances.value.find((i) => i.id === activeId.valu
 
 let offSystem: (() => void) | null = null;
 let frpTimer: number | null = null;
+let instanceRevision = 0;
+let instanceLoadRequest = 0;
+const pendingStatuses = new Map<string, { status: string; phase: string; at: number }>();
+
+function applyInstances(next: InstanceSummary[], sampledAt = Date.now()) {
+  instanceRevision += 1;
+  const fresh = next.map((item) => {
+    const pending = pendingStatuses.get(item.id);
+    if (!pending) return item;
+    // A snapshot that started before the button press may finish after it. Keep
+    // the accepted local state until the next fresh server snapshot arrives.
+    if (sampledAt <= pending.at) return { ...item, status: pending.status, phase: pending.phase };
+    pendingStatuses.delete(item.id);
+    return item;
+  });
+  instances.value = fresh;
+  if (!activeId.value && fresh.length) activeId.value = fresh[0].id;
+  if (activeId.value && !fresh.some((item) => item.id === activeId.value)) activeId.value = fresh[0]?.id ?? null;
+}
+
+function setInstanceStatus(id: string, status: string, phase: string) {
+  const at = Date.now();
+  pendingStatuses.set(id, { status, phase, at });
+  instanceRevision += 1;
+  instances.value = instances.value.map((item) => item.id === id ? { ...item, status, phase } : item);
+}
 
 async function loadFrp() {
   try {
@@ -69,34 +96,34 @@ async function loadFrp() {
 }
 
 async function loadInstances() {
+  const requestId = ++instanceLoadRequest;
+  const revisionAtRequest = instanceRevision;
   try {
     const r = await api.get<{ instances: InstanceSummary[] }>('/api/instances');
-    instances.value = r.instances;
-    if (!activeId.value && r.instances.length) activeId.value = r.instances[0].id;
-    if (activeId.value && !r.instances.some((i) => i.id === activeId.value)) activeId.value = r.instances[0]?.id ?? null;
+    // SSE 或更新的列表请求已经返回时，丢弃这份较旧的 GET 结果。
+    if (requestId !== instanceLoadRequest || revisionAtRequest !== instanceRevision) return;
+    applyInstances(r.instances);
   } catch (err) {
+    if (requestId !== instanceLoadRequest || revisionAtRequest !== instanceRevision) return;
     toastError(err, '读取世界列表失败');
   }
 }
 
 onMounted(() => {
-  offSystem = subscribe<{ snap: SystemSnapshot; instances: InstanceSummary[] }>(
+  offSystem = subscribe<{ sampledAt: number; snap: SystemSnapshot; instances: InstanceSummary[] }>(
     '/api/system/stream',
     (data) => {
       snap.value = data.snap;
-      instances.value = data.instances;
-      if (!activeId.value || !data.instances.some((item) => item.id === activeId.value)) {
-        activeId.value = data.instances[0]?.id ?? null;
-      }
+      applyInstances(data.instances, data.sampledAt);
     },
     {
       onError: () => {
         // SSE 断了就退回轮询，保证界面不会停在旧数据上
         api
-          .get<SystemSnapshot & { instances: InstanceSummary[] }>('/api/system')
+          .get<SystemSnapshot & { sampledAt: number; instances: InstanceSummary[] }>('/api/system')
           .then((d) => {
             snap.value = d;
-            instances.value = d.instances;
+            applyInstances(d.instances, d.sampledAt);
           })
           .catch(() => undefined);
       },
@@ -115,8 +142,11 @@ async function start(item: InstanceSummary) {
   busyId.value = item.id;
   try {
     await api.post(`/api/instances/${item.id}/start`);
+    // The start endpoint deliberately acknowledges long starts with HTTP 202.
+    // Show the accepted state immediately; the SSE snapshot will replace it with
+    // the authoritative starting/running state (or stopped if startup fails).
+    setInstanceStatus(item.id, 'starting', '正在启动');
     toast('ok', `${item.name} 正在启动`, '状态会自己刷新，进度看卡片上的说明');
-    loadInstances();
   } catch (err) {
     toastError(err, '启动失败');
   } finally {
@@ -128,8 +158,8 @@ async function stop(item: InstanceSummary) {
   busyId.value = item.id;
   try {
     const r = await api.post<{ message?: string }>(`/api/instances/${item.id}/stop`, { message: '服务器正在关闭，感谢游玩' });
+    setInstanceStatus(item.id, 'stopping', '正在保存并关闭');
     toast('ok', `${item.name} 正在关闭`, r?.message ?? '保存完成后会自动停止，状态会自己刷新');
-    loadInstances();
   } catch (err) {
     toastError(err, '停止失败');
   } finally {
@@ -179,8 +209,9 @@ function openJob(id: string) {
           :class="{ active: active?.id === i.id }"
           @click="activeId = i.id"
         >
-          <i class="dot" :class="i.status === 'running' ? 'dot-ok' : i.status === 'stopped' ? 'dot-idle' : 'dot-warn dot-pulse'" />
+          <i class="dot" :class="statusClass(i.status)" aria-hidden="true" />
           {{ i.name }}
+          <span class="tab-state" :class="`tab-state-${i.status}`">{{ STATUS_TEXT[i.status] ?? i.status }}</span>
         </button>
         <button class="tab tab-add" @click="router.push('/new')">＋ 新建世界 / 导入整合包</button>
       </div>
