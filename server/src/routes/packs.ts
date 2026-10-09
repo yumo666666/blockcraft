@@ -1,5 +1,7 @@
 import type { Express } from 'express';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { STORE_DIR } from '../core/paths.ts';
 import { bad, notFound } from '../core/errors.ts';
@@ -55,18 +57,89 @@ export function registerPackRoutes(app: Express): void {
   });
 
 
-  /** 上传整合包（前端用 base64 传，避免引入 multipart 依赖） */
-  app.post('/api/packs/upload', (req, res) => {
-    const body = req.body as { name?: string; data?: string };
-    if (!body.name || !body.data) throw bad('缺少文件内容');
-    const safe = path.basename(body.name).replace(/[^\w.\-\u4e00-\u9fa5]/g, '_');
-    if (!/\.(zip|mrpack)$/i.test(safe)) throw bad('只支持 .zip 或 .mrpack');
-    const id = `imp-${Date.now()}-${safe}`;
+  /**
+   * 上传整合包。新前端以 octet-stream 直接流式传文件，避免 Base64 将文件膨胀
+   * 约 1/3，也避免将整个压缩包常驻在 JSON 请求体和进程内存中。
+   * 保留 JSON 分支，兼容旧版面板客户端。
+   */
+  app.post('/api/packs/upload', async (req, res) => {
+    const maxBytes = 2 * 1024 * 1024 * 1024;
+    let name = '';
+    let legacyData = '';
+    if (req.is('application/octet-stream')) {
+      try {
+        name = decodeURIComponent(String(req.headers['x-blockcraft-filename'] ?? ''));
+      } catch {
+        throw bad('文件名无效 / Invalid filename.');
+      }
+    } else {
+      const body = req.body as { name?: string; data?: string };
+      name = String(body?.name ?? '');
+      legacyData = String(body?.data ?? '');
+    }
+    if (!name || (!req.is('application/octet-stream') && !legacyData)) throw bad('缺少文件内容 / No file content was received.');
+    const safe = path.basename(name).replace(/[^\w.\-\u4e00-\u9fa5]/g, '_');
+    if (!/\.(zip|mrpack)$/i.test(safe)) throw bad('只支持 .zip 或 .mrpack / Only .zip and .mrpack files are supported.');
     fs.mkdirSync(PACKS_DIR, { recursive: true });
-    const buf = Buffer.from(body.data, 'base64');
-    if (buf.length > 2 * 1024 * 1024 * 1024) throw bad('文件太大');
-    fs.writeFileSync(path.join(PACKS_DIR, id), buf);
-    res.json({ ok: true, id, bytes: buf.length });
+
+    if (!req.is('application/octet-stream')) {
+      const buf = Buffer.from(legacyData, 'base64');
+      if (buf.length > maxBytes) throw bad('整合包超过 2 GB 限制 / Pack exceeds the 2 GB upload limit.');
+      const id = `imp-${Date.now()}-${safe}`;
+      fs.writeFileSync(path.join(PACKS_DIR, id), buf);
+      res.json({ ok: true, id, bytes: buf.length });
+      return;
+    }
+
+    const contentLength = Number(req.headers['content-length'] ?? 0);
+    if (contentLength > maxBytes) {
+      req.resume();
+      res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: '整合包超过 2 GB 限制', message_en: 'Pack exceeds the 2 GB upload limit.' } });
+      return;
+    }
+
+    const id = `imp-${Date.now()}-${safe}`;
+    const temp = path.join(PACKS_DIR, `.${id}.${randomUUID()}.part`);
+    let handle: FileHandle | undefined;
+    let bytes = 0;
+    let tooLarge = false;
+    try {
+      handle = await fs.promises.open(temp, 'wx');
+      for await (const value of req) {
+        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          tooLarge = true;
+          continue; // Drain the request so the client receives a structured 413 response.
+        }
+        await handle.writeFile(chunk);
+      }
+      await handle.close();
+      handle = undefined;
+      if (tooLarge) {
+        await fs.promises.rm(temp, { force: true });
+        res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: '整合包超过 2 GB 限制', message_en: 'Pack exceeds the 2 GB upload limit.' } });
+        return;
+      }
+      await fs.promises.rename(temp, path.join(PACKS_DIR, id));
+      res.json({ ok: true, id, bytes });
+    } catch (err) {
+      await handle?.close().catch(() => undefined);
+      await fs.promises.rm(temp, { force: true }).catch(() => undefined);
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (!res.headersSent && !res.destroyed && ['ENOSPC', 'EACCES', 'EPERM', 'EROFS'].includes(String(code))) {
+        res.status(500).json({
+          error: {
+            code: 'UPLOAD_STORAGE',
+            message: '无法写入整合包，请检查磁盘空间和数据目录权限',
+            message_en: 'Could not save the pack. Check available disk space and data-directory permissions.',
+            detail: code,
+          },
+        });
+        return;
+      }
+      throw err;
+    }
   });
 
   app.delete('/api/packs/:id', (req, res) => {

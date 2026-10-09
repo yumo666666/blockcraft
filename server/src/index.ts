@@ -115,7 +115,7 @@ export function boot(): void {
   });
 
   app.get('/api/ping', (_req, res) => {
-    res.json({ ok: true, name: 'BlockCraft', version: '2.3.7' });
+    res.json({ ok: true, name: 'BlockCraft', version: '2.3.8' });
   });
 
   // ---- 鉴权中间件
@@ -205,6 +205,17 @@ export function boot(): void {
 
   // ---- 统一错误处理（结构化错误码：前端才能区分「改输入」与「要刷新」）
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const parserError = err as { type?: string; status?: number };
+    if (parserError?.type === 'entity.too.large' || parserError?.status === 413) {
+      res.status(413).json({
+        error: {
+          code: 'PAYLOAD_TOO_LARGE',
+          message: '请求内容超过服务器限制，请检查文件大小',
+          message_en: 'Request body exceeds the server limit. Check the file size.',
+        },
+      });
+      return;
+    }
     const { status, body } = toHttpBody(err);
     if (status >= 500) logger.error('请求处理失败', err instanceof Error ? err.stack : String(err));
     res.status(status).json(body);

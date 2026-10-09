@@ -158,17 +158,15 @@ async function uploadPack(event: Event) {
   if (!file) return;
   busy.value = true;
   try {
-    const data = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-    await api.post('/api/packs/upload', { name: file.name, data });
+    await api.uploadFile('/api/packs/upload', file);
     toast('ok', '整合包已上传', file.name);
     await loadPacks();
   } catch (err) {
-    toastError(err, '上传失败');
+    if (err instanceof TypeError) {
+      toast('error', '上传失败 / Upload failed', '网络连接中断或面板暂时不可用，请检查连接后重试 / The connection was interrupted or the panel is unavailable. Check your connection and try again.', 8000);
+    } else {
+      toastError(err, '上传失败 / Upload failed');
+    }
   } finally {
     busy.value = false;
     input.value = '';

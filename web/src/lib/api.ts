@@ -1,6 +1,6 @@
 /** 统一的接口客户端：带会话、带 CSRF 标记、带结构化错误 */
 export interface ApiErrorBody {
-  error: { code: string; message: string; detail?: unknown };
+  error: { code: string; message: string; message_en?: string; detail?: unknown };
 }
 
 export class ApiError extends Error {
@@ -18,14 +18,20 @@ export function setUnauthorizedHandler(fn: () => void): void {
   onUnauthorized = fn;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts: { contentType?: string; raw?: boolean; filename?: string } = {},
+): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: {
       'X-Blockcraft': '1',
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...(body !== undefined ? { 'Content-Type': opts.contentType ?? 'application/json' } : {}),
+      ...(opts.filename ? { 'X-Blockcraft-Filename': encodeURIComponent(opts.filename) } : {}),
     },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body === undefined ? undefined : opts.raw ? body as BodyInit : JSON.stringify(body),
   });
   if (res.status === 401) {
     onUnauthorized?.();
@@ -40,7 +46,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   if (!res.ok) {
     const err = (data as ApiErrorBody)?.error;
-    throw new ApiError(err?.code ?? 'INTERNAL', err?.message ?? `请求失败（HTTP ${res.status}）`, err?.detail);
+    const message = err?.message_en ? `${err.message} / ${err.message_en}` : err?.message;
+    throw new ApiError(err?.code ?? 'INTERNAL', message ?? `请求失败（HTTP ${res.status}）`, err?.detail);
   }
   return data as T;
 }
@@ -50,6 +57,8 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
   del: <T>(path: string) => request<T>('DELETE', path),
+  uploadFile: <T>(path: string, file: File) =>
+    request<T>('POST', path, file, { contentType: 'application/octet-stream', raw: true, filename: file.name }),
   login: (token: string) => request<{ ok: boolean }>('POST', '/api/login', { token }),
   logout: () => request<{ ok: boolean }>('POST', '/api/logout'),
 };
