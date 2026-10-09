@@ -36,7 +36,8 @@ OUT="$ROOT/dist-release/BlockCraft-Windows-x64"
 ZIP="$ROOT/dist-release/BlockCraft-Windows-x64.zip"
 rm -rf "$OUT" "$ZIP"
 mkdir -p "$OUT/app/web" "$OUT/app/bin" "$OUT/runtime"
-pnpm --filter @blockcraft/server deploy --prod --legacy "$OUT/app/server-runtime"
+pnpm --filter @blockcraft/server deploy --prod --legacy --config.node-linker=hoisted "$OUT/app/server-runtime"
+(cd "$OUT/app/server-runtime" && node --experimental-strip-types --input-type=module -e "await import('./src/index.ts')")
 cp -R web/dist "$OUT/app/web/dist"
 cp -R bin/. "$OUT/app/bin/"
 
@@ -81,6 +82,14 @@ with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compres
         for filename in files:
             full = os.path.join(root, filename)
             bundle.write(full, os.path.relpath(full, parent))
+
+with zipfile.ZipFile(destination) as bundle:
+    names = set(bundle.namelist())
+    prefix = "BlockCraft-Windows-x64/app/server-runtime/node_modules/"
+    required = [prefix + name + "/package.json" for name in ("express", "yauzl", "yazl")]
+    missing = [name for name in required if name not in names]
+    if missing:
+        raise SystemExit("Windows package is missing runtime dependencies: " + ", ".join(missing))
 PY
 
 CI=true pnpm install --frozen-lockfile
