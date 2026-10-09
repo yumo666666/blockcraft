@@ -104,31 +104,7 @@ func stopWorldsAndClosePanel(dataDir string) error {
 	if token == "" {
 		return fmt.Errorf("没有找到面板令牌，无法安全关闭世界")
 	}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/api/panel/shutdown-after-worlds?%s", port, neturl.Values{"token": {token}}.Encode())
-	request, err := http.NewRequest(http.MethodPost, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("x-blockcraft", "1")
-	client := &http.Client{Timeout: 10 * time.Minute, Transport: &http.Transport{Proxy: nil}}
-	response, err := client.Do(request)
-	if err != nil {
-		return fmt.Errorf("连接面板失败：%w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		return nil
-	}
-	body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
-	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &payload) == nil && payload.Error.Message != "" {
-		return fmt.Errorf("%s", payload.Error.Message)
-	}
-	return fmt.Errorf("面板返回 HTTP %d", response.StatusCode)
+	return trayPanelPost(port, token, "/api/panel/shutdown-after-worlds", 10*time.Minute)
 }
 
 func restartPanelOnly(dataDir string) error {
@@ -136,31 +112,7 @@ func restartPanelOnly(dataDir string) error {
 	if token == "" {
 		return fmt.Errorf("没有找到面板令牌，无法安全重启面板")
 	}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/api/panel/shutdown?%s", port, neturl.Values{"token": {token}}.Encode())
-	request, err := http.NewRequest(http.MethodPost, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("x-blockcraft", "1")
-	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil}}
-	response, err := client.Do(request)
-	if err != nil {
-		return fmt.Errorf("连接面板失败：%w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		return nil
-	}
-	body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
-	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &payload) == nil && payload.Error.Message != "" {
-		return fmt.Errorf("%s", payload.Error.Message)
-	}
-	return fmt.Errorf("面板返回 HTTP %d", response.StatusCode)
+	return trayPanelPost(port, token, "/api/panel/shutdown", 10*time.Second)
 }
 
 func run() int {
