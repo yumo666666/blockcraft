@@ -187,32 +187,83 @@ export async function downloadJava(major: number, onProgress?: (message: string)
   const windows = process.platform === 'win32';
   const target = path.join(JDK_DIR, `temurin-${major}.${windows ? 'zip' : 'tar.gz'}`);
   const partial = `${target}.part`;
+  const maxAttempts = 4;
+  const retryDelaysMs = [1000, 2500, 5000];
   logger.info(`下载 JDK ${major}`, { url });
   try {
-    onProgress?.(`正在下载 Temurin Java ${major}…`);
-    const res = await fetch(url, { redirect: 'follow' });
-    if (!res.ok || !res.body) throw new Error(`下载 JDK 失败：HTTP ${res.status}`);
-    const expected = Number(res.headers.get('content-length') ?? 0);
-    let received = 0;
-    let lastPercent = -1;
-    const progress = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        received += chunk.length;
-        if (expected > 0) {
-          const percent = Math.floor((received / expected) * 100);
-          if (percent >= lastPercent + 10 || percent === 100) {
-            lastPercent = percent;
-            onProgress?.(`正在下载 Temurin Java ${major}：${percent}%`);
-          }
+    let downloaded = false;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const resumeAt = fs.existsSync(partial) ? fs.statSync(partial).size : 0;
+      try {
+        onProgress?.(`正在下载 Temurin Java ${major}（第 ${attempt}/${maxAttempts} 次）…`);
+        const headers = resumeAt > 0 ? { range: `bytes=${resumeAt}-` } : undefined;
+        const res = await fetch(url, { redirect: 'follow', headers });
+        if (!res.ok || !res.body) {
+          await res.body?.cancel().catch(() => undefined);
+          const error = new Error(`下载 JDK 失败：HTTP ${res.status}`) as Error & { retryable?: boolean };
+          error.retryable = res.status >= 500 || res.status === 408 || res.status === 429;
+          throw error;
         }
-        callback(null, chunk);
-      },
-    });
-    await pipeline(Readable.fromWeb(res.body as never), progress, fs.createWriteStream(partial));
-    const actual = fs.statSync(partial).size;
-    if (!actual || (expected > 0 && actual !== expected)) {
-      throw new Error(`Java ${major} 下载不完整：${actual}/${expected || '未知'} 字节`);
+
+        let append = false;
+        let expectedTotal = 0;
+        if (res.status === 206) {
+          const range = res.headers.get('content-range')?.match(/^bytes (\d+)-(\d+)\/(\d+|\*)$/);
+          const start = range ? Number(range[1]) : -1;
+          if (!range || start !== resumeAt) {
+            await res.body.cancel().catch(() => undefined);
+            fs.rmSync(partial, { force: true });
+            throw new Error(`Java ${major} 下载续传位置不匹配，已重置临时文件`);
+          }
+          append = resumeAt > 0;
+          expectedTotal = range[3] === '*' ? 0 : Number(range[3]);
+        }
+
+        // If the mirror ignores Range and sends 200, start over using the full response.
+        const baseBytes = append ? resumeAt : 0;
+        if (!expectedTotal) {
+          const contentLength = Number(res.headers.get('content-length') ?? 0);
+          if (contentLength > 0) expectedTotal = baseBytes + contentLength;
+        }
+        let received = baseBytes;
+        let lastPercent = Math.floor((received / (expectedTotal || Number.POSITIVE_INFINITY)) * 100);
+        const progress = new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            received += chunk.length;
+            if (expectedTotal > 0) {
+              const percent = Math.min(100, Math.floor((received / expectedTotal) * 100));
+              if (percent >= lastPercent + 10 || percent === 100) {
+                lastPercent = percent;
+                onProgress?.(`正在下载 Temurin Java ${major}：${percent}%`);
+              }
+            }
+            callback(null, chunk);
+          },
+        });
+        await pipeline(
+          Readable.fromWeb(res.body as never),
+          progress,
+          fs.createWriteStream(partial, { flags: append ? 'a' : 'w' }),
+        );
+        const actual = fs.statSync(partial).size;
+        if (!actual || (expectedTotal > 0 && actual !== expectedTotal)) {
+          throw new Error(`Java ${major} 下载不完整：${actual}/${expectedTotal || '未知'} 字节`);
+        }
+        downloaded = true;
+        break;
+      } catch (err) {
+        const retryable = !(err instanceof Error && 'retryable' in err && err.retryable === false);
+        if (!retryable || attempt === maxAttempts) throw err;
+
+        const delay = retryDelaysMs[attempt - 1] ?? retryDelaysMs.at(-1)!;
+        const bytes = fs.existsSync(partial) ? fs.statSync(partial).size : 0;
+        const resumeMessage = bytes > 0 ? `，已保留 ${Math.floor(bytes / (1024 * 1024))} MB 并尝试续传` : '';
+        logger.warn(`JDK ${major} 下载中断，准备重试`, { attempt, maxAttempts, bytes, error: String(err) });
+        onProgress?.(`下载中断${resumeMessage}；${delay / 1000} 秒后重试（${attempt}/${maxAttempts}）…`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
+    if (!downloaded) throw new Error(`Java ${major} 下载失败，已重试 ${maxAttempts} 次`);
     fs.renameSync(partial, target);
 
     onProgress?.(`Java ${major} 下载完成，正在解压…`);
