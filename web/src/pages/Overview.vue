@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
@@ -131,6 +131,10 @@ onMounted(() => {
   );
   loadFrp();
   frpTimer = window.setInterval(loadFrp, 8000);
+});
+
+onActivated(() => {
+  void loadFrp();
 });
 
 onUnmounted(() => {

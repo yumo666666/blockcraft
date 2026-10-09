@@ -31,6 +31,13 @@ export function registerSystemRoutes(app: Express): void {
 
   app.put('/api/panel', (req, res) => {
     const body = req.body as Record<string, unknown>;
+    const ranges = body.portRanges as { frpRemote?: unknown } | undefined;
+    if (Array.isArray(ranges?.frpRemote)) {
+      const [start, end] = ranges.frpRemote.map(Number);
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 26006 || end < start || end > 65535) {
+        throw bad('远端 FRP 端口段必须从 26006 起，且结束端口不能小于起始端口');
+      }
+    }
     const patch: Record<string, unknown> = {};
     if (body.panel) patch.panel = body.panel;
     if (body.limits) patch.limits = body.limits;
@@ -40,6 +47,10 @@ export function registerSystemRoutes(app: Express): void {
     if (body.portRanges) patch.portRanges = body.portRanges;
     const next = saveConfig(patch);
     res.json({ ok: true, config: publicConfig(next) });
+  });
+
+  app.get('/api/system/java', (_req, res) => {
+    res.json(javaSummary());
   });
 
   /** 事件总日志（世界启动/就绪/关闭/崩溃） */

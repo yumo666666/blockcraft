@@ -19,7 +19,7 @@ const form = ref({
   token: '',
   tls: true,
   exposePanel: true,
-  panelRemotePort: 26000,
+  panelRemotePort: 26006,
   enabled: true,
 });
 
@@ -30,8 +30,8 @@ function openSettings() {
     serverPort: s?.server.port ?? 7000,
     token: '',
     tls: s?.server.tls ?? true,
-    exposePanel: Boolean(s?.panelProxy),
-    panelRemotePort: s?.panelProxy?.remotePort ?? 26000,
+    exposePanel: s?.exposePanel ?? false,
+    panelRemotePort: s?.panelRemotePort ?? 26006,
     enabled: s?.enabled ?? true,
   };
   showSettings.value = true;
@@ -83,6 +83,28 @@ async function reload(channel: string) {
     toastError(err, '重载失败');
   }
 }
+
+async function copyPublicAddress() {
+  const address = props.status?.panelProxy && props.status.server.addr
+    ? `http://${props.status.server.addr}:${props.status.panelProxy.remotePort}`
+    : '';
+  if (!address) return;
+  try {
+    await navigator.clipboard.writeText(address);
+    toast('ok', '公网面板地址已复制', address);
+  } catch {
+    const field = document.createElement('textarea');
+    field.value = address;
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand('copy');
+    field.remove();
+    if (copied) toast('ok', '公网面板地址已复制', address);
+    else toast('warn', '复制失败', '请手动复制公网面板地址');
+  }
+}
 </script>
 
 <template>
@@ -127,9 +149,9 @@ async function reload(channel: string) {
           </div>
         </div>
 
-        <div v-if="status.panelProxy" class="mono-block small">
+        <button v-if="status.panelProxy" class="mono-block small public-address-copy" type="button" title="点击复制公网面板地址" @click="copyPublicAddress">
           公网面板地址：http://{{ status.server.addr }}:{{ status.panelProxy.remotePort }}
-        </div>
+        </button>
 
         <div v-if="status.dashboard.available" class="text-3 small">
           服务端侧可见 {{ status.dashboard.proxies.filter((p) => p.status === 'online').length }} 条在线代理
@@ -163,7 +185,7 @@ async function reload(channel: string) {
         </div>
         <div class="field">
           <label class="field-label">面板远端端口</label>
-          <input v-model.number="form.panelRemotePort" class="input mono" type="number" />
+          <input v-model.number="form.panelRemotePort" class="input mono" type="number" min="26006" max="65535" />
         </div>
       </div>
       <div class="row gap-4 mt-4 wrap">
@@ -230,5 +252,14 @@ async function reload(channel: string) {
   border-radius: var(--r-sm);
   background: var(--surface-2);
 }
+.public-address-copy {
+  width: 100%;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  border: 0;
+  cursor: pointer;
+}
+.public-address-copy:hover { outline: 1px solid var(--accent); }
 @media (max-width: 520px) { .channels-grid { grid-template-columns: 1fr; } }
 </style>

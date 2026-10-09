@@ -19,13 +19,16 @@ export function registerPlayerRoutes(app: Express): void {
       imageUrl: `/api/skin-pool/${skin.id}/image`,
       previewUrl: `/api/skin-pool/${skin.id}/preview`,
       previewReady: P.skinPoolPreviewReady(skin.id),
+      animationUrl: `/api/skin-pool/${skin.id}/animation`,
+      animationReady: P.skinPoolAnimationReady(skin.id),
     })) });
   });
 
   app.post('/api/skin-pool', (req, res) => {
-    const body = req.body as { name?: string; model?: string; data?: string; previewData?: string };
+    const body = req.body as { name?: string; model?: string; data?: string; previewData?: string; animationData?: string };
     if (!body.data?.startsWith('data:image/png;base64,')) throw bad('请上传 PNG 皮肤');
     if (body.previewData && !body.previewData.startsWith('data:image/png;base64,')) throw bad('渲染预览不是有效的 PNG');
+    if (body.animationData && !body.animationData.startsWith('data:image/gif;base64,')) throw bad('渲染动图不是有效的 GIF');
     let skin: P.SkinPoolItem;
     try {
       skin = P.addSkinToPool(
@@ -33,6 +36,7 @@ export function registerPlayerRoutes(app: Express): void {
         body.model === 'slim' ? 'slim' : 'classic',
         Buffer.from(body.data.split(',')[1], 'base64'),
         body.previewData ? Buffer.from(body.previewData.split(',')[1], 'base64') : undefined,
+        body.animationData ? Buffer.from(body.animationData.split(',')[1], 'base64') : undefined,
       );
     } catch (err) {
       skinError(err);
@@ -43,6 +47,8 @@ export function registerPlayerRoutes(app: Express): void {
       imageUrl: `/api/skin-pool/${skin!.id}/image`,
       previewUrl: `/api/skin-pool/${skin!.id}/preview`,
       previewReady: P.skinPoolPreviewReady(skin!.id),
+      animationUrl: `/api/skin-pool/${skin!.id}/animation`,
+      animationReady: P.skinPoolAnimationReady(skin!.id),
     } });
   });
 
@@ -71,6 +77,30 @@ export function registerPlayerRoutes(app: Express): void {
     let ok: boolean;
     try {
       ok = P.saveSkinPoolPreview(req.params.id, Buffer.from(body.data.split(',')[1], 'base64'));
+    } catch (err) {
+      skinError(err);
+    }
+    if (!ok!) throw bad('皮肤池条目不存在');
+    res.json({ ok: true });
+  });
+
+  app.get('/api/skin-pool/:id/animation', (req, res) => {
+    const bytes = P.skinPoolAnimationImage(req.params.id);
+    if (!bytes) {
+      res.status(404).end();
+      return;
+    }
+    res.setHeader('Content-Type', 'image/gif');
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.send(bytes);
+  });
+
+  app.post('/api/skin-pool/:id/animation', (req, res) => {
+    const body = req.body as { data?: string };
+    if (!body.data?.startsWith('data:image/gif;base64,')) throw bad('请上传渲染后的 GIF 动图');
+    let ok: boolean;
+    try {
+      ok = P.saveSkinPoolAnimation(req.params.id, Buffer.from(body.data.split(',')[1], 'base64'));
     } catch (err) {
       skinError(err);
     }
@@ -116,6 +146,18 @@ export function registerPlayerRoutes(app: Express): void {
       return;
     }
     res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.send(bytes);
+  });
+
+  app.get('/api/instances/:id/players/:name/skin-animation', (req, res) => {
+    requirePlayerName(req.params.name);
+    const bytes = P.skinAnimationForPlayer(req.params.id, req.params.name);
+    if (!bytes) {
+      res.status(404).end();
+      return;
+    }
+    res.setHeader('Content-Type', 'image/gif');
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     res.send(bytes);
   });

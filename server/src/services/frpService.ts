@@ -208,6 +208,11 @@ export async function startChannel(name: ChannelName, opts: { force?: boolean } 
     runtime[name].pid = existing;
     return;
   }
+  if (existing && opts.force) {
+    stopChannel(name);
+    for (let attempt = 0; attempt < 30 && isAlive(existing); attempt += 1) await sleep(100);
+    if (isAlive(existing)) throw bad(`旧 frpc(${name}) 仍在退出，暂时不能启动新通道`);
+  }
   const bin = binaryPath();
   if (!fs.existsSync(bin)) {
     try {
@@ -316,6 +321,9 @@ export interface ProxyStatus {
 export interface FrpStatus {
   enabled: boolean;
   configured: boolean;
+  /** Saved preference, independent of whether the frpc proxy is currently online. */
+  exposePanel: boolean;
+  panelRemotePort: number;
   binaryReady: boolean;
   channels: {
     name: ChannelName;
@@ -431,6 +439,8 @@ export async function status(): Promise<FrpStatus> {
   return {
     enabled: panel.frp.enabled,
     configured: Boolean(panel.frp.serverAddr),
+    exposePanel: panel.frp.exposePanel,
+    panelRemotePort: panel.frp.panelRemotePort,
     binaryReady: fs.existsSync(binaryPath()),
     channels,
     proxies,

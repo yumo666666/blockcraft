@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
@@ -41,11 +41,11 @@ const form = ref({
   clearMineSkinApiKey: false,
   githubMirror: 'https://gh-proxy.com/',
   exposePanel: false,
-  panelRemotePort: 26000,
+  panelRemotePort: 26006,
   configRollback: true,
   gameRangeStart: 25565,
   gameRangeEnd: 25609,
-  frpRangeStart: 26000,
+  frpRangeStart: 26006,
   frpRangeEnd: 27000,
 });
 
@@ -96,9 +96,34 @@ async function load() {
   }
 }
 
-onMounted(() => {
-  load().catch((err) => toastError(err, '读取设置失败'));
+let javaTimer: number | null = null;
+let settingsActive = false;
+async function refreshJavaInfo() {
+  try {
+    const java = await api.get<NonNullable<typeof panel.value>['java']>('/api/system/java');
+    if (panel.value) panel.value.java = java;
+  } catch {
+    // Keep the last known status if one refresh fails.
+  }
+}
+function startJavaRefresh() {
+  if (settingsActive) return;
+  settingsActive = true;
+  void load().catch((err) => toastError(err, '读取设置失败'));
+  void refreshJavaInfo();
+  if (javaTimer === null) javaTimer = window.setInterval(() => {
+    if (settingsActive) void refreshJavaInfo();
+  }, 10_000);
+}
+onMounted(startJavaRefresh);
+onActivated(() => {
+  // Settings is kept alive. Refresh the saved FRP values whenever the user
+  // returns from Overview so edits made in the Overview dialog are reflected.
+  void load().catch((err) => toastError(err, '读取设置失败'));
+  startJavaRefresh();
 });
+onDeactivated(() => { settingsActive = false; });
+onUnmounted(() => { if (javaTimer !== null) window.clearInterval(javaTimer); });
 
 async function copyAddr(value: string) {
   try {
@@ -129,7 +154,7 @@ async function saveAll() {
         ? { mineskinApiKey: form.value.mineskinApiKey }
         : form.value.clearMineSkinApiKey ? { mineskinApiKey: '' } : undefined,
     });
-    await api.put('/api/frp/config', {
+    await api.put('/api/frp/config?apply=1', {
       exposePanel: form.value.exposePanel,
       panelRemotePort: form.value.panelRemotePort,
       configRollback: form.value.configRollback,
@@ -275,7 +300,7 @@ async function killWorld(id: string) {
             </label>
             <div class="field">
               <label class="field-label">面板远端端口</label>
-              <input v-model.number="form.panelRemotePort" class="input mono" type="number" />
+              <input v-model.number="form.panelRemotePort" class="input mono" type="number" min="26006" max="65535" />
             </div>
             <label class="switch">
               <input v-model="form.configRollback" type="checkbox" />
@@ -301,14 +326,14 @@ async function killWorld(id: string) {
               </div>
               <div class="field">
                 <label class="field-label">远端 FRP 端口 起</label>
-                <input v-model.number="form.frpRangeStart" class="input mono" type="number" />
+                <input v-model.number="form.frpRangeStart" class="input mono" type="number" min="26006" max="65535" />
               </div>
               <div class="field">
                 <label class="field-label">远端 FRP 端口 止</label>
                 <input v-model.number="form.frpRangeEnd" class="input mono" type="number" />
               </div>
             </div>
-            <p class="text-3 small">远端端口段必须落在 frps 允许的范围内，否则服务端会拒绝建立映射。</p>
+            <p class="text-3 small">远端端口段从 26006 起，且必须落在 frps 允许的范围内，否则服务端会拒绝建立映射。</p>
           </div>
         </div>
 

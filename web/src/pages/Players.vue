@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { IdleAnimation, SkinViewer } from 'skinview3d';
+import { WalkingAnimation, SkinViewer } from 'skinview3d';
+import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import { fmtDuration, statusClass } from '../lib/format.ts';
@@ -33,7 +34,9 @@ const poolPageSize = 8;
 const skinPoolPageCount = computed(() => Math.max(1, Math.ceil(skinPool.value.length / poolPageSize)));
 const visibleSkinPool = computed(() => skinPool.value.slice(skinPoolPage.value * poolPageSize, (skinPoolPage.value + 1) * poolPageSize));
 const skinPoolBusy = ref(false);
-const newSkinModel = ref<'classic' | 'slim'>('classic');
+const poolInput = ref<HTMLInputElement | null>(null);
+const skinUploadTarget = ref<string | null>(null);
+const skinUrlModel = ref<'classic' | 'slim'>('classic');
 
 const worldName = computed(() => instance.value?.name ?? props.id);
 const knownPlayers = computed(() => [...players.value].sort((a, b) => playerNameCollator.compare(a.name, b.name)));
@@ -206,16 +209,14 @@ async function confirmPending() {
 /* ------------------------------------------------------------ 皮肤上传 */
 
 const skinInput = ref<HTMLInputElement | null>(null);
-const uploadTarget = ref<string | null>(null);
 
 function pickSkin(name: string) {
-  uploadTarget.value = name;
+  skinUploadTarget.value = name;
   skinInput.value?.click();
 }
 
 function pickPoolUpload() {
-  uploadTarget.value = null;
-  skinInput.value?.click();
+  poolInput.value?.click();
 }
 
 function readDataUrl(file: File): Promise<string> {
@@ -230,49 +231,76 @@ function readDataUrl(file: File): Promise<string> {
 async function onSkinFile(ev: Event) {
   const input = ev.target as HTMLInputElement;
   const file = input.files?.[0];
-  const name = uploadTarget.value;
+  const name = skinUploadTarget.value;
   input.value = '';
   if (!file) return;
-  if (file.type !== 'image/png') {
-    toast('warn', '请选择 PNG 皮肤文件', 'Minecraft 皮肤是 64×64 或 64×32 的 PNG');
-    return;
-  }
-  if (file.size > 1024 * 1024) {
-    toast('warn', '皮肤文件太大', '最大 1MB');
-    return;
-  }
-  uploadingSkin.value = name;
+  if (!name) return;
+  await addSkinFiles([file], name);
+}
+
+async function onPoolFiles(ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  if (files.length) await addSkinFiles(files, null);
+}
+
+async function addSkinFiles(files: File[], playerName: string | null) {
+  const selected = playerName ? files.slice(0, 1) : files.slice(0, 30);
+  const added: SkinPoolEntry[] = [];
+  const failures: string[] = [];
+  if (playerName) uploadingSkin.value = playerName;
+  else skinPoolBusy.value = true;
   try {
-    const data = await readDataUrl(file);
-    const model = newSkinModel.value;
-    const previewData = await renderSkinPreview(data, model);
-    const created = await api.post<{ skin: SkinPoolEntry }>('/api/skin-pool', {
-      name: file.name.replace(/\.png$/i, ''),
-      model,
-      data,
-      previewData,
-    });
-    skinPool.value = [...skinPool.value.filter((s) => s.id !== created.skin.id), created.skin]
-      .sort((a, b) => a.name.localeCompare(b.name));
-    if (name) {
-      const selectedIndex = skinPool.value.findIndex((skin) => skin.id === created.skin.id);
-      if (selectedIndex >= 0) skinPoolPage.value = Math.floor(selectedIndex / poolPageSize);
-      try {
-        const result = await api.post<{ appliedToServer: boolean; message: string }>(`${base.value}/players/${encodeURIComponent(name)}/skin`, { poolId: created.skin.id });
-        toast(result.appliedToServer ? 'ok' : 'warn', result.appliedToServer ? `${name} 已选用「${created.skin.name}」` : `已加入皮肤池并保存 ${name} 的预览`, result.message);
-        skinEditor.value = null;
-        await refreshSkin(name);
-      } catch (err) {
-        toast('warn', `已加入皮肤池，但没有应用到 ${name}`, err instanceof Error ? err.message : String(err));
-        await refreshSkin(name);
+    for (const file of selected) {
+      if (file.type !== 'image/png' && !file.name.toLowerCase().endsWith('.png')) {
+        failures.push(`${file.name}: 不是 PNG`);
+        continue;
       }
-    } else {
-      toast('ok', '已添加到公共皮肤池', `「${created.skin.name}」现在可供所有世界选择。`);
+      if (file.size > 1024 * 1024) {
+        failures.push(`${file.name}: 超过 1MB`);
+        continue;
+      }
+      try {
+        const data = await readDataUrl(file);
+        const rendered = await renderSkinPreview(data);
+        const animationData = await renderSkinAnimation(data);
+        const created = await api.post<{ skin: SkinPoolEntry }>('/api/skin-pool', {
+          name: file.name.replace(/\.png$/i, ''),
+          model: rendered.model,
+          data,
+          previewData: rendered.previewData,
+          animationData,
+        });
+        added.push(created.skin);
+      } catch (err) {
+        failures.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
-  } catch (err) {
-    toastError(err, '皮肤上传失败');
+    if (added.length) {
+      skinPool.value = [...skinPool.value, ...added].sort((a, b) => a.name.localeCompare(b.name));
+      if (playerName) {
+        const chosen = added[0];
+        const selectedIndex = skinPool.value.findIndex((skin) => skin.id === chosen.id);
+        if (selectedIndex >= 0) skinPoolPage.value = Math.floor(selectedIndex / poolPageSize);
+        try {
+          const result = await api.post<{ appliedToServer: boolean; message: string }>(`${base.value}/players/${encodeURIComponent(playerName)}/skin`, { poolId: chosen.id });
+          toast(result.appliedToServer ? 'ok' : 'warn', result.appliedToServer ? `${playerName} 已选用「${chosen.name}」` : `已加入皮肤池并保存 ${playerName} 的预览`, result.message);
+          skinEditor.value = null;
+          await refreshSkin(playerName);
+        } catch (err) {
+          toast('warn', `已加入皮肤池，但没有应用到 ${playerName}`, err instanceof Error ? err.message : String(err));
+          await refreshSkin(playerName);
+        }
+      } else {
+        toast('ok', `已添加 ${added.length} 套皮肤`, added.map((skin) => skin.name).join('、'));
+      }
+    }
+    if (failures.length) toast('warn', `有 ${failures.length} 个文件未添加`, failures.slice(0, 5).join('\n'));
+    if (!added.length && !failures.length) toast('warn', '没有可添加的皮肤');
   } finally {
     uploadingSkin.value = null;
+    skinPoolBusy.value = false;
   }
 }
 
@@ -379,7 +407,7 @@ async function bindUrlSkin() {
   if (!p || !skinUrl.value.trim()) return;
   savingSkin.value = true;
   try {
-    const result = await api.put<{ appliedToServer: boolean; message: string }>(`${base.value}/players/${encodeURIComponent(p.name)}/skin`, { kind: 'url', url: skinUrl.value.trim(), variant: newSkinModel.value });
+    const result = await api.put<{ appliedToServer: boolean; message: string }>(`${base.value}/players/${encodeURIComponent(p.name)}/skin`, { kind: 'url', url: skinUrl.value.trim(), variant: skinUrlModel.value });
     toast(result.appliedToServer ? 'ok' : 'warn', result.appliedToServer ? '皮肤已应用到服务端' : '皮肤已绑定到面板', result.message);
     skinEditor.value = null;
     await refreshSkin(p.name);
@@ -447,7 +475,7 @@ function readBlobDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-async function renderSkinPreview(skinDataUrl: string, model: 'classic' | 'slim'): Promise<string> {
+async function renderSkinPreview(skinDataUrl: string): Promise<{ previewData: string; model: 'classic' | 'slim' }> {
   const image = await loadImage(skinDataUrl);
   if (!previewViewer) {
     const canvas = document.createElement('canvas');
@@ -463,17 +491,88 @@ async function renderSkinPreview(skinDataUrl: string, model: 'classic' | 'slim')
       renderPaused: true,
     });
   }
-  await previewViewer.loadSkin(image, { model: model === 'slim' ? 'slim' : 'default' });
+  await previewViewer.loadSkin(image, { model: 'auto-detect' });
+  const model = previewViewer.playerObject.skin.modelType === 'slim' ? 'slim' : 'classic';
   previewViewer.autoRotate = false;
+  previewViewer.playerWrapper.rotation.set(0, 0, 0);
+  previewViewer.playerObject.resetJoints();
   previewViewer.playerObject.rotation.set(0, 0, 0);
   previewViewer.resetCameraPose();
   previewViewer.render();
-  return previewViewer.canvas.toDataURL('image/png');
+  return { previewData: previewViewer.canvas.toDataURL('image/png'), model };
+}
+
+/** Capture a 360° orbit over one complete, repeatable walking gait and cache it as GIF. */
+async function renderSkinAnimation(skinDataUrl: string): Promise<string> {
+  const image = await loadImage(skinDataUrl);
+  const frames = 20;
+  if (!previewViewer) {
+    previewViewer = new SkinViewer({
+      canvas: document.createElement('canvas'), width: 128, height: 192, pixelRatio: 1, fov: 38, zoom: 0.86,
+      enableControls: false, preserveDrawingBuffer: true, renderPaused: true,
+    });
+  }
+  const viewer = previewViewer;
+  const width = viewer.canvas.width;
+  const height = viewer.canvas.height;
+  await viewer.loadSkin(image, { model: 'auto-detect' });
+  viewer.autoRotate = false;
+  viewer.resetCameraPose();
+  viewer.playerObject.resetJoints();
+  viewer.playerWrapper.rotation.set(0, 0, 0);
+  const walk = new WalkingAnimation();
+  walk.headBobbing = false;
+  const animateWalk = walk as unknown as { animate: (player: typeof viewer.playerObject, delta: number) => void };
+  const scratch = document.createElement('canvas');
+  scratch.width = width;
+  scratch.height = height;
+  const ctx = scratch.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('无法创建皮肤动图画布');
+  const rgbaFrames: Uint8ClampedArray[] = [];
+  for (let index = 0; index < frames; index += 1) {
+    // WalkingAnimation's leg and arm cycle is sin(8 * progress); one gait is π/4.
+    walk.progress = (index / frames) * (Math.PI / 4);
+    animateWalk.animate(viewer.playerObject, 0);
+    viewer.playerWrapper.rotation.y = (index / frames) * Math.PI * 2;
+    viewer.render();
+    const rendered = await loadImage(viewer.canvas.toDataURL('image/png'));
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(rendered, 0, 0, width, height);
+    rgbaFrames.push(ctx.getImageData(0, 0, width, height).data);
+  }
+
+  const allPixels = new Uint8Array(rgbaFrames.reduce((sum, frame) => sum + frame.length, 0));
+  let offset = 0;
+  for (const frame of rgbaFrames) {
+    allPixels.set(frame, offset);
+    offset += frame.length;
+  }
+  const palette = quantize(allPixels, 256, { format: 'rgba4444', oneBitAlpha: true });
+  const transparentIndex = palette.findIndex((color: number[]) => color[3] === 0);
+  const gif = GIFEncoder();
+  rgbaFrames.forEach((frame, index) => {
+    const indexed = applyPalette(frame, palette, 'rgba4444');
+    gif.writeFrame(indexed, width, height, {
+      palette: index === 0 ? palette : undefined,
+      delay: 90,
+      repeat: index === 0 ? 0 : undefined,
+      transparent: transparentIndex >= 0,
+      transparentIndex: transparentIndex >= 0 ? transparentIndex : 0,
+    });
+  });
+  gif.finish();
+  const bytes = gif.bytes();
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  viewer.playerObject.resetJoints();
+  viewer.playerWrapper.rotation.set(0, 0, 0);
+  return `data:image/gif;base64,${btoa(binary)}`;
 }
 
 async function renderMissingPoolPreviews(items: SkinPoolEntry[]) {
+  let changed = false;
   for (const item of items) {
-    if (disposed || item.previewReady) continue;
+    if (disposed || (item.previewReady && item.animationReady)) continue;
     try {
       const response = await fetch(item.imageUrl, {
         headers: { 'X-Blockcraft': '1' },
@@ -481,13 +580,23 @@ async function renderMissingPoolPreviews(items: SkinPoolEntry[]) {
       });
       if (!response.ok) throw new Error(`读取皮肤失败（HTTP ${response.status}）`);
       const skinData = await readBlobDataUrl(await response.blob());
-      const previewData = await renderSkinPreview(skinData, item.model);
-      await api.post(`/api/skin-pool/${encodeURIComponent(item.id)}/preview`, { data: previewData });
-      skinPool.value = skinPool.value.map((skin) => skin.id === item.id ? { ...skin, previewReady: true } : skin);
+      if (!item.previewReady) {
+        const rendered = await renderSkinPreview(skinData);
+        await api.post(`/api/skin-pool/${encodeURIComponent(item.id)}/preview`, { data: rendered.previewData });
+        item.previewReady = true;
+      }
+      if (!item.animationReady) {
+        const animationData = await renderSkinAnimation(skinData);
+        await api.post(`/api/skin-pool/${encodeURIComponent(item.id)}/animation`, { data: animationData });
+        item.animationReady = true;
+        changed = true;
+      }
+      skinPool.value = skinPool.value.map((skin) => skin.id === item.id ? { ...skin, previewReady: item.previewReady, animationReady: item.animationReady } : skin);
     } catch (err) {
-      toastError(err, `生成「${item.name}」的正面预览失败`);
+      toastError(err, `生成「${item.name}」的皮肤展示失败`);
     }
   }
+  if (changed && !disposed) await loadPlayers();
 }
 
 let syncChain: Promise<void> = Promise.resolve();
@@ -528,7 +637,7 @@ async function syncViewers(): Promise<void> {
     if (viewers.has(p.name) || canvases.get(slot) !== canvas) continue;
     try {
       const viewer = new SkinViewer({ canvas, width: SKIN_W, height: SKIN_H, skin: img });
-      viewer.animation = new IdleAnimation();
+      viewer.animation = new WalkingAnimation();
       viewer.autoRotate = true;
       viewers.set(p.name, { viewer, epoch: epochOf(p.name) });
     } catch {
@@ -611,6 +720,7 @@ function skinLabel(p: PlayerInfo): string {
     </div>
 
     <input ref="skinInput" type="file" accept="image/png" style="display: none" @change="onSkinFile" />
+    <input ref="poolInput" type="file" accept="image/png" multiple style="display: none" @change="onPoolFiles" />
 
     <!-- 在线与离线玩家合并显示 -->
     <div class="card">
@@ -628,7 +738,8 @@ function skinLabel(p: PlayerInfo): string {
           <div v-for="p in knownPlayers" :key="p.name" class="player-card" :class="{ 'is-offline': !p.online }">
             <i class="dot player-status-dot" :class="p.online ? 'dot-ok' : 'dot-idle'" :title="p.online ? '在线' : '离线'" :aria-label="p.online ? '在线' : '离线'" />
             <div class="player-skin">
-              <img v-if="p.skinPreviewUrl" class="skin-portrait" :src="p.skinPreviewUrl" :alt="`${p.name} 的正面皮肤预览`" loading="lazy" />
+              <img v-if="p.skinAnimationUrl" class="skin-animation" :src="p.skinAnimationUrl" :alt="`${p.name} 的环绕走路皮肤动图`" loading="lazy" />
+              <img v-else-if="p.skinPreviewUrl" class="skin-portrait" :src="p.skinPreviewUrl" :alt="`${p.name} 的正面皮肤预览`" loading="lazy" />
               <div v-else-if="!p.skinUrl || skinFailed[p.name]" class="skin-blank" :title="`没有可用皮肤：${p.name}`" />
               <canvas v-else :key="canvasSlot(p.name)" :ref="canvasRefFor(p.name)" />
             </div>
@@ -699,17 +810,13 @@ function skinLabel(p: PlayerInfo): string {
         <div class="skin-pool-toolbar">
           <p class="text-3 small skin-pool-note">所有世界共用；移除皮肤不会影响已经绑定的玩家。</p>
           <div class="skin-pool-actions">
-            <select v-model="newSkinModel" class="select" aria-label="皮肤模型">
-              <option value="classic">Steve · 经典手臂</option>
-              <option value="slim">Alex · 纤细手臂</option>
-            </select>
             <button class="btn btn-primary" :disabled="skinPoolBusy" @click="pickPoolUpload">添加 PNG</button>
           </div>
         </div>
         <div v-if="!skinPool.length" class="empty skin-pool-empty">
           <div class="empty-icon">👕</div>
           <div>皮肤池还是空的</div>
-          <div class="text-3 small">添加 64×64 或 64×32 PNG，之后可在每位玩家的“更换皮肤”里分页选择。</div>
+          <div class="text-3 small">支持一次多选 64×64 或 64×32 PNG；上传后会自动识别手臂类型并生成缓存动图。</div>
         </div>
         <div v-else class="skin-pool-grid">
           <div v-for="item in skinPool" :key="item.id" class="skin-pool-card">
@@ -782,7 +889,7 @@ function skinLabel(p: PlayerInfo): string {
           <span class="text-3 small">公开 HTTPS PNG。支持的服务端皮肤组件会保存并发给联机客户端。</span>
         </div>
         <div class="row gap-2 wrap">
-          <select v-model="newSkinModel" class="select" aria-label="上传皮肤模型">
+          <select v-model="skinUrlModel" class="select" aria-label="皮肤 URL 模型">
             <option value="classic">Steve · 经典手臂</option>
             <option value="slim">Alex · 纤细手臂</option>
           </select>
@@ -834,7 +941,7 @@ function skinLabel(p: PlayerInfo): string {
 
 .skin-pool-toolbar { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .skin-pool-note { flex: 1 1 auto; min-width: 0; max-width: none; margin: 0; line-height: 1.45; }
-.skin-pool-actions { display: grid; grid-template-columns: minmax(150px, 220px) auto; align-items: center; gap: 8px; margin-left: auto; }
+.skin-pool-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .skin-pool-actions .btn { justify-self: end; white-space: nowrap; }
 .skin-pool-empty { min-height: 150px; }
 .skin-pool-grid {
@@ -924,7 +1031,7 @@ function skinLabel(p: PlayerInfo): string {
 @media (max-width: 640px) {
   .skin-choice-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .skin-pool-toolbar { align-items: stretch; flex-direction: column; }
-  .skin-pool-actions { grid-template-columns: minmax(0, 1fr) auto; width: 100%; margin-left: 0; }
+  .skin-pool-actions { width: 100%; margin-left: 0; }
   .skin-pool-card { grid-template-columns: 46px minmax(0, 1fr) auto; }
   .skin-pool-card > img, .skin-preview-pending { width: 46px; height: 54px; }
 }

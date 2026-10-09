@@ -278,6 +278,8 @@ export interface PlayerInfo {
   skinUrl: string | null;
   /** Cached front render for a player skin selected from the shared pool. */
   skinPreviewUrl?: string | null;
+  /** Cached looping orbit-and-walk render for a player skin selected from the shared pool. */
+  skinAnimationUrl?: string | null;
   skinSource: 'server' | 'bound' | 'mojang' | 'none';
   /** Whether the current binding was accepted by an installed server skin integration. */
   skinAppliedToServer: boolean;

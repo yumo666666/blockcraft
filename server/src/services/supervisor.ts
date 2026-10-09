@@ -369,7 +369,7 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
       progress: progress ?? null,
       // 在线人数用协议探测实时拿（state.players 只在启动/停止时写过 0，从来没被更新）
       players: status === 'running' ? await livePlayerCount(id, '127.0.0.1', cfg.port, st.players) : st.players,
-      uptime: proc?.uptime ?? 0,
+      uptime: proc?.uptime || (st.startedAt ? Math.max(0, Date.now() / 1000 - st.startedAt) : 0),
       cpu: proc?.cpu ?? 0,
       rss: proc?.rss ?? 0,
       detectedFrom: 'memory',

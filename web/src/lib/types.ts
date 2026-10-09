@@ -54,6 +54,8 @@ export interface SystemSnapshot {
 export interface FrpStatus {
   enabled: boolean;
   configured: boolean;
+  exposePanel: boolean;
+  panelRemotePort: number;
   binaryReady: boolean;
   channels: { name: string; running: boolean; pid: number | null; error: string | null; proxyCount: number; lastReload: number | null }[];
   proxies: { name: string; status: string; localAddr: string; remoteAddr: string; err: string }[];
@@ -154,6 +156,7 @@ export interface PlayerInfo {
   lastSeen: number | null;
   skinUrl: string | null;
   skinPreviewUrl?: string | null;
+  skinAnimationUrl?: string | null;
   skinSource: 'server' | 'bound' | 'mojang' | 'none';
   skinAppliedToServer: boolean;
   playtimeSeconds: number | null;
@@ -168,4 +171,6 @@ export interface SkinPoolEntry {
   imageUrl: string;
   previewUrl: string;
   previewReady: boolean;
+  animationUrl: string;
+  animationReady: boolean;
 }

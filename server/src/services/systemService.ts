@@ -27,20 +27,20 @@ interface WindowsProcessData {
 
 const windowsProcessCache = new Map<number, { at: number; value: WindowsProcessData | null }>();
 
-/** Read Windows process data through the OS's built-in CIM provider. PIDs are numeric and never interpolated from user input. */
+/** Read Windows process counters from Get-Process; CIM is used only for its command line. */
 function windowsProcess(pid: number): WindowsProcessData | null {
   const cached = windowsProcessCache.get(pid);
   if (cached && Date.now() - cached.at < 500) return cached.value;
   try {
-    const script = `$p=Get-CimInstance Win32_Process -Filter 'ProcessId = ${Math.trunc(pid)}'; if ($null -eq $p) { exit 3 }; $d=[System.Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToUniversalTime(); [PSCustomObject]@{pid=[int]$p.ProcessId;userTicks=[double]$p.UserModeTime;kernelTicks=[double]$p.KernelModeTime;rss=[double]$p.WorkingSetSize;threads=[int]$p.ThreadCount;commandLine=[string]$p.CommandLine;startedAt=$d.ToString('o')} | ConvertTo-Json -Compress`;
-    const raw = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    const safePid = Math.trunc(pid);
+    const script = `$p=Get-Process -Id ${safePid} -ErrorAction Stop; $started=''; try {$started=$p.StartTime.ToUniversalTime().ToString('o')} catch {}; [PSCustomObject]@{pid=[int]$p.Id;userTicks=[double]$p.TotalProcessorTime.Ticks;kernelTicks=0.0;rss=[double]$p.WorkingSet64;threads=[int]$p.Threads.Count;commandLine='';startedAt=$started} | ConvertTo-Json -Compress`;
+    const raw = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
       encoding: 'utf8',
-      timeout: 2500,
+      timeout: 4000,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     const value = JSON.parse(raw) as Omit<WindowsProcessData, 'startedAt'> & { startedAt: string };
     const result: WindowsProcessData = { ...value, startedAt: Date.parse(value.startedAt) };
-    if (!Number.isFinite(result.startedAt)) return null;
     windowsProcessCache.set(pid, { at: Date.now(), value: result });
     return result;
   } catch {
@@ -97,12 +97,22 @@ export function processStat(pid: number): ProcessStat | null {
     rss: p.rss,
     threads: p.threads,
     state: 'R',
-    uptime: Math.max(0, (now - p.startedAt) / 1000),
+    uptime: Number.isFinite(p.startedAt) ? Math.max(0, (now - p.startedAt) / 1000) : 0,
   };
 }
 
 export function processCommandLine(pid: number): string | null {
-  if (process.platform === 'win32') return windowsProcess(pid)?.commandLine ?? null;
+  if (process.platform === 'win32') {
+    try {
+      const script = `$p=Get-CimInstance Win32_Process -Filter 'ProcessId = ${Math.trunc(pid)}' -ErrorAction Stop; if ($null -ne $p) {[string]$p.CommandLine}`;
+      const text = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      return text || null;
+    } catch {
+      return null;
+    }
+  }
   try {
     return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ').trim();
   } catch {

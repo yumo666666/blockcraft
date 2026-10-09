@@ -96,6 +96,14 @@ function assignmentPreviewPath(id: string, uuid: string): string {
   return path.join(SKIN_ASSIGNMENT_DIR, id, `${compactUuid(uuid)}.preview.png`);
 }
 
+function skinPoolAnimationPath(id: string): string {
+  return path.join(SKIN_POOL_DIR, `${id}.gif`);
+}
+
+function assignmentAnimationPath(id: string, uuid: string): string {
+  return path.join(SKIN_ASSIGNMENT_DIR, id, `${compactUuid(uuid)}.gif`);
+}
+
 function writeAssignment(id: string, uuid: string, data: Buffer): string {
   const file = assignmentPath(id, uuid);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -125,9 +133,16 @@ function validatePreviewPng(data: Buffer): void {
   if (width < 32 || width > 512 || height < 64 || height > 512) throw new Error('渲染预览尺寸不正确');
 }
 
-export function addSkinToPool(name: string, model: 'classic' | 'slim', data: Buffer, preview?: Buffer): SkinPoolItem {
+function validateAnimationGif(data: Buffer): void {
+  if (data.length > 1024 * 1024) throw new Error('皮肤动图太大');
+  const header = data.subarray(0, 6).toString('ascii');
+  if (data.length < 32 || (header !== 'GIF87a' && header !== 'GIF89a')) throw new Error('皮肤动图不是有效的 GIF');
+}
+
+export function addSkinToPool(name: string, model: 'classic' | 'slim', data: Buffer, preview?: Buffer, animation?: Buffer): SkinPoolItem {
   validateSkinPng(data);
   if (preview) validatePreviewPng(preview);
+  if (animation) validateAnimationGif(animation);
   const cleanName = path.basename(name.trim()).replace(/\.png$/i, '').trim().slice(0, 64);
   if (!cleanName) throw new Error('请填写皮肤名称');
   if (!['classic', 'slim'].includes(model)) throw new Error('皮肤模型只能是 Steve（经典）或 Alex（纤细）');
@@ -136,6 +151,7 @@ export function addSkinToPool(name: string, model: 'classic' | 'slim', data: Buf
   const item: SkinPoolItem = { id, name: cleanName, model, bytes: data.length, createdAt: Date.now() };
   atomicWriteFileSync(path.join(SKIN_POOL_DIR, `${id}.png`), data);
   if (preview) atomicWriteFileSync(path.join(SKIN_POOL_DIR, `${id}.preview.png`), preview);
+  if (animation) atomicWriteFileSync(skinPoolAnimationPath(id), animation);
   const pool = loadSkinPool();
   pool[id] = item;
   saveSkinPool(pool);
@@ -154,6 +170,32 @@ export function skinPoolPreviewReady(id: string): boolean {
 export function skinPoolPreviewImage(id: string): Buffer | null {
   if (!validSkinPoolId(id)) return null;
   try { return fs.readFileSync(path.join(SKIN_POOL_DIR, `${id}.preview.png`)); } catch { return null; }
+}
+
+export function skinPoolAnimationReady(id: string): boolean {
+  return validSkinPoolId(id) && fs.existsSync(skinPoolAnimationPath(id));
+}
+
+export function skinPoolAnimationImage(id: string): Buffer | null {
+  if (!validSkinPoolId(id)) return null;
+  try { return fs.readFileSync(skinPoolAnimationPath(id)); } catch { return null; }
+}
+
+export function saveSkinPoolAnimation(id: string, data: Buffer): boolean {
+  if (!validSkinPoolId(id) || !loadSkinPool()[id]) return false;
+  validateAnimationGif(data);
+  fs.mkdirSync(SKIN_POOL_DIR, { recursive: true });
+  atomicWriteFileSync(skinPoolAnimationPath(id), data);
+  const bindings = loadBindings();
+  let changed = false;
+  for (const binding of Object.values(bindings)) {
+    if (binding.kind !== 'pool' || binding.poolId !== id || !binding.worldId) continue;
+    fs.mkdirSync(path.dirname(assignmentAnimationPath(binding.worldId, binding.uuid)), { recursive: true });
+    atomicWriteFileSync(assignmentAnimationPath(binding.worldId, binding.uuid), data);
+    changed = true;
+  }
+  if (changed) saveBindings(bindings);
+  return true;
 }
 
 export function saveSkinPoolPreview(id: string, data: Buffer): boolean {
@@ -190,6 +232,20 @@ export function skinPreviewVersionForPlayer(id: string, name: string): number | 
   return binding && ['pool', 'upload'].includes(binding.kind) && skinPreviewForPlayer(id, name) ? binding.updatedAt : null;
 }
 
+export function skinAnimationForPlayer(id: string, name: string): Buffer | null {
+  const uuid = offlineUuid(name);
+  const binding = loadBindings()[worldBindingKey(id, uuid)];
+  if (!binding || !['pool', 'upload'].includes(binding.kind)) return null;
+  try { return fs.readFileSync(assignmentAnimationPath(id, uuid)); } catch { /* Older assignment; try the pool copy below. */ }
+  if (binding.kind === 'pool' && binding.poolId) return skinPoolAnimationImage(binding.poolId);
+  return null;
+}
+
+export function skinAnimationVersionForPlayer(id: string, name: string): number | null {
+  const binding = loadBindings()[worldBindingKey(id, offlineUuid(name))];
+  return binding && ['pool', 'upload'].includes(binding.kind) && skinAnimationForPlayer(id, name) ? binding.updatedAt : null;
+}
+
 export function removeSkinFromPool(id: string): boolean {
   if (!validSkinPoolId(id)) return false;
   const pool = loadSkinPool();
@@ -210,6 +266,19 @@ export function removeSkinFromPool(id: string): boolean {
     if (changed) saveBindings(bindings);
   }
   try { fs.unlinkSync(path.join(SKIN_POOL_DIR, `${id}.preview.png`)); } catch { /* ignore */ }
+  const animation = skinPoolAnimationImage(id);
+  if (animation) {
+    const bindings = loadBindings();
+    let changed = false;
+    for (const binding of Object.values(bindings)) {
+      if (binding.kind !== 'pool' || binding.poolId !== id || !binding.worldId) continue;
+      fs.mkdirSync(path.dirname(assignmentAnimationPath(binding.worldId, binding.uuid)), { recursive: true });
+      atomicWriteFileSync(assignmentAnimationPath(binding.worldId, binding.uuid), animation);
+      changed = true;
+    }
+    if (changed) saveBindings(bindings);
+  }
+  try { fs.unlinkSync(skinPoolAnimationPath(id)); } catch { /* ignore */ }
   // A selected copy is kept under the player binding, so removing a library entry
   // will not reset an already assigned skin in a world.
   return true;
@@ -775,6 +844,11 @@ export async function selectPoolSkin(id: string, name: string, poolId: string): 
   const data = skinPoolImage(poolId);
   if (!poolItem || !data) throw new Error('皮肤池条目不存在或图片已损坏');
   writeAssignment(id, offlineUuid(name), data);
+  const animation = skinPoolAnimationImage(poolId);
+  if (animation) {
+    fs.mkdirSync(path.dirname(assignmentAnimationPath(id, offlineUuid(name))), { recursive: true });
+    atomicWriteFileSync(assignmentAnimationPath(id, offlineUuid(name)), animation);
+  }
   const binding = putWorldBinding(id, name, 'pool', { poolId, variant: poolItem.model });
   return applyBoundSkin(id, name, binding);
 }
@@ -853,6 +927,7 @@ export async function listPlayers(id: string): Promise<PlayerList> {
       lastSeen: null,
       skinUrl: skin?.url ?? null,
       skinPreviewUrl: skinPreview ? `/api/instances/${encodeURIComponent(id)}/players/${encodeURIComponent(name)}/skin-preview?v=${skinPreview}` : null,
+      skinAnimationUrl: skinAnimationVersionForPlayer(id, name) ? `/api/instances/${encodeURIComponent(id)}/players/${encodeURIComponent(name)}/skin-animation?v=${skinAnimationVersionForPlayer(id, name)}` : null,
       skinSource: skin?.source ?? 'none',
       skinAppliedToServer: Boolean(skin?.appliedToServer),
       playtimeSeconds: null,

@@ -1,4 +1,5 @@
 import type { Express } from 'express';
+import { bad } from '../core/errors.ts';
 import { loadConfig, publicConfig, saveConfig } from '../config.ts';
 import * as frp from '../services/frpService.ts';
 
@@ -38,6 +39,10 @@ export function registerFrpRoutes(app: Express): void {
   app.put('/api/frp/config', async (req, res) => {
     const cfg = loadConfig();
     const body = req.body as Record<string, unknown>;
+    if (body.panelRemotePort !== undefined) {
+      const remotePort = Number(body.panelRemotePort);
+      if (!Number.isInteger(remotePort) || remotePort < 26006 || remotePort > 65535) throw bad('面板远端端口必须在 26006–65535 之间');
+    }
     const patch = { ...cfg.frp } as Record<string, unknown>;
     for (const key of [
       'enabled', 'serverAddr', 'serverPort', 'tls', 'dashboardUrl', 'dashboardUser', 'dashboardPassword',

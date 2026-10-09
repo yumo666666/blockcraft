@@ -29,7 +29,7 @@ function readSecrets(): Record<string, string> {
 
 export function defaultConfig(): PanelConfig {
   const secrets = readSecrets();
-  const range = (secrets.FRP_REMOTE_PORT_RANGE || '26000-27000').split('-').map((v) => parseInt(v, 10));
+  const range = (secrets.FRP_REMOTE_PORT_RANGE || '26006-27000').split('-').map((v) => parseInt(v, 10));
   return {
     schemaVersion: 2,
     panel: {
@@ -41,7 +41,7 @@ export function defaultConfig(): PanelConfig {
     portRanges: {
       game: [25565, 25609],
       rcon: [25610, 25654],
-      frpRemote: [range[0] || 26000, range[1] || 27000] as [number, number],
+      frpRemote: [Math.max(26006, range[0] || 26006), Math.max(26006, range[1] || 27000)] as [number, number],
     },
     frp: {
       enabled: Boolean(secrets.FRPS_HOST),
@@ -58,7 +58,7 @@ export function defaultConfig(): PanelConfig {
       dashboardUser: secrets.FRPS_DASHBOARD_USER || '',
       dashboardPassword: secrets.FRPS_DASHBOARD_PASS || '',
       exposePanel: Boolean(secrets.FRPS_HOST),
-      panelRemotePort: Number(secrets.PANEL_REMOTE_PORT || 26000),
+      panelRemotePort: Math.max(26006, Number(secrets.PANEL_REMOTE_PORT || 26006)),
       foreignProxies: [],
       configRollback: true,
       selfCheckOnReload: true,
@@ -110,6 +110,16 @@ export function loadConfig(): PanelConfig {
     return cached;
   }
   cached = merge(defaults, existing);
+  // Keep the lower remote ports reserved for the user's other services.
+  const remoteRange = cached.portRanges.frpRemote;
+  const safeRemoteStart = Math.max(26006, Number(remoteRange[0]) || 26006);
+  const safeRemoteEnd = Math.max(safeRemoteStart, Number(remoteRange[1]) || 27000);
+  const safePanelPort = Math.max(26006, Number(cached.frp.panelRemotePort) || 26006);
+  if (remoteRange[0] !== safeRemoteStart || remoteRange[1] !== safeRemoteEnd || cached.frp.panelRemotePort !== safePanelPort) {
+    cached.portRanges.frpRemote = [safeRemoteStart, safeRemoteEnd];
+    cached.frp.panelRemotePort = safePanelPort;
+    saveConfig();
+  }
   // 环境变量永远优先于配置文件（便于运维临时换端口、跑多实例测试）
   if (process.env.BC_PORT) cached.panel.port = Number(process.env.BC_PORT);
   if (process.env.BC_HOST) cached.panel.host = process.env.BC_HOST;
