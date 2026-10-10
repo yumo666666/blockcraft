@@ -28,7 +28,12 @@ const autoScroll = ref(true);
 const filter = ref('');
 const consoleEl = ref<HTMLElement | null>(null);
 const streaming = ref('');
-let ignoreScrollEventsUntil = 0;
+let scrollbarPointerId: number | null = null;
+let scrollbarPointerStartTop = 0;
+let scrollRequestId = 0;
+let scrollFrame1: number | null = null;
+let scrollFrame2: number | null = null;
+let scrollPending = false;
 
 interface Shortcut {
   label: string;
@@ -223,23 +228,42 @@ function badgeClass(status: string): string {
 
 // ---------------------------------------------------------------- 日志
 
-async function scrollToBottom(force = false): Promise<void> {
-  await nextTick();
-  if (!force && !autoScroll.value) return;
+function cancelScheduledScroll(): void {
+  scrollRequestId += 1;
+  if (scrollFrame1 !== null) cancelAnimationFrame(scrollFrame1);
+  if (scrollFrame2 !== null) cancelAnimationFrame(scrollFrame2);
+  scrollFrame1 = null;
+  scrollFrame2 = null;
+  scrollPending = false;
+}
+
+function scrollToBottom(): void {
+  if (!autoScroll.value || scrollPending) return;
+  scrollPending = true;
+  const requestId = ++scrollRequestId;
   // The first render can finish before the flex layout has its final height.
   // Wait for two paint frames so initial entry and KeepAlive activation land at
-  // the actual bottom instead of the first buffered line.
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    const el = consoleEl.value;
-    if (!el || (!force && !autoScroll.value)) return;
-    // Programmatic scroll events must not be mistaken for a user scrolling up.
-    ignoreScrollEventsUntil = performance.now() + 180;
-    el.scrollTop = el.scrollHeight;
-  }));
+  // the actual bottom instead of the first buffered line. Coalesce bursts so
+  // hundreds of arriving log lines do not queue hundreds of frame callbacks.
+  void nextTick().then(() => {
+    if (requestId !== scrollRequestId) return;
+    scrollFrame1 = requestAnimationFrame(() => {
+      scrollFrame1 = null;
+      if (requestId !== scrollRequestId) return;
+      scrollFrame2 = requestAnimationFrame(() => {
+        scrollFrame2 = null;
+        if (requestId !== scrollRequestId) return;
+        scrollPending = false;
+        const el = consoleEl.value;
+        if (!el || !autoScroll.value) return;
+        el.scrollTop = el.scrollHeight;
+      });
+    });
+  });
 }
 
 watch(autoScroll, (enabled) => {
-  if (enabled) void scrollToBottom(true);
+  if (enabled) scrollToBottom();
 });
 
 function pushLine(row: ConsoleLine): void {
@@ -308,13 +332,40 @@ function reconnect(): void {
   }, RETRY_MS);
 }
 
-function onConsoleScroll(): void {
-  if (performance.now() < ignoreScrollEventsUntil) return;
+function isAtConsoleBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+}
+
+function onConsolePointerDown(event: PointerEvent): void {
   const el = consoleEl.value;
-  if (!el) return;
-  // 只根据实际滚动位置变化切换；鼠标进入日志区本身不会触发此事件。
-  // 手动往上滚就关掉自动滚动；滚回底部再打开。
-  autoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  if (!el || event.pointerType !== 'mouse' || event.button !== 0) return;
+  const rect = el.getBoundingClientRect();
+  const scrollbarWidth = el.offsetWidth - el.clientWidth;
+  const hitWidth = Math.max(scrollbarWidth, 12);
+  const rtl = getComputedStyle(el).direction === 'rtl';
+  const onVerticalScrollbar = rtl
+    ? event.clientX <= rect.left + hitWidth
+    : event.clientX >= rect.right - hitWidth;
+  if (!onVerticalScrollbar) return;
+  scrollbarPointerId = event.pointerId;
+  scrollbarPointerStartTop = el.scrollTop;
+}
+
+function onConsolePointerEnd(event: PointerEvent): void {
+  if (scrollbarPointerId !== event.pointerId) return;
+  const el = consoleEl.value;
+  if (el && el.scrollTop !== scrollbarPointerStartTop) {
+    autoScroll.value = isAtConsoleBottom(el);
+  }
+  scrollbarPointerId = null;
+}
+
+function onConsoleScroll(): void {
+  const el = consoleEl.value;
+  // Scroll events also fire for content growth and our own bottom-following.
+  // Only a pointer gesture begun on the scrollbar is user intent to browse.
+  if (!el || scrollbarPointerId === null || el.scrollTop === scrollbarPointerStartTop) return;
+  autoScroll.value = isAtConsoleBottom(el);
 }
 
 function togglePause(): void {
@@ -439,6 +490,8 @@ async function testWarn(): Promise<void> {
 // ---------------------------------------------------------------- 生命周期
 
 function reset(): void {
+  cancelScheduledScroll();
+  scrollbarPointerId = null;
   offStream?.();
   offStream = null;
   if (retryTimer) {
@@ -467,6 +520,8 @@ async function boot(): Promise<void> {
 }
 
 onMounted(async () => {
+  window.addEventListener('pointerup', onConsolePointerEnd, true);
+  window.addEventListener('pointercancel', onConsolePointerEnd, true);
   await boot();
   if (closed) return;
   void scrollToBottom();
@@ -478,6 +533,9 @@ onActivated(() => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener('pointerup', onConsolePointerEnd, true);
+  window.removeEventListener('pointercancel', onConsolePointerEnd, true);
+  cancelScheduledScroll();
   closed = true;
   offStream?.();
   offStream = null;
@@ -543,7 +601,7 @@ watch(
           </div>
         </div>
         <div class="card-body console-body">
-          <div ref="consoleEl" class="console" @scroll.passive="onConsoleScroll">
+          <div ref="consoleEl" class="console" @pointerdown="onConsolePointerDown" @scroll.passive="onConsoleScroll">
             <div v-if="!filteredLines.length" class="console-empty">
               {{ filter ? '没有匹配的日志行' : '还没有日志。世界启动后这里会实时输出。' }}
             </div>
