@@ -37,6 +37,14 @@ escape_unit_word() {
   printf '"%s"' "$value"
 }
 
+escape_unit_path() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value// /\\x20}"
+  value="${value//%/%%}"
+  printf '%s' "$value"
+}
+
 if [[ "$ACTION" == uninstall ]]; then
   systemctl disable --now blockcraft.service >/dev/null 2>&1 || true
   rm -f "$UNIT_FILE"
@@ -46,7 +54,7 @@ if [[ "$ACTION" == uninstall ]]; then
   exit 0
 fi
 
-ROOT_Q="$(escape_unit_word "$ROOT")"
+ROOT_PATH="$(escape_unit_path "$ROOT")"
 RUNNER_Q="$(escape_unit_word "$ROOT/bin/ubuntu.sh")"
 STOPPER_Q="$(escape_unit_word "$ROOT/bin/systemd-stop.sh")"
 DATA_Q="$(escape_unit_word "BC_DATA_DIR=$ROOT/data")"
@@ -61,7 +69,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 User=$SERVICE_USER
-WorkingDirectory=$ROOT_Q
+WorkingDirectory=$ROOT_PATH
 Environment=$(escape_unit_word "BC_ROOT=$ROOT")
 Environment=$DATA_Q
 Environment=$INSTANCES_Q
