@@ -9,6 +9,7 @@ import { bad } from '../core/errors.ts';
 import { createLogger } from '../core/logger.ts';
 import { loadConfig } from '../config.ts';
 import * as I from './instanceService.ts';
+import { curseForgeClientOnlyReason, fabricClientOnlyReason, forgeClientOnlyReason } from './serverModPolicy.ts';
 
 const logger = createLogger('pack');
 
@@ -279,6 +280,7 @@ type CurseForgeDependency = { modId?: number; relationType?: number };
 type CurseForgeFile = {
   id?: number;
   modId?: number;
+  projectId?: number;
   fileName?: string;
   fileDate?: string;
   releaseType?: number;
@@ -384,6 +386,34 @@ async function jarRequiresCurseForgeDependency(jarPath: string, projectId: numbe
   } catch {
     return null;
   }
+}
+
+/** Detect client-only jars that CurseForge's file labels do not identify. */
+async function clientOnlyJarReason(jarPath: string): Promise<string | null> {
+  try {
+    const names = await listZipEntries(jarPath);
+    const metadataNames = names.filter((name) =>
+      name === 'fabric.mod.json' || name === 'META-INF/mods.toml' || name === 'META-INF/neoforge.mods.toml',
+    );
+    if (!metadataNames.length) return null;
+    const zip = await openZip(jarPath);
+    try {
+      for (let index = 0; index < metadataNames.length; index++) {
+        const name = metadataNames[index];
+        const contents = (await readEntry(zip, await findEntry(zip, name))).toString('utf8');
+        const reason = name === 'fabric.mod.json'
+          ? fabricClientOnlyReason(contents)
+          : forgeClientOnlyReason(contents);
+        if (index < metadataNames.length - 1) zip.readEntry();
+        if (reason) return reason;
+      }
+    } finally {
+      zip.close();
+    }
+  } catch {
+    // Unknown or malformed metadata is left for Forge to validate normally.
+  }
+  return null;
 }
 
 function compatibleCurseForgeIndex(mod: CurseForgeMod, mc: string, loaderType: number): CurseForgeFileIndex | null {
@@ -567,6 +597,7 @@ async function installCurseForge(
   const manual: string[] = [];
   let downloaded = 0;
   let resourcePacksDownloaded = 0;
+  let clientOnlySkipped = 0;
   if (!key) {
     throw bad('导入 CurseForge 整合包需要先在设置中填写并保存 API Key / A CurseForge API Key must be saved in Settings before importing this pack.');
   }
@@ -610,12 +641,28 @@ async function installCurseForge(
 
       for (const f of files) {
         if (!f.id) continue;
-        const projectId = f.modId ?? projectByFile.get(f.id);
+        const projectId = f.projectId ?? f.modId ?? projectByFile.get(f.id);
         if (projectId) projectIds.add(projectId);
         const fileName = path.basename(f.fileName || `cf-${f.id}.jar`);
         const isResourcePack = /\.zip$/i.test(fileName);
         const dest = path.join(serverDir, isResourcePack ? 'resourcepacks' : 'mods', fileName);
+        const clientModDest = path.join(serverDir, 'client-mods', String(f.id), fileName);
+        const clientOnlyReason = !isResourcePack && /\.jar$/i.test(fileName) ? curseForgeClientOnlyReason(f) : null;
+        if (clientOnlyReason) {
+          if (fs.existsSync(dest)) {
+            fs.mkdirSync(path.dirname(clientModDest), { recursive: true });
+            fs.renameSync(dest, clientModDest);
+          }
+          clientOnlySkipped++;
+          onLog(`  ↷ ${fileName}：${clientOnlyReason}，跳过服务端安装`);
+          continue;
+        }
         let ok = fs.existsSync(dest);
+        if (!ok && fs.existsSync(clientModDest)) {
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          fs.renameSync(clientModDest, dest);
+          ok = true;
+        }
         if (!ok) {
           const urls: string[] = [];
           if (f.downloadUrl) urls.push(f.downloadUrl);
@@ -625,7 +672,17 @@ async function installCurseForge(
         }
         if (ok) {
           if (isResourcePack) resourcePacksDownloaded++;
-          else downloaded++;
+          else if (/\.jar$/i.test(fileName)) {
+            const jarClientOnlyReason = await clientOnlyJarReason(dest);
+            if (jarClientOnlyReason) {
+              fs.mkdirSync(path.dirname(clientModDest), { recursive: true });
+              fs.renameSync(dest, clientModDest);
+              clientOnlySkipped++;
+              onLog(`  ↷ ${fileName}：${jarClientOnlyReason}，跳过服务端安装`);
+              continue;
+            }
+            downloaded++;
+          }
           onLog(`  ✔ ${fileName}${isResourcePack ? '（资源包）' : projectId && !manifest.files.some((entry) => entry.projectID === projectId) ? '（自动补齐的必需依赖）' : ''}`);
         } else {
           manual.push(`${fileName}（下载失败）`);
@@ -692,6 +749,7 @@ async function installCurseForge(
   }
   if (autoDependencyCount) onLog(`已自动补齐 ${autoDependencyCount} 个 CurseForge 必需依赖`);
   if (resourcePacksDownloaded) onLog(`已保存 ${resourcePacksDownloaded} 个资源包到 resourcepacks/，不作为服务端模组加载`);
+  if (clientOnlySkipped) onLog(`已跳过 ${clientOnlySkipped} 个客户端专用 MOD，不会放入服务端 mods/`);
   if (manual.length) onLog(`仍有 ${manual.length} 个 CurseForge 文件或依赖未能自动安装，稍后列出明细`);
   return { downloaded, manual };
 }

@@ -1,5 +1,10 @@
 # 更新记录
 
+## 2.3.16 — 2026-10-10
+
+- CurseForge 导入会跳过仅客户端模组，不再把它们放进服务端 `mods/`；同时检查 CurseForge 客户端/服务端标签、Fabric `environment` 和 Forge `side` 元数据。对未正确标注服务器兼容性的 Sodium Extras 加入识别。
+- 导入日志会逐项说明被跳过的客户端专用模组数量和原因，服务端 MOD 数量只统计实际安装到 `mods/` 的文件。
+
 ## 2.3.15 — 2026-10-10
 
 - CurseForge 整合包中的资源包 ZIP 保存到 `resourcepacks/`，不再放进服务端 `mods/`，也不再把资源包的客户端依赖错误地加入服务端。
