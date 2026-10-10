@@ -49,10 +49,9 @@ else
   NODE_BIN="$LOCAL_NODE/bin/node"
 fi
 
-# Make the portable Node/Corepack commands available to pnpm lifecycle scripts too.
-if [ "$NODE_BIN" = "$LOCAL_NODE/bin/node" ]; then
-  export PATH="$ROOT/.runtime/node/bin:$PATH"
-fi
+# Make the portable Node/Corepack commands available to this script and pnpm
+# lifecycle scripts. PWD may not be the project root when the script is called.
+export PATH="$ROOT/.runtime/node/bin:$PATH"
 
 export BC_ROOT="${BC_ROOT:-$ROOT}"
 export BC_DATA_DIR="${BC_DATA_DIR:-$ROOT/data}"
@@ -77,19 +76,20 @@ else
   PNPM=("$NODE_BIN" "$RUNTIME/tools/node_modules/pnpm/bin/pnpm.cjs")
 fi
 
-if [ ! -d "$ROOT/node_modules" ] || [ ! -f "$ROOT/web/dist/index.html" ]; then
+if [ ! -d "$ROOT/node_modules" ]; then
   cd "$ROOT"
   "${PNPM[@]}" install --frozen-lockfile || {
     "${PNPM[@]}" approve-builds esbuild
     "${PNPM[@]}" install --frozen-lockfile
   }
-  # Build the workspace directly. The root package's build script shells out to
-  # a bare `pnpm` command, which is not on PATH when pnpm is invoked via Corepack
-  # or the bundled pnpm CLI.
-  "${PNPM[@]}" -C web build
 fi
 
+# Rebuild on every launch so a git pull is reflected in the served UI.
+# Build the workspace directly; the root build script shells out to a bare
+# `pnpm` command, which may not exist when pnpm is invoked via Corepack.
 cd "$ROOT"
+"${PNPM[@]}" -C web build
+
 "$NODE_BIN" "${NODE_PROXY_ARGS[@]}" --experimental-strip-types "$ROOT/server/src/index.ts" &
 PANEL_PID=$!
 WATCHDOG_PID=""
