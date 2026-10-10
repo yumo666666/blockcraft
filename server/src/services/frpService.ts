@@ -234,6 +234,20 @@ function isAlive(pid: number | null): boolean {
   }
 }
 
+function isAdminPortListening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    const finish = (listening: boolean) => {
+      socket.destroy();
+      resolve(listening);
+    };
+    socket.setTimeout(500);
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+    socket.once('timeout', () => finish(false));
+  });
+}
+
 function readPid(name: ChannelName): number | null {
   const v = readJsonSync<number | null>(pidFile(name), null);
   if (typeof v === 'number' && isAlive(v)) return v;
@@ -369,16 +383,25 @@ export async function stopChannelsForShutdown(): Promise<{ ok: boolean; error?: 
   shuttingDown = true;
   const stopAndWait = async (name: ChannelName): Promise<string | null> => {
     const pid = readPid(name) ?? runtime[name].pid;
+    logger.info(`托盘关机：请求停止 frpc(${name})`, { pid, adminPort: adminPort(name) });
     stopChannel(name);
-    if (!pid) return null;
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline && isAlive(pid)) await sleep(100);
-    if (isAlive(pid)) {
-      // Keep the PID available so a later tray-close retry can signal this
-      // channel again instead of losing track of a child that ignored SIGTERM.
-      runtime[name].pid = pid;
-      atomicWriteFileSync(pidFile(name), String(pid));
-      return `frpc(${name}) PID ${pid} 在 8 秒后仍在运行`;
+    if (pid) {
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline && isAlive(pid)) await sleep(100);
+      if (isAlive(pid)) {
+        // Keep the PID available so a later tray-close retry can signal this
+        // channel again instead of losing track of a child that ignored SIGTERM.
+        runtime[name].pid = pid;
+        atomicWriteFileSync(pidFile(name), String(pid));
+        return `frpc(${name}) PID ${pid} 在 8 秒后仍在运行`;
+      }
+      logger.info(`托盘关机：frpc(${name}) 进程已退出`, { pid });
+    } else {
+      logger.info(`托盘关机：frpc(${name}) 没有已记录的 PID，仍检查管理端口`);
+    }
+    const port = adminPort(name);
+    if (port > 0 && await isAdminPortListening(port)) {
+      return `frpc(${name}) 已${pid ? `记录的 PID ${pid} 已退出` : '没有已记录 PID'}，但本地管理端口 ${port} 仍在监听；可能还有旧版或其他 frpc 进程`;
     }
     return null;
   };
@@ -387,11 +410,13 @@ export async function stopChannelsForShutdown(): Promise<{ ok: boolean; error?: 
   // world channel is confirmed stopped, then stop the panel tunnel as well.
   const worldError = await stopAndWait('worlds');
   if (worldError) {
+    logger.warn(`托盘关机：世界 FRP 通道未关闭`, { error: worldError });
     shuttingDown = false;
     return { ok: false, error: worldError };
   }
   const panelError = await stopAndWait('panel');
   if (panelError) {
+    logger.warn(`托盘关机：面板 FRP 通道未关闭`, { error: panelError });
     shuttingDown = false;
     const restoreError = await startChannel('worlds').then(() => null, (err) => String(err));
     return {
@@ -401,6 +426,7 @@ export async function stopChannelsForShutdown(): Promise<{ ok: boolean; error?: 
         : `${panelError}；世界通道已尝试恢复`,
     };
   }
+  logger.info('托盘关机：世界和面板 FRP 通道均已关闭');
   return { ok: true };
 }
 

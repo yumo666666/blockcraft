@@ -13,8 +13,10 @@ import { summarizeAll, countMods } from '../services/overview.ts';
 import { javaSummary, listJava, autoJava } from '../services/javaService.ts';
 import * as I from '../services/instanceService.ts';
 import { dirSizeCached } from '../services/overview.ts';
+import { createLogger } from '../core/logger.ts';
 
 let shutdownAfterWorldsInProgress = false;
+const shutdownLogger = createLogger('tray-shutdown');
 
 export function registerSystemRoutes(app: Express): void {
   app.get('/api/panel', (_req, res) => {
@@ -209,16 +211,19 @@ export function registerSystemRoutes(app: Express): void {
   /** Windows 托盘退出：先并行安全停止所有活动世界，全部成功后再退出面板。 */
   app.post('/api/panel/shutdown-after-worlds', async (_req, res) => {
     if (shutdownAfterWorldsInProgress || !sup.beginPanelShutdown()) {
+      shutdownLogger.warn('收到托盘关闭请求，但面板已在停止中');
       res.status(409).json({ error: { code: 'BUSY', message: '正在停止世界，请稍候' } });
       return;
     }
     shutdownAfterWorldsInProgress = true;
     try {
+      shutdownLogger.info('收到托盘关闭请求，开始检查并停止世界');
       const worlds = await summarizeAll();
       const active = (await Promise.all(worlds.map(async (world) => {
         const statusActive = ['running', 'starting', 'stopping', 'stuck'].includes(world.status);
         return statusActive || await sup.hasActiveProcessEvidence(world.id) ? world : null;
       }))).filter((world): world is (typeof worlds)[number] => Boolean(world));
+      shutdownLogger.info('托盘关机：发现活动世界', { worlds: active.map((world) => world.name) });
       const results = await Promise.all(
         active.map(async (world) => ({
           world,
@@ -234,6 +239,7 @@ export function registerSystemRoutes(app: Express): void {
         shutdownAfterWorldsInProgress = false;
         sup.cancelPanelShutdown();
         const details = failed.map(({ world, result }) => `${world.name}：${result.error || '未能确认停止'}`).join('；');
+        shutdownLogger.warn('托盘关机：有世界未能安全停止，面板保持运行', { worlds: details });
         res.status(409).json({
           error: {
             code: 'CONFLICT',
@@ -253,6 +259,7 @@ export function registerSystemRoutes(app: Express): void {
       if (stillActive.length) {
         shutdownAfterWorldsInProgress = false;
         sup.cancelPanelShutdown();
+        shutdownLogger.warn('托盘关机：二次检查仍发现活动世界', { worlds: stillActive.map((world) => world.name) });
         res.status(409).json({
           error: {
             code: 'CONFLICT',
@@ -265,6 +272,7 @@ export function registerSystemRoutes(app: Express): void {
       if (!frpStop.ok) {
         shutdownAfterWorldsInProgress = false;
         sup.cancelPanelShutdown();
+        shutdownLogger.warn('托盘关机：FRP 通道未全部退出，面板保持运行', { error: frpStop.error });
         res.status(409).json({
           error: {
             code: 'CONFLICT',
@@ -273,12 +281,14 @@ export function registerSystemRoutes(app: Express): void {
         });
         return;
       }
+      shutdownLogger.info('托盘关机：世界已停止，两个 FRP 通道已确认退出，正在关闭面板', { stopped: active.length });
       res.json({ ok: true, stopped: active.length });
       setTimeout(() => process.exit(0), 350);
     } catch (error) {
       shutdownAfterWorldsInProgress = false;
       sup.cancelPanelShutdown();
       frp.cancelShutdown();
+      shutdownLogger.error('托盘关机异常，面板保持运行', { error: String(error) });
       res.status(500).json({ error: { code: 'INTERNAL', message: String(error) } });
     }
   });

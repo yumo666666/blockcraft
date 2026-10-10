@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -28,6 +29,10 @@ type panelFile struct {
 		Port  int    `json:"port"`
 		Token string `json:"token"`
 	} `json:"panel"`
+	Frp struct {
+		AdminPortPanel  int `json:"adminPortPanel"`
+		AdminPortWorlds int `json:"adminPortWorlds"`
+	} `json:"frp"`
 }
 
 func showError(message string) {
@@ -58,6 +63,40 @@ func panelConnection(dataDir string) (int, string) {
 		port = 8081
 	}
 	return port, config.Panel.Token
+}
+
+func sameWindowsPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	a, errA := filepath.Abs(filepath.Clean(a))
+	b, errB := filepath.Abs(filepath.Clean(b))
+	return errA == nil && errB == nil && strings.EqualFold(a, b)
+}
+
+func logLauncher(file *os.File, format string, args ...any) {
+	if file == nil {
+		return
+	}
+	line := fmt.Sprintf(format, args...)
+	_, _ = fmt.Fprintf(file, "%s [launcher] %s\n", time.Now().Format("2006-01-02 15:04:05"), line)
+}
+
+func panelDataDirectory(dataDir string) (string, error) {
+	port, token := panelConnection(dataDir)
+	if token == "" {
+		return "", fmt.Errorf("没有找到面板令牌")
+	}
+	var response struct {
+		DataDir string `json:"dataDir"`
+	}
+	if err := trayPanelGetJSON(port, token, "/api/panel", 10*time.Second, &response); err != nil {
+		return "", err
+	}
+	if response.DataDir == "" {
+		return "", fmt.Errorf("面板没有返回数据目录")
+	}
+	return response.DataDir, nil
 }
 
 func browserURL(dataDir string) (string, bool) {
@@ -171,6 +210,29 @@ func waitForPanelUnavailable(dataDir string, timeout time.Duration) bool {
 	}
 }
 
+func waitForFrpAdminPortsClosed(dataDir string, timeout time.Duration) []int {
+	config := readPanelConfig(filepath.Join(dataDir, "panel.json"))
+	ports := []int{config.Frp.AdminPortWorlds, config.Frp.AdminPortPanel}
+	deadline := time.Now().Add(timeout)
+	for {
+		var open []int
+		for _, port := range ports {
+			if port < 1 {
+				continue
+			}
+			connection, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 300*time.Millisecond)
+			if err == nil {
+				open = append(open, port)
+				_ = connection.Close()
+			}
+		}
+		if len(open) == 0 || time.Now().After(deadline) {
+			return open
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 func run() int {
 	executable, err := os.Executable()
 	if err != nil {
@@ -203,59 +265,88 @@ func run() int {
 	}
 	_ = os.MkdirAll(filepath.Join(dataDir, "logs"), 0o755)
 	_ = os.MkdirAll(instanceDir, 0o755)
-	_ = os.Setenv("BC_ROOT", appDir)
-	_ = os.Setenv("BC_DATA_DIR", dataDir)
-	_ = os.Setenv("BC_INSTANCE_DIR", instanceDir)
-	if url, ok := browserURL(dataDir); ok {
-		openBrowser(url)
-		return 0
-	}
-
 	logFile, err := os.OpenFile(filepath.Join(dataDir, "logs", "launcher.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		showError("无法在 BlockCraft 文件夹内创建日志。请检查文件夹是否可写，并避免放在只读目录。")
 		return 1
 	}
 	defer logFile.Close()
-
-	cmd := exec.Command(nodeExe, "--experimental-strip-types", "--use-env-proxy", entry)
-	cmd.Dir = appDir
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
-	if err := cmd.Start(); err != nil {
-		_, _ = fmt.Fprintln(logFile, "启动 Node.js 失败:", err)
-		showError("BlockCraft 服务没有启动。请查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
-		return 1
-	}
-
-	wait := make(chan error, 1)
-	go func() { wait <- cmd.Wait() }()
-	deadline := time.Now().Add(90 * time.Second)
-	opened := false
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-wait:
-			if err != nil {
-				_, _ = fmt.Fprintln(logFile, "BlockCraft 服务退出:", err)
-				showError("BlockCraft 服务意外退出。请查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
-				return 1
-			}
-			return 0
-		default:
-		}
-		if url, ok := browserURL(dataDir); ok {
+	logLauncher(logFile, "启动器启动，PID=%d，数据目录=%s", os.Getpid(), dataDir)
+	_ = os.Setenv("BC_ROOT", appDir)
+	_ = os.Setenv("BC_DATA_DIR", dataDir)
+	_ = os.Setenv("BC_INSTANCE_DIR", instanceDir)
+	existingPanel := false
+	existingPanelURL := ""
+	if url, ok := browserURL(dataDir); ok {
+		ownerDataDir, ownerErr := panelDataDirectory(dataDir)
+		if ownerErr != nil {
+			logLauncher(logFile, "端口已有面板响应，但无法验证归属：%v", ownerErr)
 			openBrowser(url)
-			opened = true
-			break
+			showError("本地端口已有 BlockCraft 面板响应，但启动器无法确认它属于当前文件夹。为避免误关另一份面板，未创建托盘控制器。请先关闭占用面板的旧进程后再启动。")
+			return 1
 		}
-		time.Sleep(time.Second)
+		if !sameWindowsPath(ownerDataDir, dataDir) {
+			logLauncher(logFile, "端口已被另一份 BlockCraft 占用，当前=%s，响应方=%s", dataDir, ownerDataDir)
+			openBrowser(url)
+			showError("本地面板端口正由另一份 BlockCraft 数据目录占用。已打开现有面板，但当前启动器不会关闭它。请从对应文件夹启动 BlockCraft，或先关闭旧进程。")
+			return 1
+		}
+		logLauncher(logFile, "发现同一数据目录的遗留面板，将接管托盘控制：%s", ownerDataDir)
+		existingPanel = true
+		existingPanelURL = url
 	}
-	if !opened {
-		_ = cmd.Process.Kill()
-		_, _ = fmt.Fprintln(logFile, "等待面板启动超时")
-		showError("等待面板启动超时。请检查 BlockCraft 文件夹内 data\\logs\\launcher.log。")
-		return 1
+
+	var cmd *exec.Cmd
+	var wait chan error
+	adoptedPanel := existingPanel
+	if !adoptedPanel {
+		cmd = exec.Command(nodeExe, "--experimental-strip-types", "--use-env-proxy", entry)
+		cmd.Dir = appDir
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+		if err := cmd.Start(); err != nil {
+			logLauncher(logFile, "启动 Node.js 失败：%v", err)
+			showError("BlockCraft 服务没有启动。请查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
+			return 1
+		}
+		wait = make(chan error, 1)
+		go func() { wait <- cmd.Wait() }()
+		deadline := time.Now().Add(90 * time.Second)
+		opened := false
+		for time.Now().Before(deadline) {
+			select {
+			case err := <-wait:
+				logLauncher(logFile, "BlockCraft 服务在启动阶段退出：%v", err)
+				if err != nil {
+					showError("BlockCraft 服务意外退出。请查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
+					return 1
+				}
+				return 0
+			default:
+			}
+			if url, ok := browserURL(dataDir); ok {
+				ownerDataDir, ownerErr := panelDataDirectory(dataDir)
+				if ownerErr != nil || !sameWindowsPath(ownerDataDir, dataDir) {
+					_ = cmd.Process.Kill()
+					logLauncher(logFile, "启动期间端口被其他进程占用：dataDir=%q error=%v", ownerDataDir, ownerErr)
+					showError("本地面板端口被另一份程序占用，启动器已停止本次服务启动。请先关闭占用端口的旧面板，再重新启动。")
+					return 1
+				}
+				openBrowser(url)
+				opened = true
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		if !opened {
+			_ = cmd.Process.Kill()
+			logLauncher(logFile, "等待面板启动超时")
+			showError("等待面板启动超时。请检查 BlockCraft 文件夹内 data\\logs\\launcher.log。")
+			return 1
+		}
+	} else {
+		openBrowser(existingPanelURL)
 	}
 
 	serverExited := make(chan error, 1)
@@ -264,9 +355,18 @@ func run() int {
 	var restartAfterExit atomic.Bool
 	var shutdownAfterWorldsRequested atomic.Bool
 	go func() {
-		err := <-wait
+		var err error
+		if wait != nil {
+			err = <-wait
+		} else {
+			for !waitForPanelUnavailable(dataDir, 24*time.Hour) {
+				time.Sleep(250 * time.Millisecond)
+			}
+		}
 		if err != nil {
-			_, _ = fmt.Fprintln(logFile, "BlockCraft 服务退出:", strings.TrimSpace(err.Error()))
+			logLauncher(logFile, "BlockCraft 服务退出：%s", strings.TrimSpace(err.Error()))
+		} else {
+			logLauncher(logFile, "BlockCraft 面板服务已退出")
 		}
 		serverExited <- err
 		close(serverStopped)
@@ -307,6 +407,7 @@ func run() int {
 						showError("BlockCraft 面板暂时无法连接。请稍候再试，或查看 BlockCraft 文件夹内 data\\logs\\launcher.log。")
 					}
 				case <-restartItem.ClickedCh:
+					logLauncher(logFile, "托盘选择：仅重启面板")
 					restartItem.Disable()
 					quitItem.Disable()
 					systray.SetTooltip("正在重启面板，Minecraft 世界会继续运行…")
@@ -325,9 +426,12 @@ func run() int {
 						}
 					}()
 				case <-quitItem.ClickedCh:
+					logLauncher(logFile, "托盘选择：停止所有世界并退出")
 					if !confirmStopWorldsAndExit() {
+						logLauncher(logFile, "用户取消关闭")
 						continue
 					}
+					logLauncher(logFile, "用户确认关闭")
 					shutdownAfterWorldsRequested.Store(true)
 					quitItem.Disable()
 					restartItem.Disable()
@@ -345,6 +449,7 @@ func run() int {
 							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
 							return
 						}
+						logLauncher(logFile, "关闭前发现 %d 个活动世界：%s", len(worlds), strings.Join(worlds, ", "))
 						closeProgress, shown := showShutdownProgress(worlds)
 						if !shown {
 							shutdownAfterWorldsRequested.Store(false)
@@ -358,6 +463,7 @@ func run() int {
 							return
 						}
 						if err := stopWorldsAndClosePanel(dataDir); err != nil {
+							logLauncher(logFile, "面板拒绝关闭请求：%v", err)
 							shutdownAfterWorldsRequested.Store(false)
 							closeProgress()
 							quitItem.Enable()
@@ -369,7 +475,19 @@ func run() int {
 							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
 							return
 						}
-						if err := waitForPanelExit(serverStopped, cmd.Process, 5*time.Second); err != nil {
+						logLauncher(logFile, "面板已确认世界及 FRP 通道停止，等待面板进程退出")
+						var exitErr error
+						if adoptedPanel {
+							select {
+							case <-serverStopped:
+							case <-time.After(10 * time.Second):
+								exitErr = fmt.Errorf("同目录面板服务在 10 秒内没有退出")
+							}
+						} else {
+							exitErr = waitForPanelExit(serverStopped, cmd.Process, 5*time.Second)
+						}
+						if exitErr != nil {
+							logLauncher(logFile, "等待面板服务退出失败：%v", exitErr)
 							shutdownAfterWorldsRequested.Store(false)
 							closeProgress()
 							quitItem.Enable()
@@ -381,7 +499,9 @@ func run() int {
 							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
 							return
 						}
+						logLauncher(logFile, "已确认面板进程退出")
 						if !waitForPanelUnavailable(dataDir, 3*time.Second) {
+							logLauncher(logFile, "面板端口仍有服务响应，保持托盘运行")
 							shutdownAfterWorldsRequested.Store(false)
 							closeProgress()
 							quitItem.Enable()
@@ -393,6 +513,22 @@ func run() int {
 							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x30)
 							return
 						}
+						logLauncher(logFile, "确认面板监听端口已关闭")
+						openFrpPorts := waitForFrpAdminPortsClosed(dataDir, 3*time.Second)
+						if len(openFrpPorts) > 0 {
+							logLauncher(logFile, "FRP 管理端口仍在监听：%v；保持托盘运行", openFrpPorts)
+							shutdownAfterWorldsRequested.Store(false)
+							closeProgress()
+							quitItem.Enable()
+							restartItem.Enable()
+							systray.SetTooltip("BlockCraft 仍有 FRP 进程运行")
+							message, _ := syscall.UTF16PtrFromString(fmt.Sprintf("面板已退出，但 FRP 管理端口仍在监听：%v。托盘保持运行，请勿直接清理进程；检查端口对应的 frpc 后再重试。", openFrpPorts))
+							title, _ := syscall.UTF16PtrFromString("FRP 通道仍未关闭")
+							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x30)
+							return
+						}
+						logLauncher(logFile, "面板端口和两个 FRP 管理端口均已关闭，退出托盘")
 						closeProgress()
 						systray.Quit()
 					}()

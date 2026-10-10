@@ -246,26 +246,135 @@ async function extractTree(
 
 async function downloadWithFallback(urls: string[], dest: string, onLog: (s: string) => void): Promise<boolean> {
   for (const url of urls) {
-    try {
-      const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': 'BlockCraft/2.0' } });
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let retryable = true;
       const tmp = `${dest}.part`;
-      await pipeline(Readable.fromWeb(res.body as never), fs.createWriteStream(tmp));
-      if (fs.statSync(tmp).size === 0) throw new Error('0 字节');
-      fs.renameSync(tmp, dest);
-      return true;
-    } catch (err) {
-      onLog(`  下载失败（${url}）：${String(err).slice(0, 120)}`);
+      try {
+        const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': 'BlockCraft/2.0' } });
+        if (!res.ok || !res.body) {
+          retryable = res.status === 429 || res.status >= 500;
+          throw new Error(`HTTP ${res.status}`);
+        }
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        await pipeline(Readable.fromWeb(res.body as never), fs.createWriteStream(tmp));
+        if (fs.statSync(tmp).size === 0) throw new Error('0 字节');
+        fs.renameSync(tmp, dest);
+        return true;
+      } catch (err) {
+        fs.rmSync(tmp, { force: true });
+        if (retryable && attempt < 2) {
+          onLog(`  下载暂时失败，${attempt + 1}/2 次重试：${String(err).slice(0, 100)}`);
+          await new Promise((resolve) => setTimeout(resolve, 700 * 2 ** attempt));
+          continue;
+        }
+        onLog(`  下载失败（${url}）：${String(err).slice(0, 120)}`);
+        break;
+      }
     }
   }
   return false;
+}
+
+type CurseForgeDependency = { modId?: number; relationType?: number };
+type CurseForgeFile = {
+  id?: number;
+  modId?: number;
+  fileName?: string;
+  downloadUrl?: string | null;
+  dependencies?: CurseForgeDependency[];
+};
+type CurseForgeFileIndex = {
+  gameVersion?: string;
+  fileId?: number;
+  filename?: string;
+  releaseType?: number;
+  modLoader?: number;
+};
+type CurseForgeMod = { id?: number; latestFilesIndexes?: CurseForgeFileIndex[] };
+
+const CURSEFORGE_LOADER_TYPES: Record<string, number> = {
+  forge: 1,
+  fabric: 4,
+  quilt: 5,
+  neoforge: 6,
+};
+
+async function curseForgeRequest<T>(url: string, key: string, init: RequestInit): Promise<T> {
+  let lastError = '未知错误';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let retryable = true;
+    try {
+      const res = await fetch(url, {
+        ...init,
+        headers: { ...(init.headers ?? {}), 'x-api-key': key, 'user-agent': 'BlockCraft/2.0' },
+      });
+      if (!res.ok) {
+        retryable = res.status === 429 || res.status >= 500;
+        lastError = `HTTP ${res.status}`;
+        if (!retryable) break;
+      } else {
+        return await res.json() as T;
+      }
+    } catch (err) {
+      lastError = String(err);
+    }
+    if (retryable && attempt < 2) await new Promise((resolve) => setTimeout(resolve, 700 * 2 ** attempt));
+  }
+  throw new Error(lastError);
+}
+
+/** Resolve one compatible CurseForge file for each required dependency project. */
+async function curseForgeDependencyFiles(
+  modIds: number[],
+  api: string,
+  key: string,
+  mc: string | null,
+  loader: string | null,
+  onLog: (s: string) => void,
+): Promise<Map<number, CurseForgeFileIndex>> {
+  const out = new Map<number, CurseForgeFileIndex>();
+  if (!mc) {
+    for (const id of modIds) onLog(`  无法自动选取 CurseForge 依赖 ${id}：整合包没有声明 Minecraft 版本`);
+    return out;
+  }
+  const loaderType = loader ? CURSEFORGE_LOADER_TYPES[loader.toLowerCase()] : 0;
+  if (loader && loaderType === undefined) {
+    for (const id of modIds) onLog(`  无法自动选取 CurseForge 依赖 ${id}：不支持的加载器 ${loader}`);
+    return out;
+  }
+
+  for (let i = 0; i < modIds.length; i += 50) {
+    const chunk = modIds.slice(i, i + 50);
+    try {
+      const response = await curseForgeRequest<{ data?: CurseForgeMod[] }>(`${api}/mods`, key, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ modIds: chunk, filterPcOnly: true }),
+      });
+      for (const mod of response.data ?? []) {
+        if (!mod.id) continue;
+        const candidates = (mod.latestFilesIndexes ?? [])
+          .filter((entry) => entry.fileId && entry.gameVersion === mc && (entry.modLoader === loaderType || entry.modLoader === 0))
+          .sort((a, b) => {
+            const loaderRank = (x: CurseForgeFileIndex) => x.modLoader === loaderType ? 0 : 1;
+            const releaseRank = (x: CurseForgeFileIndex) => x.releaseType === 1 ? 0 : x.releaseType === 2 ? 1 : 2;
+            return loaderRank(a) - loaderRank(b) || releaseRank(a) - releaseRank(b);
+          });
+        if (candidates[0]) out.set(mod.id, candidates[0]);
+      }
+    } catch (err) {
+      onLog(`  查询 CurseForge 依赖文件失败：${String(err).slice(0, 120)}`);
+    }
+  }
+  return out;
 }
 
 /** 按 CurseForge 清单批量下载（一次 100 个 fileId） */
 async function installCurseForge(
   file: string,
   instanceId: string,
+  mc: string | null,
+  loader: string | null,
   onLog: (s: string) => void,
 ): Promise<{ downloaded: number; manual: string[] }> {
   const zip = await openZip(file);
@@ -280,6 +389,7 @@ async function installCurseForge(
   const modsDir = path.join(serverDir, 'mods');
   const panel = loadConfig();
   const key = panel.mirrors.curseforgeApiKey;
+  const api = panel.mirrors.curseforgeApi.replace(/\/$/, '');
   const manual: string[] = [];
   let downloaded = 0;
   if (!key) {
@@ -287,38 +397,97 @@ async function installCurseForge(
     for (const f of manifest.files) manual.push(`https://www.curseforge.com/minecraft/mc-mods/search?projectId=${f.projectID}`);
     return { downloaded, manual };
   }
-  const ids = manifest.files.map((f) => f.fileID);
-  for (let i = 0; i < ids.length; i += 100) {
-    const chunk = ids.slice(i, i + 100);
-    onLog(`查询文件信息 ${i + 1}~${i + chunk.length} / ${ids.length}`);
-    const res = await fetch(`${panel.mirrors.curseforgeApi.replace(/\/$/, '')}/mods/files`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': key },
-      body: JSON.stringify({ fileIds: chunk }),
-    });
-    if (!res.ok) {
-      onLog(`接口返回 ${res.status}，这批改为人工清单`);
-      for (const id of chunk) manual.push(`https://www.curseforge.com/minecraft/mc-mods/search?fileId=${id}`);
+  const projectIds = new Set(manifest.files.map((f) => f.projectID));
+  const projectByFile = new Map(manifest.files.map((f) => [f.fileID, f.projectID]));
+  const visitedFileIds = new Set<number>();
+  let pendingFileIds = [...new Set(manifest.files.map((f) => f.fileID))];
+  let autoDependencyCount = 0;
+  const maxAutoDependencies = 256;
+
+  while (pendingFileIds.length) {
+    const current = pendingFileIds.filter((id) => id > 0 && !visitedFileIds.has(id));
+    if (!current.length) break;
+    current.forEach((id) => visitedFileIds.add(id));
+    const requiredProjectIds = new Set<number>();
+
+    for (let i = 0; i < current.length; i += 100) {
+      const chunk = current.slice(i, i + 100);
+      onLog(`查询 CurseForge 文件信息 ${visitedFileIds.size} 项`);
+      let files: CurseForgeFile[] = [];
+      try {
+        const response = await curseForgeRequest<{ data?: CurseForgeFile[] }>(`${api}/mods/files`, key, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ fileIds: chunk }),
+        });
+        files = response.data ?? [];
+      } catch (err) {
+        onLog(`接口查询失败，这批文件需手动处理：${String(err).slice(0, 120)}`);
+        for (const id of chunk) manual.push(`https://www.curseforge.com/minecraft/mc-mods/search?fileId=${id}`);
+        continue;
+      }
+
+      const received = new Set(files.map((entry) => entry.id).filter((id): id is number => Number.isInteger(id)));
+      for (const id of chunk) {
+        if (!received.has(id)) manual.push(`https://www.curseforge.com/minecraft/mc-mods/search?fileId=${id}`);
+      }
+
+      for (const f of files) {
+        if (!f.id) continue;
+        const projectId = f.modId ?? projectByFile.get(f.id);
+        if (projectId) projectIds.add(projectId);
+        const fileName = path.basename(f.fileName || `cf-${f.id}.jar`);
+        const dest = path.join(modsDir, fileName);
+        let ok = fs.existsSync(dest);
+        if (!ok) {
+          const urls: string[] = [];
+          if (f.downloadUrl) urls.push(f.downloadUrl);
+          const fileId = String(f.id);
+          urls.push(`https://edge.forgecdn.net/files/${fileId.slice(0, fileId.length - 3)}/${fileId.slice(-3)}/${encodeURIComponent(fileName)}`);
+          ok = await downloadWithFallback(urls, dest, onLog);
+        }
+        if (ok) {
+          downloaded++;
+          onLog(`  ✔ ${fileName}${projectId && !manifest.files.some((entry) => entry.projectID === projectId) ? '（自动补齐的必需依赖）' : ''}`);
+        } else {
+          manual.push(fileName);
+        }
+        for (const dependency of f.dependencies ?? []) {
+          if (dependency.relationType === 3 && Number.isInteger(dependency.modId) && !projectIds.has(dependency.modId!)) {
+            requiredProjectIds.add(dependency.modId!);
+          }
+        }
+      }
+    }
+
+    const unresolvedProjects = [...requiredProjectIds].filter((id) => !projectIds.has(id));
+    if (!unresolvedProjects.length) {
+      pendingFileIds = [];
       continue;
     }
-    const json = (await res.json()) as { data?: { fileName?: string; downloadUrl?: string | null; id?: number }[] };
-    for (const f of json.data ?? []) {
-      const fileName = f.fileName ?? `cf-${f.id}.jar`;
-      const urls: string[] = [];
-      if (f.downloadUrl) urls.push(f.downloadUrl);
-      if (f.id) {
-        const s = String(f.id);
-        urls.push(`https://edge.forgecdn.net/files/${s.slice(0, s.length - 3)}/${s.slice(-3)}/${encodeURIComponent(fileName)}`);
+    const allowed = unresolvedProjects.slice(0, Math.max(0, maxAutoDependencies - autoDependencyCount));
+    for (const id of unresolvedProjects.slice(allowed.length)) {
+      manual.push(`CurseForge 项目 ${id}（超出自动补齐数量上限）`);
+    }
+    if (!allowed.length) break;
+
+    onLog(`发现 ${allowed.length} 个清单外的必需依赖，正在按 ${mc ?? '未知版本'} / ${loader ?? '未知加载器'} 查找兼容文件`);
+    const resolved = await curseForgeDependencyFiles(allowed, api, key, mc, loader, onLog);
+    pendingFileIds = [];
+    for (const id of allowed) {
+      const index = resolved.get(id);
+      if (!index?.fileId) {
+        manual.push(`CurseForge 项目 ${id}（未找到兼容的 ${mc ?? '未知版本'} / ${loader ?? '未知加载器'} 文件）`);
+        projectIds.add(id);
+        continue;
       }
-      const ok = await downloadWithFallback(urls, path.join(modsDir, fileName), onLog);
-      if (ok) {
-        downloaded++;
-        onLog(`  ✔ ${fileName}`);
-      } else {
-        manual.push(fileName);
-      }
+      projectIds.add(id);
+      projectByFile.set(index.fileId, id);
+      pendingFileIds.push(index.fileId);
+      autoDependencyCount++;
     }
   }
+  if (autoDependencyCount) onLog(`已自动补齐 ${autoDependencyCount} 个 CurseForge 必需依赖`);
   return { downloaded, manual };
 }
 
@@ -363,7 +532,7 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
     case 'curseforge': {
       onLog('解压 overrides/ …');
       extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, stripChildPrefix: 'overrides/', onLog });
-      const r = await installCurseForge(file, instanceId, onLog);
+      const r = await installCurseForge(file, instanceId, info.mc, info.loader, onLog);
       manual = r.manual;
       onLog(`MOD 下载完成 ${r.downloaded} 个${manual.length ? `，${manual.length} 个需要手动处理` : ''}`);
       break;

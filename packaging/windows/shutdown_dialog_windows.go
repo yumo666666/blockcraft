@@ -133,7 +133,7 @@ func shutdownProgressText(worlds []string) string {
 		text.WriteString(world)
 		text.WriteString("\r\n")
 	}
-	text.WriteString("\r\n请耐心等待世界完成保存并关闭。\r\n之后会依次关闭世界与面板 FRP 通道、面板服务和托盘启动器。\r\n请勿手动结束进程，以免世界存档损坏。")
+	text.WriteString("\r\n请耐心等待世界完成保存并关闭。\r\n随后依次关闭世界 FRP、面板 FRP、面板服务和托盘启动器。\r\n请勿手动结束进程，以免世界存档损坏。")
 	return text.String()
 }
 
