@@ -48,6 +48,7 @@ fi
 
 ROOT_Q="$(escape_unit_word "$ROOT")"
 RUNNER_Q="$(escape_unit_word "$ROOT/bin/ubuntu.sh")"
+STOPPER_Q="$(escape_unit_word "$ROOT/bin/systemd-stop.sh")"
 DATA_Q="$(escape_unit_word "BC_DATA_DIR=$ROOT/data")"
 INSTANCES_Q="$(escape_unit_word "BC_INSTANCE_DIR=$ROOT/instances")"
 cat > "$UNIT_FILE" <<EOF
@@ -65,12 +66,12 @@ Environment=$(escape_unit_word "BC_ROOT=$ROOT")
 Environment=$DATA_Q
 Environment=$INSTANCES_Q
 ExecStart=/usr/bin/env bash $RUNNER_Q --no-browser --watchdog
+ExecStop=/usr/bin/env bash $STOPPER_Q
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=0
-TimeoutStopSec=60
-# The Java world JVMs are intentionally detached from the panel and must keep running
-# when the management service is restarted or stopped.
+TimeoutStopSec=0
+# ExecStop uses the panel's guarded shutdown path and waits until worlds, FRP and panel stop.
 KillMode=process
 UMask=0077
 

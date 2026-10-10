@@ -59,7 +59,7 @@ sudo systemctl status blockcraft
 sudo journalctl -u blockcraft -f
 ```
 
-服务会在开机时启动面板和看门狗，也会随面板设置自启世界。`systemctl restart blockcraft` 重启面板时，已运行的 Minecraft 世界会继续运行。管理命令：
+服务会在开机时启动面板和看门狗，也会随面板设置自启世界。停止或重启服务时，systemd 会先等待创建/导入任务结束，再安全停止世界、关闭两条 FRP 通道和面板；若世界未能安全停止，关闭过程会保持等待并在日志中说明状态。管理命令：
 
 ```bash
 sudo systemctl stop blockcraft

@@ -47,7 +47,11 @@ else
   tar -xJf "$RUNTIME/$ARCHIVE" -C "$LOCAL_NODE" --strip-components=1
   rm -f "$RUNTIME/$ARCHIVE"
   NODE_BIN="$LOCAL_NODE/bin/node"
-  export PATH="$LOCAL_NODE/bin:$PATH"
+fi
+
+# Make the portable Node/Corepack commands available to pnpm lifecycle scripts too.
+if [ "$NODE_BIN" = "$LOCAL_NODE/bin/node" ]; then
+  export PATH="$ROOT/.runtime/node/bin:$PATH"
 fi
 
 export BC_ROOT="${BC_ROOT:-$ROOT}"
@@ -79,7 +83,10 @@ if [ ! -d "$ROOT/node_modules" ] || [ ! -f "$ROOT/web/dist/index.html" ]; then
     "${PNPM[@]}" approve-builds esbuild
     "${PNPM[@]}" install --frozen-lockfile
   }
-  "${PNPM[@]}" build
+  # Build the workspace directly. The root package's build script shells out to
+  # a bare `pnpm` command, which is not on PATH when pnpm is invoked via Corepack
+  # or the bundled pnpm CLI.
+  "${PNPM[@]}" -C web build
 fi
 
 cd "$ROOT"
