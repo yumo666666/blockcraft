@@ -28,6 +28,7 @@ const autoScroll = ref(true);
 const filter = ref('');
 const consoleEl = ref<HTMLElement | null>(null);
 const streaming = ref('');
+let ignoreScrollEventsUntil = 0;
 
 interface Shortcut {
   label: string;
@@ -222,17 +223,24 @@ function badgeClass(status: string): string {
 
 // ---------------------------------------------------------------- 日志
 
-async function scrollToBottom(): Promise<void> {
+async function scrollToBottom(force = false): Promise<void> {
   await nextTick();
-  if (!autoScroll.value) return;
+  if (!force && !autoScroll.value) return;
   // The first render can finish before the flex layout has its final height.
   // Wait for two paint frames so initial entry and KeepAlive activation land at
   // the actual bottom instead of the first buffered line.
   requestAnimationFrame(() => requestAnimationFrame(() => {
     const el = consoleEl.value;
-    if (el && autoScroll.value) el.scrollTop = el.scrollHeight;
+    if (!el || (!force && !autoScroll.value)) return;
+    // Programmatic scroll events must not be mistaken for a user scrolling up.
+    ignoreScrollEventsUntil = performance.now() + 180;
+    el.scrollTop = el.scrollHeight;
   }));
 }
+
+watch(autoScroll, (enabled) => {
+  if (enabled) void scrollToBottom(true);
+});
 
 function pushLine(row: ConsoleLine): void {
   lines.value.push(row);
@@ -301,9 +309,11 @@ function reconnect(): void {
 }
 
 function onConsoleScroll(): void {
+  if (performance.now() < ignoreScrollEventsUntil) return;
   const el = consoleEl.value;
   if (!el) return;
-  // 手动往上滚就关掉自动滚动；滚回底部再打开
+  // 只根据实际滚动位置变化切换；鼠标进入日志区本身不会触发此事件。
+  // 手动往上滚就关掉自动滚动；滚回底部再打开。
   autoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 }
 
@@ -524,7 +534,7 @@ watch(
             <span v-if="streaming" class="badge badge-warn">{{ streaming }}</span>
             <span v-if="paused" class="badge badge-info">已暂停{{ pending.length ? ` · 待显示 ${pending.length}` : '' }}</span>
             <label class="switch">
-              <input v-model="autoScroll" type="checkbox" />
+              <input v-model="autoScroll" type="checkbox" aria-label="自动滚动" />
               <span class="switch-track" />
               <span class="switch-text">自动滚动</span>
             </label>
