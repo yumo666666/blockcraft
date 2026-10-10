@@ -476,14 +476,14 @@ func run() int {
 					systray.SetTooltip("正在安全停止 Minecraft 世界…")
 					go func() {
 						initialItems := []string{"正在运行或正在创建/导入的世界", "世界 FRP 通道", "面板 FRP 通道", "面板服务", "BlockCraft 启动器（最后退出）"}
-						updateProgress, closeProgress, shown := showShutdownProgress(initialItems)
+						updateProgress, closeProgress, shown, windowErr := showShutdownProgress(initialItems)
 						if !shown {
-							logLauncher(logFile, "无法显示安全关闭进度窗口；没有开始关闭流程")
+							logLauncher(logFile, "无法显示安全关闭进度窗口；没有开始关闭流程：%v", windowErr)
 							shutdownAfterWorldsRequested.Store(false)
 							quitItem.Enable()
 							restartItem.Enable()
 							systray.SetTooltip("BlockCraft 世界管理面板")
-							showError("无法显示安全关闭进度窗口，因此没有关闭世界、FRP 或面板。请检查系统桌面后重试。")
+							showError("无法显示安全关闭进度窗口，因此没有关闭世界、FRP 或面板。请检查系统桌面后重试。\n\n" + windowErr.Error())
 							return
 						}
 						shutdownAccepted := false
