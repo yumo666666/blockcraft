@@ -1,16 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="540" viewBox="0 0 1160 540" role="img" aria-labelledby="title desc">
-  <title id="title">BlockCraft 安全关闭确认</title>
-  <desc id="desc">深绿配色的关闭确认窗口，默认取消关闭。</desc>
-  <rect x="8" y="8" width="1144" height="524" rx="12" fill="#111713" stroke="#435b48" stroke-width="3"/>
-  <path d="M12 18a8 8 0 0 1 8-8h1120a8 8 0 0 1 8 8v6H12z" fill="#84c85f"/>
-  <path d="M12 24h1136v82H12z" fill="#1d2721"/>
-  <path d="M12 106h1136" stroke="#435b48" stroke-width="2"/>
-  <text x="54" y="76" fill="#e5ede7" font-family="Segoe UI, sans-serif" font-size="34" font-weight="700">关闭 BlockCraft</text>
-  <text x="1111" y="70" fill="#9baba0" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="34">×</text>
-  <text x="68" y="194" fill="#dde7e0" font-family="Segoe UI, sans-serif" font-size="27">这会先安全停止所有正在运行的 Minecraft 世界，然后关闭 BlockCraft。</text>
-  <text x="68" y="248" fill="#9baba0" font-family="Segoe UI, sans-serif" font-size="27">停止过程可能需要一些时间。是否继续？</text>
-  <rect x="646" y="414" width="196" height="70" rx="9" fill="#1d2721" stroke="#435b48" stroke-width="2"/>
-  <text x="744" y="459" fill="#dde7e0" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700">否 (N)</text>
-  <rect x="866" y="414" width="196" height="70" rx="9" fill="#84c85f"/>
-  <text x="964" y="459" fill="#182619" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700">是 (Y)</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="725" height="339" viewBox="0 0 725 339" role="img" aria-labelledby="title desc">
+  <title id="title">BlockCraft 深绿色安全关闭确认窗口</title>
+  <desc id="desc">确认是否先安全停止所有正在运行的 Minecraft 世界，再关闭 BlockCraft。否是默认选项。</desc>
+  <rect x="1" y="1" width="723" height="337" fill="#111713" stroke="#435b48" stroke-width="2"/>
+  <path d="M2 2h721v5H2z" fill="#84c85f"/>
+  <path d="M2 7h721v64H2z" fill="#1d2721"/>
+  <path d="M2 71h721" stroke="#435b48" stroke-width="2"/>
+  <text x="35" y="52" fill="#e5ede7" font-family="Segoe UI, sans-serif" font-size="25" font-weight="700">关闭 BlockCraft</text>
+  <text x="681" y="49" fill="#9baba0" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="24">×</text>
+  <text x="43" y="129" fill="#dde7e0" font-family="Segoe UI, sans-serif" font-size="20">这会先安全停止所有正在运行的 Minecraft 世界，然后关闭 BlockCraft。</text>
+  <text x="43" y="177" fill="#9baba0" font-family="Segoe UI, sans-serif" font-size="20">停止过程可能需要一些时间。是否继续？</text>
+  <rect x="414" y="264" width="133" height="49" fill="#1d2721" stroke="#435b48" stroke-width="1.5"/>
+  <text x="480.5" y="296" fill="#dde7e0" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700">否 (N)</text>
+  <rect x="562" y="264" width="133" height="49" fill="#84c85f"/>
+  <text x="628.5" y="296" fill="#182619" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700">是 (Y)</text>
 </svg>

@@ -157,7 +157,7 @@ MOD 管理页按来源、状态和名称筛选；运行中的世界会限制可�
 
 点击托盘里的“停止所有世界并退出”后会先出现配色与 BlockCraft 界面一致的确认框。点“否”、按 `N`、按 `Esc` 或点右上角关闭符号都会取消退出；默认焦点是“否”。
 
-![BlockCraft 深绿关闭确认界面](assets/shutdown-confirm.svg)
+![BlockCraft 深绿色安全关闭二次确认窗口](assets/shutdown-confirm.svg)
 
 确认后，启动器会先等待正在创建/导入的任务结束，再安全停止所有 Minecraft 世界，之后关闭世界 FRP、面板 FRP、面板服务，最后退出 BlockCraft。进度页面不能关闭，也不会强制置顶；请等待页面自行退出，不要从任务管理器结束进程。
 
