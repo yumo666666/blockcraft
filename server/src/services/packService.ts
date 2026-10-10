@@ -315,10 +315,76 @@ const CURSEFORGE_LOADER_TYPES: Record<string, number> = {
 // relations may still point at the Fabric project even in a Forge modpack, so
 // use only known same-mod ports when the original project has no matching file.
 const CURSEFORGE_LOADER_ALIASES: Record<number, Partial<Record<string, number>>> = {
+  306612: { forge: 889079, neoforge: 889079 }, // Fabric API -> Forgified Fabric API
   978786: { forge: 979761, neoforge: 979761 }, // Storage Delight (Fabric) -> Forge/NeoForge
   527023: { forge: 570544, neoforge: 570544 }, // Eating Animation [Fabric] -> Neo/Forge
   993166: { forge: 398521 }, // Farmer's Delight Refabricated -> Farmer's Delight (Forge)
 };
+
+// CurseForge relation metadata is not always loader-specific. These project IDs
+// have well-known runtime mod IDs that can be checked against the actual jar.
+const CURSEFORGE_DEPENDENCY_MOD_IDS: Record<number, string[]> = {
+  306612: ['fabric_api', 'fabric-api'],
+  547434: ['forgeconfigapiport'],
+};
+
+function requiredForgeDependencies(toml: string): Set<string> {
+  const required = new Set<string>();
+  let block: string[] | null = null;
+  const collect = () => {
+    if (!block) return;
+    const text = block.join('\n');
+    const mandatory = /\bmandatory\s*=\s*true\b/i.test(text) || /\btype\s*=\s*["']required["']/i.test(text);
+    const side = text.match(/\bside\s*=\s*["']([^"']+)["']/i)?.[1]?.toUpperCase();
+    const id = text.match(/^\s*modId\s*=\s*["']([^"']+)["']/im)?.[1]?.toLowerCase();
+    if (mandatory && side !== 'CLIENT' && id) required.add(id);
+  };
+  for (const line of toml.split(/\r?\n/)) {
+    if (/^\s*\[\[dependencies\.[^\]]+\]\]\s*$/.test(line)) {
+      collect();
+      block = [];
+    } else if (/^\s*\[/.test(line)) {
+      collect();
+      block = null;
+    } else if (block) {
+      block.push(line);
+    }
+  }
+  collect();
+  return required;
+}
+
+/** Check known CurseForge relations against the dependency IDs the loader sees. */
+async function jarRequiresCurseForgeDependency(jarPath: string, projectId: number): Promise<boolean | null> {
+  const targetIds = CURSEFORGE_DEPENDENCY_MOD_IDS[projectId];
+  if (!targetIds) return null;
+  try {
+    const names = await listZipEntries(jarPath);
+    const metadataNames = names.filter((name) =>
+      name === 'META-INF/mods.toml' || name === 'META-INF/neoforge.mods.toml' || name === 'fabric.mod.json',
+    );
+    if (!metadataNames.length) return null;
+    const zip = await openZip(jarPath);
+    const dependencies = new Set<string>();
+    try {
+      for (const [index, name] of metadataNames.entries()) {
+        const contents = (await readEntry(zip, await findEntry(zip, name))).toString('utf8');
+        if (index < metadataNames.length - 1) zip.readEntry();
+        if (name.endsWith('.toml')) {
+          for (const id of requiredForgeDependencies(contents)) dependencies.add(id);
+        } else {
+          const metadata = JSON.parse(contents) as { depends?: Record<string, unknown> };
+          for (const id of Object.keys(metadata.depends ?? {})) dependencies.add(id.toLowerCase());
+        }
+      }
+    } finally {
+      zip.close();
+    }
+    return targetIds.some((id) => dependencies.has(id));
+  } catch {
+    return null;
+  }
+}
 
 function compatibleCurseForgeIndex(mod: CurseForgeMod, mc: string, loaderType: number): CurseForgeFileIndex | null {
   return (mod.latestFilesIndexes ?? [])
@@ -495,12 +561,12 @@ async function installCurseForge(
   };
   zip.close();
   const serverDir = instanceServerDir(instanceId);
-  const modsDir = path.join(serverDir, 'mods');
   const panel = loadConfig();
   const key = panel.mirrors.curseforgeApiKey;
   const api = panel.mirrors.curseforgeApi.replace(/\/$/, '');
   const manual: string[] = [];
   let downloaded = 0;
+  let resourcePacksDownloaded = 0;
   if (!key) {
     throw bad('导入 CurseForge 整合包需要先在设置中填写并保存 API Key / A CurseForge API Key must be saved in Settings before importing this pack.');
   }
@@ -547,7 +613,8 @@ async function installCurseForge(
         const projectId = f.modId ?? projectByFile.get(f.id);
         if (projectId) projectIds.add(projectId);
         const fileName = path.basename(f.fileName || `cf-${f.id}.jar`);
-        const dest = path.join(modsDir, fileName);
+        const isResourcePack = /\.zip$/i.test(fileName);
+        const dest = path.join(serverDir, isResourcePack ? 'resourcepacks' : 'mods', fileName);
         let ok = fs.existsSync(dest);
         if (!ok) {
           const urls: string[] = [];
@@ -557,15 +624,27 @@ async function installCurseForge(
           ok = await downloadWithFallback(urls, dest, onLog);
         }
         if (ok) {
-          downloaded++;
-          onLog(`  ✔ ${fileName}${projectId && !manifest.files.some((entry) => entry.projectID === projectId) ? '（自动补齐的必需依赖）' : ''}`);
+          if (isResourcePack) resourcePacksDownloaded++;
+          else downloaded++;
+          onLog(`  ✔ ${fileName}${isResourcePack ? '（资源包）' : projectId && !manifest.files.some((entry) => entry.projectID === projectId) ? '（自动补齐的必需依赖）' : ''}`);
         } else {
           manual.push(`${fileName}（下载失败）`);
         }
+        // Resource-pack ZIP relations describe client-side presentation helpers,
+        // not dedicated-server mod requirements. Only inspect mod jars below.
+        if (isResourcePack || !/\.jar$/i.test(fileName)) continue;
         for (const dependency of f.dependencies ?? []) {
-          if (dependency.relationType === 3 && Number.isInteger(dependency.modId) && !projectIds.has(dependency.modId!)) {
-            requiredProjectIds.add(dependency.modId!);
+          if (dependency.relationType !== 3 || !Number.isInteger(dependency.modId)) continue;
+          const dependencyId = dependency.modId!;
+          if (projectIds.has(dependencyId)) continue;
+          if (ok && CURSEFORGE_DEPENDENCY_MOD_IDS[dependencyId]) {
+            const loaderDependency = await jarRequiresCurseForgeDependency(dest, dependencyId);
+            if (loaderDependency === false) {
+              onLog(`  忽略「${fileName}」对项目 ${dependencyId} 的清单关联：JAR 未声明对应的必需加载器依赖`);
+              continue;
+            }
           }
+          requiredProjectIds.add(dependencyId);
         }
       }
     }
@@ -612,6 +691,7 @@ async function installCurseForge(
     }
   }
   if (autoDependencyCount) onLog(`已自动补齐 ${autoDependencyCount} 个 CurseForge 必需依赖`);
+  if (resourcePacksDownloaded) onLog(`已保存 ${resourcePacksDownloaded} 个资源包到 resourcepacks/，不作为服务端模组加载`);
   if (manual.length) onLog(`仍有 ${manual.length} 个 CurseForge 文件或依赖未能自动安装，稍后列出明细`);
   return { downloaded, manual };
 }

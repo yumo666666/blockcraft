@@ -1,5 +1,10 @@
 # 更新记录
 
+## 2.3.15 — 2026-10-10
+
+- CurseForge 整合包中的资源包 ZIP 保存到 `resourcepacks/`，不再放进服务端 `mods/`，也不再把资源包的客户端依赖错误地加入服务端。
+- 对 Fabric API、Forge Config API Port 等已知依赖，按实际 JAR 加载器元数据核对 CurseForge 关联，减少跨加载器误报；Forge 整合包可识别清单内的 Forgified Fabric API。
+
 ## 2.3.14 — 2026-10-10
 
 - CurseForge 依赖解析会查询精确版本文件，并识别清单内已包含的 Forge/NeoForge 对应项目，避免把整合包已有的模组误报为缺失依赖。
