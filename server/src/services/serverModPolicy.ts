@@ -5,9 +5,9 @@ export type CurseForgeFileEnvironment = {
   gameVersions?: string[];
 };
 
-// Sodium Extras is a client rendering add-on. Its CurseForge files omit the
-// Client tag even though they crash during dedicated-server initialization.
-const KNOWN_CLIENT_ONLY_CURSEFORGE_PROJECTS = new Set([558905]);
+// These client UI/rendering add-ons omit CurseForge's Client tag on some
+// releases, despite not belonging in a dedicated server's mods/ directory.
+const KNOWN_CLIENT_ONLY_CURSEFORGE_PROJECTS = new Set([558905, 367706]); // Sodium Extras, FancyMenu
 
 export function curseForgeClientOnlyReason(file: CurseForgeFileEnvironment): string | null {
   const environments = new Set((file.gameVersions ?? []).map((value) => value.toLowerCase()));
@@ -15,19 +15,46 @@ export function curseForgeClientOnlyReason(file: CurseForgeFileEnvironment): str
     return 'CurseForge 将此文件标记为仅客户端';
   }
   if (KNOWN_CLIENT_ONLY_CURSEFORGE_PROJECTS.has(file.projectId ?? file.modId ?? -1)) {
-    return '此客户端渲染附属模组未声明服务器兼容性';
+    return '此客户端界面/渲染模组未声明服务器兼容性';
   }
   return null;
 }
 
 export function fabricClientOnlyReason(metadataText: string): string | null {
   try {
-    const metadata = JSON.parse(metadataText) as { environment?: unknown };
+    const metadata = parseFabricModJson(metadataText) as { environment?: unknown };
     return typeof metadata.environment === 'string' && metadata.environment.toLowerCase() === 'client'
       ? 'Fabric 元数据将此模组标记为 environment=client'
       : null;
   } catch {
     return null;
+  }
+}
+
+/** Fabric metadata is JSON, but some published jars leave raw newlines in strings. */
+export function parseFabricModJson(metadataText: string): Record<string, unknown> {
+  try {
+    return JSON.parse(metadataText) as Record<string, unknown>;
+  } catch {
+    let normalized = '';
+    let inString = false;
+    let escaped = false;
+    for (const char of metadataText) {
+      if (inString && !escaped && char === '"') inString = false;
+      else if (!inString && char === '"') inString = true;
+      if (inString && !escaped && char === '\\') {
+        normalized += char;
+        escaped = true;
+      }
+      else {
+        if (inString && char === '\n') normalized += '\\n';
+        else if (inString && char === '\r') normalized += '\\r';
+        else if (inString && char === '\t') normalized += '\\t';
+        else normalized += char;
+        escaped = false;
+      }
+    }
+    return JSON.parse(normalized) as Record<string, unknown>;
   }
 }
 

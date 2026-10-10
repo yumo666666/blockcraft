@@ -13,6 +13,7 @@ test('CurseForge Client-only tags exclude client mods from a dedicated server', 
 
 test('Sodium Extras is excluded despite its missing CurseForge Server tag', () => {
   assert.match(curseForgeClientOnlyReason({ projectId: 558905, gameVersions: ['Forge', '1.20.1'] }), /未声明服务器兼容性/);
+  assert.match(curseForgeClientOnlyReason({ projectId: 367706, gameVersions: ['Fabric', '1.21.1'] }), /客户端/);
 });
 
 test('Fabric and Forge metadata can identify client-only mods', () => {

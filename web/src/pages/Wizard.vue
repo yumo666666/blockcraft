@@ -74,6 +74,8 @@ interface PackInspection {
   loaderVersion: string | null;
   packName: string | null;
   filesToDownload: number;
+  optionalFiles: number;
+  recommendedRamMb: number | null;
   needManual: string[];
   note: string;
 }
@@ -84,6 +86,9 @@ const steps = ['基本信息', '版本与加载器', '世界参数', '性能', '
 const currentLoader = computed(() => loaders.value.find((l) => l.loader === form.value.loader));
 const newSkinSupportHint = computed(() => skinSupportHint(form.value.loader));
 const importSkinSupportHint = computed(() => skinSupportHint(importForm.value.loader));
+const importRamBelowRecommended = computed(() => Boolean(
+  inspection.value?.recommendedRamMb && importForm.value.memoryMb < inspection.value.recommendedRamMb,
+));
 
 function skinSupportHint(loader: string): string {
   if (loader === 'vanilla') return '原版 Vanilla 不支持服务端模组或插件，因此不能应用服务器皮肤。要让离线玩家互相看到皮肤，请选择 Paper、Fabric、Forge 或 NeoForge。';
@@ -198,6 +203,7 @@ async function inspect(packId: string) {
     if (r?.mc) importForm.value.mc = r.mc;
     if (r?.loader && ['forge', 'fabric', 'neoforge', 'paper', 'vanilla'].includes(r.loader)) importForm.value.loader = r.loader;
     if (r?.loaderVersion) importForm.value.loaderVersion = r.loaderVersion;
+    if (r?.recommendedRamMb) importForm.value.memoryMb = r.recommendedRamMb;
     if (r?.packName && !importForm.value.name) importForm.value.name = r.packName;
   } catch (err) {
     toastError(err, '解析整合包失败');
@@ -462,7 +468,9 @@ function backgroundJob() {
               <span v-if="inspection.loader" class="badge badge-info">{{ inspection.loader }} {{ inspection.loaderVersion }}</span>
             </div>
             <div class="text-3 small">{{ inspection.note }}</div>
-            <div v-if="inspection.filesToDownload" class="text-3 small">清单里共有 {{ inspection.filesToDownload }} 个待下载文件</div>
+            <div v-if="inspection.filesToDownload || inspection.optionalFiles" class="text-3 small">
+              必需文件 {{ inspection.filesToDownload }} 个<span v-if="inspection.optionalFiles">；另有 {{ inspection.optionalFiles }} 个可选文件，默认跳过</span>
+            </div>
           </div>
         </div>
 
@@ -493,7 +501,16 @@ function backgroundJob() {
             <div class="field">
               <label class="field-label">内存上限（MB）</label>
               <input v-model.number="importForm.memoryMb" class="input" type="number" step="512" />
+              <span v-if="inspection.recommendedRamMb" class="text-3 small">整合包建议至少 {{ inspection.recommendedRamMb }} MB；已按建议值预填。</span>
             </div>
+          </div>
+          <div v-if="importRamBelowRecommended" class="import-key-warning">
+            <div>
+              <strong>内存低于整合包建议值 / Below pack recommendation</strong>
+              <p>当前设置 {{ importForm.memoryMb }} MB，整合包建议 {{ inspection.recommendedRamMb }} MB；大型整合包可能无法启动或运行不稳定。</p>
+              <p>Current setting: {{ importForm.memoryMb }} MB. The pack recommends {{ inspection.recommendedRamMb }} MB; large packs may fail to start or run unreliably.</p>
+            </div>
+            <button class="btn btn-soft" @click="importForm.memoryMb = inspection?.recommendedRamMb ?? importForm.memoryMb">使用建议值</button>
           </div>
           <label class="switch"><input v-model="importForm.start" type="checkbox" /><span class="switch-track" /><span class="switch-text">导入完成后立即启动</span></label>
           <p class="text-3 small skin-support-hint">{{ importSkinSupportHint }} 如果整合包已包含组件会保留；只有上游发布了兼容版本时才会补装。</p>

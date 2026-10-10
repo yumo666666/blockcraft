@@ -12,6 +12,7 @@ import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
 import { ensureSkinSupport, skinSupportInstallStageLabel } from '../services/skinSupportService.ts';
 import { loadConfig } from '../config.ts';
+import type { Loader } from '../types.ts';
 
 const PACKS_DIR = path.join(STORE_DIR, 'packs');
 
@@ -153,21 +154,26 @@ export function registerPackRoutes(app: Express): void {
   /** 导入整合包：解析 → 建实例 → 装加载器 → 解压 overrides → 启动 */
   app.post('/api/packs/:id/import', async (req, res) => {
     if (sup.isPanelShutdownRequested()) throw conflict('BlockCraft 正在关闭，暂时不能导入整合包');
-    const body = req.body as { name?: string; mc?: string; loader?: never; loaderVersion?: string; memoryMb?: number; start?: boolean };
+    const body = req.body as { name?: string; mc?: string; loader?: Loader; loaderVersion?: string; memoryMb?: number; start?: boolean };
     if (!body.name) throw bad('请填写新世界的名称');
     if (!body.mc) throw bad('请指定 Minecraft 版本');
     const packFile = path.join(PACKS_DIR, path.basename(req.params.id));
     if (!fs.existsSync(packFile)) throw notFound('整合包不存在');
-    const { inspectPack } = await import('../services/packService.ts');
+    const { inspectPack, validatePackRuntimeSelection } = await import('../services/packService.ts');
     const packInfo = await inspectPack(packFile);
     if (packInfo.format === 'curseforge' && !loadConfig().mirrors.curseforgeApiKey.trim()) {
       throw conflict('导入 CurseForge 整合包前需要先配置 API Key。请到「设置」填写并保存 API Key，然后返回「导入整合包」重新选择并导入。新建世界不受此限制。 / A CurseForge API Key is required to import this pack. Add and save it in Settings, then return to Import and select the pack again. This does not affect creating a new world.');
     }
+    const runtime = validatePackRuntimeSelection(packInfo, {
+      mc: String(body.mc ?? ''),
+      loader: String(body.loader ?? ''),
+      loaderVersion: String(body.loaderVersion ?? ''),
+    });
     const cfg = await I.createInstance({
       name: body.name,
-      mc: body.mc,
-      loader: body.loader as never,
-      loaderVersion: body.loaderVersion,
+      mc: runtime.mc,
+      loader: runtime.loader as Loader,
+      loaderVersion: runtime.loaderVersion,
       memoryMb: body.memoryMb,
       importedFrom: { file: path.basename(packFile), format: 'zip' },
       createdFrom: { type: 'import' },
@@ -196,6 +202,12 @@ export function registerPackRoutes(app: Express): void {
           logJob(job.id, `以下 ${extracted.manual.length} 个模组或依赖未能自动安装：`);
           for (const item of extracted.manual) logJob(job.id, `  • ${item}`);
           logJob(job.id, '请按日志中的文件名、文件 ID 或项目 ID 手动补齐；完整错误原因见上方下载日志。');
+          const incompleteMessage = `导入未完成：${extracted.manual.length} 个模组或必需依赖未能安装，已跳过启动。 / Import incomplete: ${extracted.manual.length} mods or required dependencies could not be installed; server startup was skipped.`;
+          setStage(job.id, 'extract', 'failed', `需手动处理 ${extracted.manual.length} 项`);
+          setStage(job.id, 'skin', 'failed', '依赖未完整安装，未执行');
+          setStage(job.id, 'frp', 'failed', '依赖未完整安装，未执行');
+          setStage(job.id, 'start', 'failed', '依赖未完整安装，已跳过启动');
+          throw new Error(incompleteMessage);
         }
         setStage(job.id, 'extract', 'done');
         setStage(job.id, 'skin', 'running');
