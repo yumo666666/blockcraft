@@ -575,8 +575,9 @@ export interface StartResult {
   error?: string;
 }
 
-export async function start(id: string, opts: { wait?: boolean } = {}): Promise<StartResult> {
+export async function start(id: string, opts: { wait?: boolean; signal?: AbortSignal } = {}): Promise<StartResult> {
   return withLock(`instance:${id}`, async () => {
+    opts.signal?.throwIfAborted();
     if (panelShutdownRequested) return { ok: false, error: 'BlockCraft 正在关闭，暂时不能启动世界' };
     const cfg = I.getConfig(id);
     const dir = instanceDir(id);
@@ -593,7 +594,7 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
     javaPreparing.set(id, '正在检查 Java 环境');
     let java: Awaited<ReturnType<typeof ensureJava>>;
     try {
-      java = await ensureJava(cfg.mc, cfg.loader, (message) => javaPreparing.set(id, message));
+      java = await ensureJava(cfg.mc, cfg.loader, (message) => javaPreparing.set(id, message), { signal: opts.signal });
     } finally {
       javaPreparing.delete(id);
     }
@@ -622,7 +623,8 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
     // Retrofit the server-only skin component for worlds created by older
     // BlockCraft versions. The selected loader decides whether this is a MOD,
     // Paper plugin, or unsupported pure Vanilla.
-    await ensureSkinSupport(id, (line) => logger.info(`世界 ${id} 皮肤组件：${line}`));
+    await ensureSkinSupport(id, (line) => logger.info(`世界 ${id} 皮肤组件：${line}`), { signal: opts.signal });
+    opts.signal?.throwIfAborted();
 
     // 3) 生成 JVM 参数。Node 直接启动 Java，Windows 和 Linux 使用同一条路径。
     writeJvmArgsFile(serverDir, check.plan);
@@ -644,6 +646,7 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
     if (await portOpen(cfg.port)) {
       return { ok: false, error: `游戏端口 ${cfg.port} 已被占用，请到「显示端口」里重新分配。` };
     }
+    opts.signal?.throwIfAborted();
 
     const logFile = path.join(dir, 'logs', 'server.out');
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
@@ -678,6 +681,9 @@ export async function start(id: string, opts: { wait?: boolean } = {}): Promise<
     const deadline = Date.now() + 40000;
     while (Date.now() < deadline) {
       await sleep(2000);
+      // The importer owns cleanup after this lock is released; it can now call
+      // stop() without deadlocking on the per-world operation lock.
+      if (opts.signal?.aborted) return { ok: true, pid };
       if (!isAlive(pid)) {
         const reason = detectFailure(console_(id).text()) ?? '进程启动后很快退出';
         I.saveState(id, { status: 'crashed', pid: null, lastError: reason, phase: reason });

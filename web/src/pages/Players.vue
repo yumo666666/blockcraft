@@ -81,6 +81,7 @@ async function loadPlayers() {
     // 皮肤可能刚好补上了，让之前失败的卡片重试一次
     skinFailed.value = {};
     await nextTick();
+    void restoreBrowserSkinAnimations(r.players);
     scheduleSync();
   } catch (err) {
     toastError(err, '读取玩家列表失败');
@@ -343,10 +344,15 @@ const SKIN_H = 148;
 /** 每个玩家的皮肤 URL 版本号：手动上传后 +1，绕开浏览器缓存 */
 const skinEpochs = reactive<Record<string, number>>({});
 const skinFailed = ref<Record<string, boolean>>({});
+const liveSkinReady = reactive<Record<string, boolean>>({});
+const browserSkinAnimations = reactive<Record<string, string>>({});
 const canvases = new Map<string, HTMLCanvasElement>();
-const viewers = new Map<string, { viewer: SkinViewer; epoch: number }>();
+const viewers = new Map<string, { viewer: SkinViewer; epoch: number; url: string }>();
 const refSetters = new Map<string, (el: unknown) => void>();
 let previewViewer: SkinViewer | null = null;
+const browserAnimationObjectUrls = new Map<string, string>();
+const browserAnimationSources = new Map<string, string>();
+const PLAYER_SKIN_CACHE = 'blockcraft-player-skin-preview-v1';
 
 function epochOf(name: string): number {
   return skinEpochs[name.toLowerCase()] ?? 0;
@@ -362,6 +368,54 @@ function skinPath(name: string): string {
   return `${base.value}/players/${encodeURIComponent(name)}/skin?v=${epochOf(name)}`;
 }
 
+function animationCacheKey(name: string, source: string): string {
+  let hash = 2166136261;
+  const input = `${props.id}\0${name.toLowerCase()}\0${source}`;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return new URL(`/__blockcraft_skin_cache__/${(hash >>> 0).toString(16)}`, window.location.origin).toString();
+}
+
+function setBrowserAnimation(name: string, source: string, blob: Blob): void {
+  const key = name.toLowerCase();
+  const prior = browserAnimationObjectUrls.get(key);
+  if (prior) URL.revokeObjectURL(prior);
+  const objectUrl = URL.createObjectURL(blob);
+  browserAnimationObjectUrls.set(key, objectUrl);
+  browserAnimationSources.set(key, source);
+  browserSkinAnimations[key] = objectUrl;
+}
+
+async function restoreBrowserSkinAnimations(items: PlayerInfo[]): Promise<void> {
+  if (!('caches' in window)) return;
+  try {
+    const cache = await caches.open(PLAYER_SKIN_CACHE);
+    for (const player of items) {
+      const source = player.skinAnimationUrl || player.skinPreviewUrl;
+      if (!source) continue;
+      const key = player.name.toLowerCase();
+      if (browserAnimationSources.get(key) === source) continue;
+      const prior = browserAnimationObjectUrls.get(key);
+      if (prior) URL.revokeObjectURL(prior);
+      delete browserSkinAnimations[key];
+      browserAnimationObjectUrls.delete(key);
+      browserAnimationSources.delete(key);
+      const request = animationCacheKey(player.name, source);
+      let response = await cache.match(request);
+      if (!response) {
+        const fetched = await fetch(source, { headers: { 'X-Blockcraft': '1' }, cache: 'force-cache' });
+        if (fetched.ok) response = fetched;
+        if (response) await cache.put(request, response.clone());
+      }
+      if (response) setBrowserAnimation(player.name, source, await response.blob());
+    }
+  } catch {
+    // Cache Storage is an optimization; the server image remains the fallback.
+  }
+}
+
 function openSkinEditor(p: PlayerInfo) {
   skinEditor.value = p;
   skinUrl.value = '';
@@ -369,6 +423,7 @@ function openSkinEditor(p: PlayerInfo) {
 
 async function refreshSkin(name: string) {
   bumpSkinEpoch(name);
+  liveSkinReady[name.toLowerCase()] = false;
   const entry = viewers.get(name);
   if (entry) {
     try {
@@ -607,18 +662,20 @@ function scheduleSync() {
 
 async function syncViewers(): Promise<void> {
   if (disposed) return;
-  const renderPlayers = knownPlayers.value.filter((p) => p.skinUrl && !p.skinPreviewUrl);
-  const wanted = new Set(renderPlayers.map((p) => p.name));
+  const renderPlayers = knownPlayers.value.filter((p) => p.skinUrl);
+  const wanted = new Set(renderPlayers.map((p) => p.name.toLowerCase()));
 
   // 下线、或者皮肤版本换了的 viewer 先销毁
   for (const [name, entry] of [...viewers]) {
-    if (!wanted.has(name) || entry.epoch !== epochOf(name)) {
+    const player = renderPlayers.find((item) => item.name.toLowerCase() === name.toLowerCase());
+    if (!wanted.has(name.toLowerCase()) || entry.epoch !== epochOf(name) || entry.url !== (player ? skinPath(player.name) : '')) {
       try {
         entry.viewer.dispose();
       } catch {
         /* ignore */
       }
       viewers.delete(name);
+      liveSkinReady[name.toLowerCase()] = false;
     }
   }
 
@@ -636,10 +693,13 @@ async function syncViewers(): Promise<void> {
     // await 期间可能已经重新渲染/重建，元素换了就放弃这一次
     if (viewers.has(p.name) || canvases.get(slot) !== canvas) continue;
     try {
-      const viewer = new SkinViewer({ canvas, width: SKIN_W, height: SKIN_H, skin: img });
+      const viewer = new SkinViewer({ canvas, width: SKIN_W, height: SKIN_H, skin: img, enableControls: true });
       viewer.animation = new WalkingAnimation();
       viewer.autoRotate = true;
-      viewers.set(p.name, { viewer, epoch: epochOf(p.name) });
+      viewers.set(p.name, { viewer, epoch: epochOf(p.name), url: skinPath(p.name) });
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      if (disposed || viewers.get(p.name)?.viewer !== viewer) continue;
+      liveSkinReady[p.name.toLowerCase()] = true;
     } catch {
       // WebGL 不可用 / 上下文超限：同样回落占位块，不影响其它卡片
       skinFailed.value = { ...skinFailed.value, [p.name]: true };
@@ -656,6 +716,12 @@ function disposeViewers() {
     }
   }
   viewers.clear();
+  for (const [name, objectUrl] of browserAnimationObjectUrls) {
+    URL.revokeObjectURL(objectUrl);
+    delete browserSkinAnimations[name];
+  }
+  browserAnimationObjectUrls.clear();
+  browserAnimationSources.clear();
   previewViewer?.dispose();
   previewViewer = null;
 }
@@ -738,10 +804,21 @@ function skinLabel(p: PlayerInfo): string {
           <div v-for="p in knownPlayers" :key="p.name" class="player-card" :class="{ 'is-offline': !p.online }">
             <i class="dot player-status-dot" :class="p.online ? 'dot-ok' : 'dot-idle'" :title="p.online ? '在线' : '离线'" :aria-label="p.online ? '在线' : '离线'" />
             <div class="player-skin">
-              <img v-if="p.skinAnimationUrl" class="skin-animation" :src="p.skinAnimationUrl" :alt="`${p.name} 的环绕走路皮肤动图`" loading="lazy" />
-              <img v-else-if="p.skinPreviewUrl" class="skin-portrait" :src="p.skinPreviewUrl" :alt="`${p.name} 的正面皮肤预览`" loading="lazy" />
+              <img
+                v-if="browserSkinAnimations[p.name.toLowerCase()] || p.skinAnimationUrl || p.skinPreviewUrl"
+                class="skin-fallback"
+                :class="{ 'skin-fallback-hidden': liveSkinReady[p.name.toLowerCase()] }"
+                :src="browserSkinAnimations[p.name.toLowerCase()] || p.skinAnimationUrl || p.skinPreviewUrl!"
+                :alt="`${p.name} 的皮肤预览`"
+                loading="lazy"
+              />
               <div v-else-if="!p.skinUrl || skinFailed[p.name]" class="skin-blank" :title="`没有可用皮肤：${p.name}`" />
-              <canvas v-else :key="canvasSlot(p.name)" :ref="canvasRefFor(p.name)" />
+              <canvas
+                v-if="p.skinUrl && !skinFailed[p.name]"
+                :key="canvasSlot(p.name)"
+                :ref="canvasRefFor(p.name)"
+                :class="{ 'skin-live-ready': liveSkinReady[p.name.toLowerCase()] }"
+              />
             </div>
 
             <div class="player-name ellipsis" :title="p.name" style="max-width: 100%">{{ p.name }}</div>

@@ -129,12 +129,15 @@ export async function detectSkinSupport(id: string): Promise<SkinSupportKind> {
   return null;
 }
 
-async function compatibleVersion(project: string, mc: string, loader: string): Promise<ModrinthVersion> {
+async function compatibleVersion(project: string, mc: string, loader: string, signal?: AbortSignal): Promise<ModrinthVersion> {
   const query = new URLSearchParams({
     game_versions: JSON.stringify([mc]),
     loaders: JSON.stringify([loader]),
   });
   const controller = new AbortController();
+  const onCancel = () => controller.abort(signal?.reason ?? new Error('导入任务已取消'));
+  signal?.addEventListener('abort', onCancel, { once: true });
+  if (signal?.aborted) onCancel();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
     const response = await fetch(`https://api.modrinth.com/v2/project/${project}/version?${query}`, {
@@ -150,15 +153,18 @@ async function compatibleVersion(project: string, mc: string, loader: string): P
     if (!version) throw new Error(`没有找到 Minecraft ${mc} / ${loader} 的正式版皮肤组件`);
     return version;
   } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
     if (error instanceof Error && error.name === 'AbortError') throw new Error('查询 Modrinth 版本超时');
     throw error;
   } finally {
+    signal?.removeEventListener('abort', onCancel);
     clearTimeout(timer);
   }
 }
 
-async function installArtifact(project: string, cfg: InstanceConfig, loader: string, targetDir: string, onLog: (line: string) => void): Promise<void> {
-  const version = await compatibleVersion(project, cfg.mc, loader);
+async function installArtifact(project: string, cfg: InstanceConfig, loader: string, targetDir: string, onLog: (line: string) => void, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const version = await compatibleVersion(project, cfg.mc, loader, signal);
   const file = version.files.find((item) => item.primary) ?? version.files[0];
   if (!file?.url || !file.filename || path.basename(file.filename) !== file.filename) throw new Error('Modrinth 没有返回有效的 MOD 文件');
   if (file.size && file.size > 64 * 1024 * 1024) throw new Error('皮肤组件文件超过 64MB，已取消下载');
@@ -166,25 +172,32 @@ async function installArtifact(project: string, cfg: InstanceConfig, loader: str
   const destination = path.join(targetDir, file.filename);
   const temporary = `${destination}.download-${crypto.randomBytes(5).toString('hex')}`;
   const controller = new AbortController();
+  const onCancel = () => controller.abort(signal?.reason ?? new Error('导入任务已取消'));
+  signal?.addEventListener('abort', onCancel, { once: true });
+  if (signal?.aborted) onCancel();
   const timer = setTimeout(() => controller.abort(), 90000);
   try {
     onLog(`下载 ${version.version_number}：${file.filename}`);
     const response = await fetch(file.url, { headers: { 'user-agent': 'BlockCraft/2.2' }, signal: controller.signal });
     if (!response.ok || !response.body) throw new Error(`下载皮肤组件失败（HTTP ${response.status}）`);
     const data = Buffer.from(await response.arrayBuffer());
+    signal?.throwIfAborted();
     if (data.length > 64 * 1024 * 1024) throw new Error('皮肤组件文件超过 64MB，已取消下载');
     if (file.hashes?.sha512) {
       const digest = crypto.createHash('sha512').update(data).digest('hex');
       if (digest.toLowerCase() !== file.hashes.sha512.toLowerCase()) throw new Error('皮肤组件校验失败（SHA-512 不匹配）');
     }
     await fsp.writeFile(temporary, data, { flag: 'wx' });
+    signal?.throwIfAborted();
     await fsp.rename(temporary, destination);
     onLog(`已安装 ${file.filename}`);
   } catch (error) {
     await fsp.rm(temporary, { force: true }).catch(() => undefined);
+    if (signal?.aborted) throw signal.reason ?? error;
     if (error instanceof Error && error.name === 'AbortError') throw new Error('下载皮肤组件超时');
     throw error;
   } finally {
+    signal?.removeEventListener('abort', onCancel);
     clearTimeout(timer);
   }
 }
@@ -206,7 +219,8 @@ function configureSkinRestorerLocalUploads(serverDir: string): void {
 }
 
 /** Install the right server-only skin engine when this exact Minecraft/loader has a published artifact. */
-export async function ensureSkinSupport(id: string, onLog: (line: string) => void = () => undefined): Promise<SkinSupportResult> {
+export async function ensureSkinSupport(id: string, onLog: (line: string) => void = () => undefined, opts: { signal?: AbortSignal } = {}): Promise<SkinSupportResult> {
+  opts.signal?.throwIfAborted();
   const cfg = I.getConfig(id);
   const serverDir = instanceServerDir(id);
   const already = await detectSkinSupport(id);
@@ -218,9 +232,10 @@ export async function ensureSkinSupport(id: string, onLog: (line: string) => voi
 
   if (cfg.loader === 'paper') {
     try {
-      await installArtifact(SKINS_RESTORER_PLUGIN, cfg, 'paper', path.join(serverDir, 'plugins'), onLog);
+      await installArtifact(SKINS_RESTORER_PLUGIN, cfg, 'paper', path.join(serverDir, 'plugins'), onLog, opts.signal);
       return { kind: 'skins-restorer-plugin', installed: true, reason: '已自动安装 Paper 插件' };
     } catch (error) {
+      if (opts.signal?.aborted) throw opts.signal.reason ?? error;
       const reason = error instanceof Error ? error.message : String(error);
       onLog(`SkinsRestorer 插件没有安装：${reason}。世界仍可启动。`);
       return { kind: null, installed: false, reason };
@@ -229,10 +244,11 @@ export async function ensureSkinSupport(id: string, onLog: (line: string) => voi
 
   if (['forge', 'fabric', 'neoforge'].includes(cfg.loader)) {
     try {
-      await installArtifact(SKIN_RESTORER_MOD, cfg, cfg.loader, path.join(serverDir, 'mods'), onLog);
+      await installArtifact(SKIN_RESTORER_MOD, cfg, cfg.loader, path.join(serverDir, 'mods'), onLog, opts.signal);
       configureSkinRestorerLocalUploads(serverDir);
       return { kind: 'skin-restorer-mod', installed: true, reason: '已自动安装服务端模组' };
     } catch (error) {
+      if (opts.signal?.aborted) throw opts.signal.reason ?? error;
       const reason = error instanceof Error ? error.message : String(error);
       onLog(`Skin Restorer 模组没有安装：${reason}。世界仍可启动。`);
       return { kind: null, installed: false, reason };

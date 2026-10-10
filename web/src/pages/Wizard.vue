@@ -43,6 +43,7 @@ const form = ref({
   pvp: true,
   hardcore: false,
   allowNether: true,
+  allowFlight: false,
   generateStructures: true,
   onlineMode: false,
   whiteList: false,
@@ -113,7 +114,7 @@ function resetFlowForm() {
   Object.assign(form.value, {
     name: '', mc: '1.20.1', loader: 'forge', loaderVersion: '', memoryMb: 3072, minMemoryMb: 1024,
     levelSeed: '', gamemode: 'survival', difficulty: 'normal', pvp: true, hardcore: false,
-    allowNether: true, generateStructures: true, onlineMode: false, whiteList: false,
+    allowNether: true, allowFlight: false, generateStructures: true, onlineMode: false, whiteList: false,
     maxPlayers: 20, motd: '', viewDistance: 6, simulationDistance: 5, autostart: false, start: true,
   });
   Object.assign(importForm.value, { packId: '', name: '', mc: '', loader: 'forge', loaderVersion: '', memoryMb: 4096, start: true });
@@ -366,6 +367,7 @@ function backgroundJob() {
             <label class="switch"><input v-model="form.pvp" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许 PVP</span></label>
             <label class="switch"><input v-model="form.hardcore" type="checkbox" /><span class="switch-track" /><span class="switch-text">极限模式</span></label>
             <label class="switch"><input v-model="form.allowNether" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许下界</span></label>
+            <label class="switch"><input v-model="form.allowFlight" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许飞行</span></label>
             <label class="switch"><input v-model="form.generateStructures" type="checkbox" /><span class="switch-track" /><span class="switch-text">生成建筑</span></label>
           </div>
           <div class="divider" />

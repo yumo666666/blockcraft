@@ -15,12 +15,10 @@ import (
 
 const (
 	wsPopup           = 0x80000000
-	wsExTopmost       = 0x00000008
 	wmClose           = 0x0010
 	wmDestroy         = 0x0002
 	wmPaint           = 0x000F
 	wmEraseBkgnd      = 0x0014
-	wmTimer           = 0x0113
 	wmApp             = 0x8000
 	shutdownDialogEnd = wmApp + 31
 
@@ -35,12 +33,6 @@ const (
 	smCxScreen = 0
 	smCyScreen = 1
 	swShow     = 5
-
-	swpNoSize            = 0x0001
-	swpNoMove            = 0x0002
-	swpNoActivate        = 0x0010
-	swpShowWindow        = 0x0040
-	shutdownTopmostTimer = 1
 )
 
 type shutdownPoint struct {
@@ -95,9 +87,6 @@ var (
 	showWindow              = shutdownUser32.NewProc("ShowWindow")
 	updateWindow            = shutdownUser32.NewProc("UpdateWindow")
 	setForegroundWindow     = shutdownUser32.NewProc("SetForegroundWindow")
-	setWindowPos            = shutdownUser32.NewProc("SetWindowPos")
-	setTimer                = shutdownUser32.NewProc("SetTimer")
-	killTimer               = shutdownUser32.NewProc("KillTimer")
 	getMessageW             = shutdownUser32.NewProc("GetMessageW")
 	translateMessage        = shutdownUser32.NewProc("TranslateMessage")
 	dispatchMessageW        = shutdownUser32.NewProc("DispatchMessageW")
@@ -238,16 +227,10 @@ func shutdownWindowProcedure(hwnd uintptr, message uint32, wParam, lParam uintpt
 		return paintShutdownWindow(hwnd)
 	case wmEraseBkgnd:
 		return 1
-	case wmTimer:
-		// Keep the non-dismissible progress window above ordinary and other
-		// topmost windows throughout a potentially long shutdown sequence.
-		setWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
-		return 0
 	case wmClose:
 		// Deliberately do not close: the user should wait for safe world shutdown.
 		return 0
 	case shutdownDialogEnd:
-		killTimer.Call(hwnd, shutdownTopmostTimer)
 		destroyWindow.Call(hwnd)
 		return 0
 	case wmDestroy:
@@ -296,10 +279,10 @@ func shutdownProgressText(stage string, items []string, detail string) string {
 	return text.String()
 }
 
-// showShutdownProgress starts a topmost, non-dismissible native window while
-// the tray waits for the panel to finish stopping every world. It reports
-// whether the window was actually created so the caller can refuse to start
-// shutdown if it cannot keep the progress visible.
+// showShutdownProgress starts a non-dismissible native window in the ordinary
+// window order while the tray waits for the panel to finish stopping every world.
+// It reports whether the window was created so the caller can refuse to start
+// shutdown if no progress window can be shown.
 func showShutdownProgress(items []string) (func(string, []string, string), func(), bool, error) {
 	ready := make(chan uintptr, 1)
 	startupFailure := make(chan error, 1)
@@ -362,7 +345,7 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 		y := int32((int(screenHeight) - height) / 2)
 		instance, _, _ := getModuleHandleW.Call(0)
 		hwnd, _, _ = createWindowExW.Call(
-			wsExTopmost,
+			0,
 			uintptr(unsafe.Pointer(shutdownWindowClassName)),
 			0,
 			wsPopup,
@@ -383,8 +366,6 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 		default:
 		}
 		showWindow.Call(hwnd, swShow)
-		setWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
-		setTimer.Call(hwnd, shutdownTopmostTimer, 1000, 0)
 		updateWindow.Call(hwnd)
 		setForegroundWindow.Call(hwnd)
 		signalReady(hwnd)

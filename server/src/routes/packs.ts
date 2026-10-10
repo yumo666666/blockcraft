@@ -5,7 +5,7 @@ import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { STORE_DIR } from '../core/paths.ts';
 import { bad, conflict, notFound } from '../core/errors.ts';
-import { createJob, finishJob, logJob, setStage } from '../services/jobService.ts';
+import { createJob, finishJob, jobSignal, logJob, setStage } from '../services/jobService.ts';
 import { installServer } from '../services/installService.ts';
 import * as I from '../services/instanceService.ts';
 import * as sup from '../services/supervisor.ts';
@@ -191,13 +191,16 @@ export function registerPackRoutes(app: Express): void {
       ],
     });
     void (async () => {
+      const signal = jobSignal(job.id);
       try {
         setStage(job.id, 'install', 'running');
-        await installServer(cfg.id, (line) => logJob(job.id, line));
+        await installServer(cfg.id, (line) => logJob(job.id, line), { signal });
+        signal?.throwIfAborted();
         setStage(job.id, 'install', 'done');
         setStage(job.id, 'extract', 'running');
         const { extractPack } = await import('../services/packService.ts');
-        const extracted = await extractPack(packFile, cfg.id, (line) => logJob(job.id, line));
+        const extracted = await extractPack(packFile, cfg.id, (line) => logJob(job.id, line), { signal });
+        signal?.throwIfAborted();
         if (extracted.manual.length) {
           logJob(job.id, `以下 ${extracted.manual.length} 个模组或依赖未能自动安装：`);
           for (const item of extracted.manual) logJob(job.id, `  • ${item}`);
@@ -211,16 +214,19 @@ export function registerPackRoutes(app: Express): void {
         }
         setStage(job.id, 'extract', 'done');
         setStage(job.id, 'skin', 'running');
-        await ensureSkinSupport(cfg.id, (line) => logJob(job.id, line));
+        await ensureSkinSupport(cfg.id, (line) => logJob(job.id, line), { signal });
+        signal?.throwIfAborted();
         setStage(job.id, 'skin', 'done');
         setStage(job.id, 'frp', 'running');
         const remote = await frp.ensureRemotePort(cfg.id);
+        signal?.throwIfAborted();
         await frp.syncWorlds().catch(() => undefined);
         logJob(job.id, `远端端口 ${remote} 已映射`);
         setStage(job.id, 'frp', 'done');
         if (body.start !== false) {
           setStage(job.id, 'start', 'running');
-          const r = await sup.start(cfg.id, { wait: true });
+          const r = await sup.start(cfg.id, { wait: true, signal });
+          signal?.throwIfAborted();
           logJob(job.id, r.ok ? '世界已启动' : `启动失败：${r.error}`);
           setStage(job.id, 'start', r.ok ? 'done' : 'failed');
         } else {
@@ -228,6 +234,17 @@ export function registerPackRoutes(app: Express): void {
         }
         finishJob(job.id);
       } catch (err) {
+        if (signal?.aborted) {
+          const reason = '导入任务已取消；已保留新建世界和已下载内容，可在总览中删除世界。 / Import cancelled. The new world and downloaded files were kept; you can remove the world from Overview.';
+          logJob(job.id, reason);
+          if (sup.isRunning(cfg.id)) {
+            logJob(job.id, '正在安全停止刚启动的世界…');
+            const stopped = await sup.stop(cfg.id, { message: '整合包导入已取消' }).catch((stopError) => ({ ok: false, error: String(stopError) }));
+            if (!stopped.ok) logJob(job.id, `世界未能自动停止：${stopped.error ?? '未知错误'}`);
+          }
+          finishJob(job.id);
+          return;
+        }
         logJob(job.id, `失败：${String(err)}`);
         finishJob(job.id, String(err));
       }

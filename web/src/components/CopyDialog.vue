@@ -18,6 +18,7 @@ const form = ref({
   difficulty: 'normal',
   pvp: true,
   allowNether: true,
+  allowFlight: false,
   generateStructures: true,
   inheritOps: true,
   autostart: false,
@@ -44,6 +45,7 @@ watch(
         difficulty: String(c.difficulty ?? 'normal'),
         pvp: Boolean(c.pvp ?? true),
         allowNether: Boolean(c.allowNether ?? true),
+        allowFlight: Boolean(c.allowFlight ?? false),
         generateStructures: Boolean(c.generateStructures ?? true),
         inheritOps: true,
         autostart: false,
@@ -142,6 +144,7 @@ async function submit() {
       <div class="row gap-4 wrap">
         <label class="switch"><input v-model="form.pvp" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许 PVP</span></label>
         <label class="switch"><input v-model="form.allowNether" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许下界</span></label>
+        <label class="switch"><input v-model="form.allowFlight" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许飞行</span></label>
         <label class="switch"><input v-model="form.generateStructures" type="checkbox" /><span class="switch-track" /><span class="switch-text">生成建筑</span></label>
         <label class="switch"><input v-model="form.inheritOps" type="checkbox" /><span class="switch-track" /><span class="switch-text">继承管理员名单</span></label>
         <label class="switch"><input v-model="form.autostart" type="checkbox" /><span class="switch-track" /><span class="switch-text">随面板自启</span></label>

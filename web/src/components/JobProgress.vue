@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onUnmounted, ref, watch } from 'vue';
-import { subscribe } from '../lib/api.ts';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
+import { api, subscribe } from '../lib/api.ts';
 import type { Job } from '../lib/types.ts';
 import Modal from './Modal.vue';
+import { toast, toastError } from '../lib/toast.ts';
 
 const props = defineProps<{ open: boolean; jobId: string | null }>();
 const emit = defineEmits<{ close: []; background: [] }>();
@@ -10,6 +11,9 @@ const emit = defineEmits<{ close: []; background: [] }>();
 const job = ref<Job | null>(null);
 const logEl = ref<HTMLElement | null>(null);
 const followLog = ref(true);
+const cancelPending = ref(false);
+const active = computed(() => job.value?.status === 'running' || job.value?.status === 'cancelling');
+const canCancel = computed(() => job.value?.kind === 'import' && job.value.status === 'running' && !cancelPending.value);
 let off: (() => void) | null = null;
 
 watch(
@@ -18,10 +22,12 @@ watch(
     off?.();
     off = null;
     job.value = null;
+    cancelPending.value = false;
     followLog.value = true;
     if (!open || !id) return;
     off = subscribe<Job>(`/api/jobs/${id}/stream`, (data) => {
       job.value = data;
+      if (data.status !== 'running') cancelPending.value = false;
       void nextTick(scrollLogToBottom);
     });
   },
@@ -47,15 +53,28 @@ function onLogScroll(event: Event): void {
   // 人为向上翻时先暂停；滚回底部（24px 容差）后自动恢复跟随。
   followLog.value = el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
 }
+
+async function cancelImport(): Promise<void> {
+  if (!job.value || !canCancel.value) return;
+  cancelPending.value = true;
+  try {
+    const result = await api.post<{ job: Job }>(`/api/jobs/${encodeURIComponent(job.value.id)}/cancel`);
+    job.value = result.job;
+    toast('ok', '已请求取消导入', '正在停止当前下载或安装。已建世界和已下载文件会保留，可以之后在总览中删除。');
+  } catch (err) {
+    cancelPending.value = false;
+    toastError(err, '取消导入失败');
+  }
+}
 </script>
 
 <template>
-  <Modal v-if="open" :title="job?.title ?? '任务进度'" size="md" :closable="job?.status !== 'running'" @close="emit('close')">
+  <Modal v-if="open" :title="job?.title ?? '任务进度'" size="md" :closable="!active" @close="emit('close')">
     <div v-if="!job" class="row gap-2"><span class="spinner" /> 连接任务…</div>
     <div v-else class="col gap-4">
       <div class="row gap-3">
-        <span class="badge" :class="job.status === 'done' ? 'badge-ok' : job.status === 'failed' ? 'badge-danger' : 'badge-warn'">
-          {{ job.status === 'done' ? '已完成' : job.status === 'failed' ? '失败' : job.status === 'interrupted' ? '已中断' : '进行中' }}
+        <span class="badge" :class="job.status === 'done' ? 'badge-ok' : job.status === 'failed' ? 'badge-danger' : job.status === 'cancelled' || job.status === 'interrupted' ? 'badge-outline' : 'badge-warn'">
+          {{ job.status === 'done' ? '已完成' : job.status === 'failed' ? '失败' : job.status === 'cancelled' ? '已取消' : job.status === 'cancelling' ? '正在取消' : job.status === 'interrupted' ? '已中断' : '进行中' }}
         </span>
         <div class="grow meter"><div class="meter-fill" :style="{ width: job.progress + '%' }" /></div>
       </div>
@@ -75,7 +94,13 @@ function onLogScroll(event: Event): void {
       </div>
     </div>
     <template #footer>
-      <button class="btn" @click="job?.status === 'running' ? emit('background') : emit('close')">{{ job?.status === 'running' ? '后台继续' : '关闭' }}</button>
+      <div v-if="active" class="row gap-2">
+        <button v-if="job?.kind === 'import'" class="btn btn-danger" :disabled="!canCancel" @click="cancelImport">
+          {{ job?.status === 'cancelling' || cancelPending ? '正在取消…' : '取消导入' }}
+        </button>
+        <button class="btn" @click="emit('background')">后台继续</button>
+      </div>
+      <button v-else class="btn" @click="emit('close')">关闭</button>
     </template>
   </Modal>
 </template>

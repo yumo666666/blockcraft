@@ -271,6 +271,7 @@ export async function adopt(opts: AdoptOptions): Promise<InstanceConfig> {
     maxTickTime: Number(readProps(det.dir)['max-tick-time'] ?? 60000),
     simulationDistance: Number(readProps(det.dir)['simulation-distance'] ?? 5),
     allowNether: readProps(det.dir)['allow-nether'] !== 'false',
+    allowFlight: readProps(det.dir)['allow-flight'] === 'true',
     spawnMonsters: readProps(det.dir)['spawn-monsters'] !== 'false',
     spawnAnimals: readProps(det.dir)['spawn-animals'] !== 'false',
     spawnNpcs: readProps(det.dir)['spawn-npcs'] !== 'false',

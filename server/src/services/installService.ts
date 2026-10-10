@@ -23,7 +23,8 @@ async function fetchJson<T>(url: string, init: RequestInit = {}, timeoutMs = 200
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...init, signal: ctrl.signal, headers: { 'user-agent': 'BlockCraft/2.0', ...(init.headers ?? {}) } });
+    const signal = init.signal ? AbortSignal.any([ctrl.signal, init.signal]) : ctrl.signal;
+    const res = await fetch(url, { ...init, signal, headers: { 'user-agent': 'BlockCraft/2.0', ...(init.headers ?? {}) } });
     if (!res.ok) throw bad(`请求失败 ${res.status}：${url}`);
     return (await res.json()) as T;
   } finally {
@@ -42,21 +43,23 @@ export async function downloadTo(
   url: string,
   dest: string,
   onLog?: (s: string) => void,
-  opts: { retries?: number; timeoutMs?: number; sha1?: string } = {},
+  opts: { retries?: number; timeoutMs?: number; sha1?: string; signal?: AbortSignal } = {},
 ): Promise<void> {
   const retries = opts.retries ?? 3;
   const timeoutMs = opts.timeoutMs ?? 180_000;
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const tmp = `${dest}.part`;
   for (let attempt = 1; attempt <= retries; attempt++) {
+    opts.signal?.throwIfAborted();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error(`下载超过 ${Math.round(timeoutMs / 1000)} 秒`)), timeoutMs);
+    const signal = opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal;
     try {
       onLog?.(`下载 ${path.basename(dest)}（第 ${attempt}/${retries} 次）← ${url}`);
-      const res = await fetch(url, { redirect: 'follow', signal: controller.signal, headers: { 'user-agent': 'BlockCraft/2.0' } });
+      const res = await fetch(url, { redirect: 'follow', signal, headers: { 'user-agent': 'BlockCraft/2.0' } });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       const expect = Number(res.headers.get('content-length') ?? 0);
-      await pipeline(Readable.fromWeb(res.body as never), fs.createWriteStream(tmp));
+      await pipeline(Readable.fromWeb(res.body as never), fs.createWriteStream(tmp), { signal });
       const size = fs.statSync(tmp).size;
       if (size === 0) throw new Error('下载到 0 字节');
       if (expect && size !== expect) throw new Error(`下载不完整：${size}/${expect}`);
@@ -68,6 +71,10 @@ export async function downloadTo(
       onLog?.(`完成 ${path.basename(dest)}（${(size / 1024 / 1024).toFixed(1)} MB）`);
       return;
     } catch (err) {
+      if (opts.signal?.aborted) {
+        fs.rmSync(tmp, { force: true });
+        throw opts.signal.reason ?? err;
+      }
       const failure = controller.signal.aborted ? new Error(`下载超时（${Math.round(timeoutMs / 1000)} 秒）`) : err;
       try {
         fs.rmSync(tmp, { force: true });
@@ -90,11 +97,11 @@ interface VersionManifest {
   versions: { id: string; type: string; url: string }[];
 }
 
-export async function versionManifest(force = false): Promise<VersionManifest> {
+export async function versionManifest(force = false, signal?: AbortSignal): Promise<VersionManifest> {
   const file = path.join(STORE_DIR, 'versions', 'manifest.json');
   const cached = readJsonSync<(VersionManifest & { fetchedAt?: number }) | null>(file, null);
   if (!force && cached && cached.fetchedAt && Date.now() - cached.fetchedAt < MANIFEST_TTL) return cached;
-  const data = await fetchJson<VersionManifest>('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json');
+  const data = await fetchJson<VersionManifest>('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json', { signal });
   fs.mkdirSync(path.dirname(file), { recursive: true });
   atomicWriteFileSync(file, JSON.stringify({ ...data, fetchedAt: Date.now() }, null, 2));
   return data;
@@ -105,17 +112,17 @@ export async function listVersions(): Promise<{ id: string; type: string }[]> {
   return m.versions.map((v) => ({ id: v.id, type: v.type }));
 }
 
-async function vanillaServerUrl(mc: string): Promise<{ url: string; sha1?: string; javaMajor: number }> {
-  const m = await versionManifest();
+async function vanillaServerUrl(mc: string, signal?: AbortSignal): Promise<{ url: string; sha1?: string; javaMajor: number }> {
+  const m = await versionManifest(false, signal);
   const v = m.versions.find((x) => x.id === mc);
   if (!v) throw bad(`找不到 Minecraft 版本 ${mc}`);
-  const detail = await fetchJson<{ downloads: { server?: { url: string; sha1?: string } }; javaVersion?: { majorVersion: number } }>(v.url);
+  const detail = await fetchJson<{ downloads: { server?: { url: string; sha1?: string } }; javaVersion?: { majorVersion: number } }>(v.url, { signal });
   if (!detail.downloads.server) throw bad(`Minecraft ${mc} 没有服务端下载`);
   return { url: detail.downloads.server.url, sha1: detail.downloads.server.sha1, javaMajor: detail.javaVersion?.majorVersion ?? 17 };
 }
 
-async function ensureVanillaServerJar(mc: string, onLog: (s: string) => void): Promise<string> {
-  const { url, sha1 } = await vanillaServerUrl(mc);
+async function ensureVanillaServerJar(mc: string, onLog: (s: string) => void, signal?: AbortSignal): Promise<string> {
+  const { url, sha1 } = await vanillaServerUrl(mc, signal);
   const cache = path.join(STORE_DIR, 'vanilla', mc, 'minecraft_server.jar');
   if (fs.existsSync(cache)) {
     let cacheValid = !sha1;
@@ -133,7 +140,7 @@ async function ensureVanillaServerJar(mc: string, onLog: (s: string) => void): P
     onLog(`缓存的 Minecraft ${mc} 服务端校验失败，删除后重新下载`);
     fs.rmSync(cache, { force: true });
   }
-  await downloadTo(url, cache, onLog, { retries: 4, timeoutMs: 180_000, sha1 });
+  await downloadTo(url, cache, onLog, { retries: 4, timeoutMs: 180_000, sha1, signal });
   return cache;
 }
 
@@ -161,9 +168,9 @@ function javaProxyArgs(onLog: (s: string) => void): string[] {
 
 // ------------------------------------------------------------------ 各加载器安装
 
-async function installVanilla(cfg: InstanceConfig, onLog: (s: string) => void): Promise<void> {
+async function installVanilla(cfg: InstanceConfig, onLog: (s: string) => void, signal?: AbortSignal): Promise<void> {
   const serverDir = instanceServerDir(cfg.id);
-  const cache = await ensureVanillaServerJar(cfg.mc, onLog);
+  const cache = await ensureVanillaServerJar(cfg.mc, onLog, signal);
   copyIntoTarget(cache, path.join(serverDir, 'minecraft_server.jar'));
 }
 
@@ -174,32 +181,33 @@ function copyIntoTarget(from: string, to: string): void {
   fs.renameSync(tmp, to);
 }
 
-async function installPaper(cfg: InstanceConfig, onLog: (s: string) => void): Promise<void> {
+async function installPaper(cfg: InstanceConfig, onLog: (s: string) => void, signal?: AbortSignal): Promise<void> {
   const serverDir = instanceServerDir(cfg.id);
   onLog('查询 Paper 构建列表…');
   const { paperBuilds } = await import('./versionsService.ts');
   const builds = await paperBuilds(cfg.mc);
+  signal?.throwIfAborted();
   if (!builds.length) throw bad(`Paper 没有 ${cfg.mc} 的可用构建（Paper 只支持部分原版版本）`);
   const latest = builds[0];
   onLog(`选用 Paper ${cfg.mc} build ${latest.id}（${latest.channel}）`);
   const cache = path.join(STORE_DIR, 'paper', cfg.mc, latest.name);
   if (!fs.existsSync(cache)) {
-    await downloadTo(latest.url, cache, onLog);
+    await downloadTo(latest.url, cache, onLog, { signal });
   } else {
     onLog(`复用已下载的 ${latest.name}`);
   }
   copyIntoTarget(cache, path.join(serverDir, 'paper.jar'));
 }
 
-async function installFabric(cfg: InstanceConfig, onLog: (s: string) => void): Promise<void> {
+async function installFabric(cfg: InstanceConfig, onLog: (s: string) => void, signal?: AbortSignal): Promise<void> {
   const serverDir = instanceServerDir(cfg.id);
   const fabricVersion = cfg.loaderVersion || '0.16.9';
   const installerCache = path.join(STORE_DIR, 'fabric', 'fabric-installer-1.0.1.jar');
   const installerUrl = 'https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar';
-  if (!fs.existsSync(installerCache)) await downloadTo(installerUrl, installerCache, onLog);
+  if (!fs.existsSync(installerCache)) await downloadTo(installerUrl, installerCache, onLog, { signal });
   else onLog('复用已下载的 Fabric 安装器');
 
-  const { runtime: java, reason } = await ensureJava(cfg.mc, 'fabric', onLog);
+  const { runtime: java, reason } = await ensureJava(cfg.mc, 'fabric', onLog, { signal });
   if (!java) throw conflict(reason || '未找到可用于 Fabric 安装的 Java');
 
   // Fabric 的 server/jar API 已不可用。运行官方安装器生成真正的
@@ -211,7 +219,7 @@ async function installFabric(cfg: InstanceConfig, onLog: (s: string) => void): P
     const child = execFile(
       java.path,
       [...proxyArgs, '-jar', installerCache, 'server', '-dir', serverDir, '-mcversion', cfg.mc, '-loader', fabricVersion],
-      { cwd: serverDir, maxBuffer: 32 * 1024 * 1024, windowsHide: true },
+      { cwd: serverDir, maxBuffer: 32 * 1024 * 1024, windowsHide: true, signal },
       (err, stdout, stderr) => {
         for (const line of (stdout + stderr).split('\n').slice(-60)) if (line.trim()) onLog(line.trim());
         if (err) reject(new Error(`Fabric 安装器失败：${err.message}`));
@@ -225,7 +233,7 @@ async function installFabric(cfg: InstanceConfig, onLog: (s: string) => void): P
   if (!fs.existsSync(launcher)) throw new Error('Fabric 安装器未生成 fabric-server-launch.jar');
 
   // Fabric 自举启动器从当前目录的 server.jar 加载 Mojang 服务端。
-  const cache = await ensureVanillaServerJar(cfg.mc, onLog);
+  const cache = await ensureVanillaServerJar(cfg.mc, onLog, signal);
   copyIntoTarget(cache, path.join(serverDir, 'server.jar'));
 }
 
@@ -270,10 +278,10 @@ function isFabricLauncher(file: string): boolean {
   }
 }
 
-async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void, neo: boolean): Promise<void> {
+async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void, neo: boolean, signal?: AbortSignal): Promise<void> {
   const serverDir = instanceServerDir(cfg.id);
   const panel = loadConfig();
-  const java = await ensureJava(cfg.mc, cfg.loader, onLog);
+  const java = await ensureJava(cfg.mc, cfg.loader, onLog, { signal });
   if (!java.runtime) throw conflict(java.reason);
 
   const version = cfg.loaderVersion;
@@ -294,11 +302,13 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
       : panel.mirrors.forgeMaven.map((b) => `${b.replace(/\/$/, '')}/net/minecraftforge/forge/${cfg.mc}-${version}/${fileName}`);
     let lastErr: unknown = null;
     for (const u of urls) {
+      signal?.throwIfAborted();
       try {
-        await downloadTo(u, cache, onLog);
+        await downloadTo(u, cache, onLog, { signal });
         lastErr = null;
         break;
       } catch (err) {
+        if (signal?.aborted) throw signal.reason ?? err;
         lastErr = err;
         onLog(`该源失败，换下一个：${u}`);
       }
@@ -313,7 +323,7 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
   // Forge's Java installer downloads the Mojang server jar itself with a short
   // read timeout. Fetch and checksum it through BlockCraft's retrying downloader,
   // then let Forge reuse the expected minecraft_server.<version>.jar file.
-  const vanillaCache = await ensureVanillaServerJar(cfg.mc, onLog);
+  const vanillaCache = await ensureVanillaServerJar(cfg.mc, onLog, signal);
   const vanillaTarget = path.join(serverDir, `minecraft_server.${cfg.mc}.jar`);
   fs.rmSync(vanillaTarget, { force: true });
   copyIntoTarget(vanillaCache, vanillaTarget);
@@ -331,7 +341,7 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
     const child = execFile(
       java.runtime!.path,
       [...javaProxyArgs(onLog), '-cp', fileName, forgeRunner, fileName],
-      { cwd: serverDir, maxBuffer: 32 * 1024 * 1024 },
+      { cwd: serverDir, maxBuffer: 32 * 1024 * 1024, signal },
       (err, stdout, stderr) => {
         for (const line of (stdout + stderr).split('\n').slice(-40)) if (line.trim()) onLog(line.trim());
         if (err) reject(new Error(`安装程序失败：${err.message}`));
@@ -354,7 +364,8 @@ export interface InstallResult {
 }
 
 /** 按加载器安装服务端（幂等：已装好就跳过） */
-export async function installServer(id: string, onLog: (s: string) => void, opts: { force?: boolean } = {}): Promise<InstallResult> {
+export async function installServer(id: string, onLog: (s: string) => void, opts: { force?: boolean; signal?: AbortSignal } = {}): Promise<InstallResult> {
+  opts.signal?.throwIfAborted();
   const cfg = I.getConfig(id);
   const serverDir = instanceServerDir(id);
   fs.mkdirSync(serverDir, { recursive: true });
@@ -376,24 +387,25 @@ export async function installServer(id: string, onLog: (s: string) => void, opts
     onLog(`开始安装：${cfg.loader} ${cfg.loaderVersion}（Minecraft ${cfg.mc}）`);
     switch (cfg.loader) {
       case 'vanilla':
-        await installVanilla(cfg, onLog);
+        await installVanilla(cfg, onLog, opts.signal);
         break;
       case 'paper':
-        await installPaper(cfg, onLog);
+        await installPaper(cfg, onLog, opts.signal);
         break;
       case 'fabric':
-        await installFabric(cfg, onLog);
+        await installFabric(cfg, onLog, opts.signal);
         break;
       case 'forge':
-        await installForgeLike(cfg, onLog, false);
+        await installForgeLike(cfg, onLog, false, opts.signal);
         break;
       case 'neoforge':
-        await installForgeLike(cfg, onLog, true);
+        await installForgeLike(cfg, onLog, true, opts.signal);
         break;
       default:
         throw bad(`不支持的加载器：${cfg.loader}`);
     }
   }
+  opts.signal?.throwIfAborted();
   I.writeProperties(id);
   return { ok: true, message: '安装完成' };
 }
@@ -410,6 +422,7 @@ export interface CopyParams {
   difficulty?: string;
   pvp?: boolean;
   allowNether?: boolean;
+  allowFlight?: boolean;
   generateStructures?: boolean;
   motd?: string;
   autostart?: boolean;
@@ -443,6 +456,7 @@ export async function copyInstance(srcId: string, params: CopyParams, onLog: (s:
     pvp: params.pvp ?? src.pvp,
     hardcore: src.hardcore,
     allowNether: params.allowNether ?? src.allowNether,
+    allowFlight: params.allowFlight ?? src.allowFlight,
     generateStructures: params.generateStructures ?? src.generateStructures,
     onlineMode: src.onlineMode,
     whiteList: src.whiteList,

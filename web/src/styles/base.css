@@ -871,6 +871,7 @@ p { margin: 0; }
 }
 .player-status-dot { position: absolute !important; top: 12px; left: 12px; z-index: 4 !important; }
 .player-skin {
+  position: relative;
   width: 96px;
   height: 148px;
   border-radius: var(--r-sm);
@@ -880,7 +881,18 @@ p { margin: 0; }
   justify-content: center;
   overflow: hidden;
 }
-.player-skin canvas, .player-skin .skin-portrait, .player-skin .skin-animation { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+.player-skin canvas, .player-skin .skin-fallback, .player-skin .skin-blank {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.player-skin canvas { z-index: 2; opacity: 0; pointer-events: none; transition: opacity 140ms ease; }
+.player-skin canvas.skin-live-ready { opacity: 1; pointer-events: auto; cursor: grab; }
+.player-skin canvas.skin-live-ready:active { cursor: grabbing; }
+.player-skin .skin-fallback { z-index: 1; object-fit: contain; image-rendering: pixelated; pointer-events: none; transition: opacity 140ms ease; }
+.player-skin .skin-fallback-hidden { opacity: 0; }
+.player-skin .skin-blank { background: var(--player-skin-bg); }
 .player-name { font-weight: 650; font-size: 13.5px; }
 .player-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; width: 100%; }
 .player-actions .btn { min-width: 0; padding-inline: 5px; font-size: 11.5px; }

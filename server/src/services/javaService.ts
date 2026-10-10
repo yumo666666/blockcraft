@@ -177,7 +177,7 @@ export function javaByMajor(major: number): JavaRuntime | null {
 }
 
 /** Adoptium 下载（本机没有兼容版本时由安装/启动流程按需调用） */
-export async function downloadJava(major: number, onProgress?: (message: string) => void): Promise<JavaRuntime> {
+export async function downloadJava(major: number, onProgress?: (message: string) => void, opts: { signal?: AbortSignal } = {}): Promise<JavaRuntime> {
   const archMap: Record<string, string> = { arm64: 'aarch64', x64: 'x64', arm: 'arm' };
   const osMap: Record<string, string> = { linux: 'linux', darwin: 'mac', win32: 'windows' };
   const arch = archMap[process.arch] ?? 'x64';
@@ -193,11 +193,12 @@ export async function downloadJava(major: number, onProgress?: (message: string)
   try {
     let downloaded = false;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      opts.signal?.throwIfAborted();
       const resumeAt = fs.existsSync(partial) ? fs.statSync(partial).size : 0;
       try {
         onProgress?.(`正在下载 Temurin Java ${major}（第 ${attempt}/${maxAttempts} 次）…`);
         const headers = resumeAt > 0 ? { range: `bytes=${resumeAt}-` } : undefined;
-        const res = await fetch(url, { redirect: 'follow', headers });
+        const res = await fetch(url, { redirect: 'follow', headers, signal: opts.signal });
         if (!res.ok || !res.body) {
           await res.body?.cancel().catch(() => undefined);
           const error = new Error(`下载 JDK 失败：HTTP ${res.status}`) as Error & { retryable?: boolean };
@@ -244,6 +245,7 @@ export async function downloadJava(major: number, onProgress?: (message: string)
           Readable.fromWeb(res.body as never),
           progress,
           fs.createWriteStream(partial, { flags: append ? 'a' : 'w' }),
+          { signal: opts.signal },
         );
         const actual = fs.statSync(partial).size;
         if (!actual || (expectedTotal > 0 && actual !== expectedTotal)) {
@@ -252,6 +254,7 @@ export async function downloadJava(major: number, onProgress?: (message: string)
         downloaded = true;
         break;
       } catch (err) {
+        if (opts.signal?.aborted) throw opts.signal.reason ?? err;
         const retryable = !(err instanceof Error && 'retryable' in err && err.retryable === false);
         if (!retryable || attempt === maxAttempts) throw err;
 
@@ -264,6 +267,7 @@ export async function downloadJava(major: number, onProgress?: (message: string)
       }
     }
     if (!downloaded) throw new Error(`Java ${major} 下载失败，已重试 ${maxAttempts} 次`);
+    opts.signal?.throwIfAborted();
     fs.renameSync(partial, target);
 
     onProgress?.(`Java ${major} 下载完成，正在解压…`);
@@ -301,14 +305,32 @@ export async function downloadJava(major: number, onProgress?: (message: string)
   }
 }
 
-const javaDownloads = new Map<number, Promise<JavaRuntime>>();
+interface SharedJavaDownload {
+  promise: Promise<JavaRuntime>;
+  controller: AbortController;
+  users: number;
+}
+
+const javaDownloads = new Map<number, SharedJavaDownload>();
+
+function waitForJavaDownload(promise: Promise<JavaRuntime>, signal?: AbortSignal): Promise<JavaRuntime> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('任务已取消'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error('任务已取消'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
 
 /** 缺少兼容 Java 时自动下载 Temurin，并返回可启动的运行时。 */
 export async function ensureJava(
   mc: string,
   loader: Loader,
   onProgress?: (message: string) => void,
+  opts: { signal?: AbortSignal } = {},
 ): Promise<JavaResolution> {
+  opts.signal?.throwIfAborted();
   const required = requiredJavaFor(mc, loader);
   const installed = resolveJava(required);
   if (installed) {
@@ -318,16 +340,20 @@ export async function ensureJava(
 
   let pending = javaDownloads.get(required);
   if (!pending) {
-    pending = downloadJava(required, onProgress);
+    const controller = new AbortController();
+    const promise = downloadJava(required, onProgress, { signal: controller.signal });
+    pending = { promise, controller, users: 0 };
     javaDownloads.set(required, pending);
   } else {
     onProgress?.(`正在等待 Java ${required} 下载完成…`);
   }
+  pending.users += 1;
 
   try {
-    const runtime = await pending;
+    const runtime = await waitForJavaDownload(pending.promise, opts.signal);
     return { runtime, required, reason: `已自动安装并使用 Java ${runtime.major}` };
   } catch (err) {
+    if (opts.signal?.aborted) throw opts.signal.reason ?? err;
     const installedVersions = listJava(true);
     const local = installedVersions.length
       ? `本机已有 Java ${installedVersions.map((j) => j.major).join('、')}，但都不兼容。`
@@ -338,7 +364,11 @@ export async function ensureJava(
       reason: `${local}自动下载 Java ${required} 失败：${String(err)}。请检查网络连接后重试。`,
     };
   } finally {
-    if (javaDownloads.get(required) === pending) javaDownloads.delete(required);
+    pending.users = Math.max(0, pending.users - 1);
+    if (javaDownloads.get(required) === pending) {
+      if (pending.users === 0) javaDownloads.delete(required);
+    }
+    if (opts.signal?.aborted && pending.users === 0) pending.controller.abort(opts.signal.reason);
   }
 }
 

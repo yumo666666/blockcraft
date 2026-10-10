@@ -21,6 +21,7 @@ interface Cfg {
   pvp: boolean;
   hardcore: boolean;
   allowNether: boolean;
+  allowFlight: boolean;
   generateStructures: boolean;
   spawnMonsters: boolean;
   spawnAnimals: boolean;
@@ -68,7 +69,7 @@ const installed = ref(true);
 
 const RESTART_FIELDS: (keyof Cfg)[] = [
   'port', 'memoryMb', 'minMemoryMb', 'jvmExtra', 'onlineMode', 'whiteList', 'levelSeed',
-  'gamemode', 'difficulty', 'pvp', 'hardcore', 'allowNether', 'spawnMonsters', 'spawnAnimals',
+  'gamemode', 'difficulty', 'pvp', 'hardcore', 'allowNether', 'allowFlight', 'spawnMonsters', 'spawnAnimals',
   'spawnNpcs', 'generateStructures', 'enableCommandBlock', 'maxPlayers', 'motd', 'viewDistance',
   'syncChunkWrites', 'maxTickTime',
 ];
@@ -87,6 +88,7 @@ function pick(c: Record<string, never>): Cfg {
     pvp: Boolean(c.pvp ?? true),
     hardcore: Boolean(c.hardcore ?? false),
     allowNether: Boolean(c.allowNether ?? true),
+    allowFlight: Boolean(c.allowFlight ?? false),
     generateStructures: Boolean(c.generateStructures ?? true),
     spawnMonsters: Boolean(c.spawnMonsters ?? true),
     spawnAnimals: Boolean(c.spawnAnimals ?? true),
@@ -271,6 +273,7 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
           <label class="switch"><input v-model="form.pvp" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许 PVP</span></label>
           <label class="switch"><input v-model="form.hardcore" type="checkbox" /><span class="switch-track" /><span class="switch-text">极限模式</span></label>
           <label class="switch"><input v-model="form.allowNether" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许下界</span></label>
+          <label class="switch"><input v-model="form.allowFlight" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许飞行</span></label>
           <label class="switch"><input v-model="form.generateStructures" type="checkbox" /><span class="switch-track" /><span class="switch-text">生成建筑</span></label>
           <label class="switch"><input v-model="form.spawnMonsters" type="checkbox" /><span class="switch-track" /><span class="switch-text">生成怪物</span></label>
           <label class="switch"><input v-model="form.spawnAnimals" type="checkbox" /><span class="switch-track" /><span class="switch-text">生成动物</span></label>

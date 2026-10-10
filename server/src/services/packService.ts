@@ -428,12 +428,37 @@ async function extractTree(
   file: string,
   entries: string[],
   targetRoot: string,
-  opts: { prefixes: RegExp; stripPrefix?: string; stripChildPrefix?: string; onLog: (s: string) => void },
+  opts: { prefixes: RegExp; stripPrefix?: string; stripChildPrefix?: string; onLog: (s: string) => void; signal?: AbortSignal },
 ): Promise<number> {
+  opts.signal?.throwIfAborted();
   const zip = await openZip(file);
   let count = 0;
   await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let activeStream: Readable | null = null;
+    let activeOutput: fs.WriteStream | null = null;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      opts.signal?.removeEventListener('abort', onAbort);
+      try { zip.close(); } catch { /* ignore */ }
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => {
+      const reason = opts.signal?.reason;
+      const error = reason instanceof Error ? reason : new Error('整合包导入已取消');
+      activeStream?.destroy(error);
+      activeOutput?.destroy(error);
+      finish(error);
+    };
+    if (opts.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
     zip.on('entry', (entry: ZipEntry) => {
+      if (settled) return;
       const name = entry.fileName;
       if (name.endsWith('/') || !opts.prefixes.test(name)) {
         zip.readEntry();
@@ -459,29 +484,34 @@ async function extractTree(
         return;
       }
       zip.openReadStream(entry, (err, stream) => {
+        if (settled) {
+          (stream as Readable | undefined)?.destroy();
+          return;
+        }
         if (err || !stream) {
-          zip.readEntry();
+          finish(err ?? new Error(`无法读取压缩包条目：${name}`));
           return;
         }
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         const out = fs.createWriteStream(dest);
-        stream.pipe(out);
-        out.on('close', () => {
+        const readable = stream as Readable;
+        activeStream = readable;
+        activeOutput = out;
+        void pipeline(readable, out, { signal: opts.signal }).then(() => {
+          activeStream = null;
+          activeOutput = null;
+          if (settled) return;
           count++;
           zip.readEntry();
+        }).catch((pipelineError: unknown) => {
+          if (!settled) finish(pipelineError instanceof Error ? pipelineError : new Error(String(pipelineError)));
         });
-        out.on('error', () => zip.readEntry());
       });
     });
     zip.on('end', () => {
-      try {
-        zip.close();
-      } catch {
-        /* ignore */
-      }
-      resolve();
+      finish();
     });
-    zip.on('error', reject);
+    zip.on('error', (error: Error) => finish(error));
     zip.readEntry();
   });
   return count;
@@ -492,12 +522,18 @@ export async function downloadWithFallback(
   dest: string,
   onLog: (s: string) => void,
   idleTimeoutMs = 45_000,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   for (const url of urls) {
+    signal?.throwIfAborted();
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      signal?.throwIfAborted();
       let retryable = true;
       const tmp = `${dest}.part`;
       const controller = new AbortController();
+      const onCancel = () => controller.abort(signal?.reason ?? new Error('整合包导入已取消'));
+      signal?.addEventListener('abort', onCancel, { once: true });
+      if (signal?.aborted) onCancel();
       let timeout: ReturnType<typeof setTimeout> | undefined;
       const resetIdleTimeout = () => {
         if (timeout) clearTimeout(timeout);
@@ -518,12 +554,13 @@ export async function downloadWithFallback(
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         const body = Readable.fromWeb(res.body as never);
         body.on('data', resetIdleTimeout);
-        await pipeline(body, fs.createWriteStream(tmp));
+        await pipeline(body, fs.createWriteStream(tmp), { signal: controller.signal });
         if (fs.statSync(tmp).size === 0) throw new Error('0 字节');
         fs.renameSync(tmp, dest);
         return true;
       } catch (err) {
         fs.rmSync(tmp, { force: true });
+        if (signal?.aborted) throw signal.reason ?? err;
         if (retryable && attempt < 2) {
           onLog(`  下载暂时失败，${attempt + 1}/2 次重试：${String(err).slice(0, 100)}`);
           await new Promise((resolve) => setTimeout(resolve, 700 * 2 ** attempt));
@@ -532,6 +569,7 @@ export async function downloadWithFallback(
         onLog(`  下载失败（${url}）：${String(err).slice(0, 120)}`);
         break;
       } finally {
+        signal?.removeEventListener('abort', onCancel);
         if (timeout) clearTimeout(timeout);
       }
     }
@@ -1053,9 +1091,10 @@ async function queryCompatibleCurseForgeFile(
   key: string,
   mc: string,
   loaderType: number,
+  signal?: AbortSignal,
 ): Promise<CurseForgeFileIndex | null> {
   const query = new URLSearchParams({ gameVersion: mc, modLoaderType: String(loaderType), pageSize: '50', index: '0' });
-  const response = await curseForgeRequest<{ data?: CurseForgeFile[] }>(`${api}/mods/${projectId}/files?${query}`, key, { method: 'GET' });
+  const response = await curseForgeRequest<{ data?: CurseForgeFile[] }>(`${api}/mods/${projectId}/files?${query}`, key, { method: 'GET' }, signal);
   const files = (response.data ?? [])
     .filter((file) => file.id && file.fileName && (file.gameVersions ?? []).includes(mc) && (file.modLoaderType === loaderType || file.modLoaderType === 0))
     .sort((a, b) => {
@@ -1074,11 +1113,15 @@ async function queryCompatibleCurseForgeFile(
   };
 }
 
-async function curseForgeRequest<T>(url: string, key: string, init: RequestInit): Promise<T> {
+async function curseForgeRequest<T>(url: string, key: string, init: RequestInit, signal?: AbortSignal): Promise<T> {
   let lastError = '未知错误';
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    signal?.throwIfAborted();
     let retryable = true;
     const controller = new AbortController();
+    const onCancel = () => controller.abort(signal?.reason ?? new Error('整合包导入已取消'));
+    signal?.addEventListener('abort', onCancel, { once: true });
+    if (signal?.aborted) onCancel();
     const timeout = setTimeout(() => controller.abort(new Error('CurseForge API 请求超时')), 30_000);
     try {
       const res = await fetch(url, {
@@ -1094,8 +1137,10 @@ async function curseForgeRequest<T>(url: string, key: string, init: RequestInit)
         return await res.json() as T;
       }
     } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
       lastError = String(err);
     } finally {
+      signal?.removeEventListener('abort', onCancel);
       clearTimeout(timeout);
     }
     if (retryable && attempt < 2) await new Promise((resolve) => setTimeout(resolve, 700 * 2 ** attempt));
@@ -1113,6 +1158,7 @@ async function curseForgeDependencyFiles(
   sources: Map<number, CurseForgeDependencySource[]>,
   onLog: (s: string) => void,
   allowFabricBridge = false,
+  signal?: AbortSignal,
 ): Promise<{ matches: Map<number, CurseForgeDependencyMatch>; ignored: Set<number> }> {
   const out = new Map<number, CurseForgeDependencyMatch>();
   const ignored = new Set<number>();
@@ -1127,13 +1173,14 @@ async function curseForgeDependencyFiles(
   }
 
   for (let i = 0; i < modIds.length; i += 50) {
+    signal?.throwIfAborted();
     const chunk = modIds.slice(i, i + 50);
     try {
       const response = await curseForgeRequest<{ data?: CurseForgeMod[] }>(`${api}/mods`, key, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ modIds: chunk, filterPcOnly: true }),
-      });
+      }, signal);
       const projects = new Map((response.data ?? []).filter((mod) => Number.isInteger(mod.id)).map((mod) => [mod.id!, mod]));
       const missingIndexes: { id: number; mod: CurseForgeMod }[] = [];
       for (const id of chunk) {
@@ -1165,21 +1212,23 @@ async function curseForgeDependencyFiles(
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ modIds: aliasIds, filterPcOnly: true }),
-          });
+          }, signal);
           for (const mod of aliasResponse.data ?? []) if (Number.isInteger(mod.id)) aliasProjects.set(mod.id!, mod);
         } catch (err) {
+          if (signal?.aborted) throw signal.reason ?? err;
           onLog(`  查询加载器替代项目失败：${String(err).slice(0, 120)}`);
         }
       }
 
       for (const { id, mod } of missingIndexes) {
         try {
-          const directFile = await queryCompatibleCurseForgeFile(id, api, key, mc, loaderType);
+          const directFile = await queryCompatibleCurseForgeFile(id, api, key, mc, loaderType, signal);
           if (directFile) {
             out.set(id, { index: directFile, projectId: id });
             continue;
           }
         } catch (err) {
+          if (signal?.aborted) throw signal.reason ?? err;
           onLog(`  查询「${mod.name ?? `项目 ${id}`}」的精确版本列表失败：${String(err).slice(0, 100)}`);
         }
 
@@ -1189,8 +1238,9 @@ async function curseForgeDependencyFiles(
           let aliasFile = aliasMod ? compatibleCurseForgeIndex(aliasMod, mc, loaderType) : null;
           if (!aliasFile) {
             try {
-              aliasFile = await queryCompatibleCurseForgeFile(aliasId, api, key, mc, loaderType);
+              aliasFile = await queryCompatibleCurseForgeFile(aliasId, api, key, mc, loaderType, signal);
             } catch (err) {
+              if (signal?.aborted) throw signal.reason ?? err;
               onLog(`  查询替代项目 ${aliasId} 的文件失败：${String(err).slice(0, 100)}`);
             }
           }
@@ -1201,10 +1251,10 @@ async function curseForgeDependencyFiles(
           }
         }
         try {
-          const alternateProjects = await findCurseForgeProjectsForModId(mod.slug ?? mod.name ?? '', api, key);
+          const alternateProjects = await findCurseForgeProjectsForModId(mod.slug ?? mod.name ?? '', api, key, signal);
           for (const alternateId of alternateProjects) {
             if (alternateId === id || alternateId === aliasId) continue;
-            const alternateFile = await queryCompatibleCurseForgeFile(alternateId, api, key, mc, loaderType);
+            const alternateFile = await queryCompatibleCurseForgeFile(alternateId, api, key, mc, loaderType, signal);
             if (!alternateFile) continue;
             out.set(id, { index: alternateFile, projectId: alternateId });
             onLog(`  已将依赖项目 ${id} 映射到 ${loader} 兼容项目 ${alternateId} / Mapped dependency ${id} to loader-compatible project ${alternateId}`);
@@ -1212,17 +1262,19 @@ async function curseForgeDependencyFiles(
           }
           if (out.has(id)) continue;
         } catch (err) {
+          if (signal?.aborted) throw signal.reason ?? err;
           onLog(`  查询 ${mod.name ?? `项目 ${id}`} 的同加载器替代项目失败：${String(err).slice(0, 100)}`);
         }
         if (allowFabricBridge && loaderType !== CURSEFORGE_LOADER_TYPES.fabric) {
           try {
-            const bridgeFile = await queryCompatibleCurseForgeFile(id, api, key, mc, CURSEFORGE_LOADER_TYPES.fabric);
+            const bridgeFile = await queryCompatibleCurseForgeFile(id, api, key, mc, CURSEFORGE_LOADER_TYPES.fabric, signal);
             if (bridgeFile) {
               out.set(id, { index: bridgeFile, projectId: id });
               onLog(`  已检测到 Connector，依赖「${mod.name ?? `项目 ${id}`}」使用 Minecraft ${mc} 兼容的 Fabric 文件 / Connector is present; using the Minecraft ${mc} Fabric build for dependency ${mod.name ?? id}`);
               continue;
             }
           } catch (err) {
+            if (signal?.aborted) throw signal.reason ?? err;
             onLog(`  查询 Connector 可用的 Fabric 依赖文件失败：${String(err).slice(0, 100)}`);
           }
         }
@@ -1230,18 +1282,19 @@ async function curseForgeDependencyFiles(
         onLog(`  ${mod.name ? `「${mod.name}」` : `项目 ${id}`} 没有 ${mc} / ${loader} 兼容文件${allowFabricBridge ? '（也没有可由 Connector 加载的 Fabric 版本）' : ''}（${page}）。`);
       }
     } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
       onLog(`  查询 CurseForge 依赖文件失败：${String(err).slice(0, 120)}`);
     }
   }
   return { matches: out, ignored };
 }
 
-async function findCurseForgeProjectsForModId(modId: string, api: string, key: string): Promise<number[]> {
+async function findCurseForgeProjectsForModId(modId: string, api: string, key: string, signal?: AbortSignal): Promise<number[]> {
   const knownProjects = CURSEFORGE_RUNTIME_MOD_PROJECTS[normalizeModId(modId)];
   if (knownProjects?.length) return knownProjects;
   const query = new URLSearchParams({ gameId: '432', classId: '6', searchFilter: modId, pageSize: '50' });
   try {
-    const response = await curseForgeRequest<{ data?: CurseForgeMod[] }>(`${api}/mods/search?${query}`, key, { method: 'GET' });
+    const response = await curseForgeRequest<{ data?: CurseForgeMod[] }>(`${api}/mods/search?${query}`, key, { method: 'GET' }, signal);
     const normalized = normalizeModId(modId);
     const projects = response.data ?? [];
     const exact = projects.filter((mod) =>
@@ -1253,7 +1306,8 @@ async function findCurseForgeProjectsForModId(modId: string, api: string, key: s
         /^(forge|neoforge|fabric|reforked|remastered|unofficial|backport|port)$/.test(name.slice(normalized.length)));
     });
     return [...new Set([...exact, ...loaderPorts].map((mod) => mod.id).filter((id): id is number => Number.isInteger(id)))];
-  } catch {
+  } catch (err) {
+    if (signal?.aborted) throw signal.reason ?? err;
     return [];
   }
 }
@@ -1265,6 +1319,7 @@ async function installMissingJarDependencies(
   mc: string | null,
   loader: string | null,
   onLog: (s: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ installed: number; unresolved: string[]; conflicts: string[] }> {
   const modsDir = path.join(serverDir, 'mods');
   let installed = 0;
@@ -1272,20 +1327,22 @@ async function installMissingJarDependencies(
   const attempted = new Set<string>();
   const limit = 32;
   for (let pass = 0; pass < limit; pass += 1) {
+    signal?.throwIfAborted();
     const missing = await missingRequiredModDependencies(modsDir, loader);
     if (!missing.length) return { installed, unresolved: [], conflicts };
     let progress = false;
     for (const modId of missing) {
+      signal?.throwIfAborted();
       const normalized = normalizeModId(modId);
       if (attempted.has(normalized)) continue;
       attempted.add(normalized);
-      const projectIds = await findCurseForgeProjectsForModId(modId, api, key);
+      const projectIds = await findCurseForgeProjectsForModId(modId, api, key, signal);
       if (!projectIds.length || !mc || !loader) continue;
       onLog(`正在为缺少的服务端依赖 ${modId} 搜索 CurseForge 文件 / Searching CurseForge for required server dependency ${modId}`);
       const allowFabricBridge = hasFabricModBridge(modsDir);
       let match: CurseForgeDependencyMatch | undefined;
       for (const projectId of projectIds) {
-        const { matches } = await curseForgeDependencyFiles([projectId], api, key, mc, loader, new Map(), onLog, allowFabricBridge);
+        const { matches } = await curseForgeDependencyFiles([projectId], api, key, mc, loader, new Map(), onLog, allowFabricBridge, signal);
         match = matches.get(projectId);
         if (match) break;
       }
@@ -1294,8 +1351,9 @@ async function installMissingJarDependencies(
         const selectedLoader = selectedIndex?.modLoader ?? CURSEFORGE_LOADER_TYPES[loader.toLowerCase()];
         if (selectedLoader !== undefined) {
           try {
-            selectedIndex = await queryCompatibleCurseForgeFile(match.projectId, api, key, mc, selectedLoader) ?? selectedIndex;
-          } catch {
+            selectedIndex = await queryCompatibleCurseForgeFile(match.projectId, api, key, mc, selectedLoader, signal) ?? selectedIndex;
+          } catch (err) {
+            if (signal?.aborted) throw signal.reason ?? err;
             /* keep the compatible file-index fallback if the detail request fails */
           }
         }
@@ -1308,7 +1366,7 @@ async function installMissingJarDependencies(
       if (!fs.existsSync(dest)) {
         const id = String(fileId);
       const urls = [selectedIndex?.downloadUrl ?? '', `https://edge.forgecdn.net/files/${id.slice(0, -3)}/${id.slice(-3)}/${encodeURIComponent(safeName)}`].filter(Boolean);
-        if (!await downloadWithFallback(urls, dest, onLog)) continue;
+        if (!await downloadWithFallback(urls, dest, onLog, 45_000, signal)) continue;
       }
       const clientOnly = await clientOnlyJarReason(dest, loader);
       if (clientOnly) {
@@ -1332,7 +1390,9 @@ async function installCurseForge(
   mc: string | null,
   loader: string | null,
   onLog: (s: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ downloaded: number; manual: string[] }> {
+  signal?.throwIfAborted();
   const zip = await openZip(file);
   const names = await listZipEntries(file);
   const manifestName = names.find((n) => /(^|\/)manifest\.json$/.test(n));
@@ -1370,6 +1430,7 @@ async function installCurseForge(
   const maxAutoDependencies = 256;
 
   while (pendingFileIds.length) {
+    signal?.throwIfAborted();
     const current = pendingFileIds.filter((id) => id > 0 && !visitedFileIds.has(id));
     if (!current.length) break;
     current.forEach((id) => visitedFileIds.add(id));
@@ -1379,6 +1440,7 @@ async function installCurseForge(
     const filesInfo: CurseForgeFile[] = [];
     for (let i = 0; i < current.length; i += 100) {
       const chunk = current.slice(i, i + 100);
+      signal?.throwIfAborted();
       onLog(`查询 CurseForge 文件信息 ${visitedFileIds.size} 项`);
       let files: CurseForgeFile[] = [];
       try {
@@ -1386,9 +1448,10 @@ async function installCurseForge(
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ fileIds: chunk }),
-        });
+        }, signal);
         files = response.data ?? [];
       } catch (err) {
+        if (signal?.aborted) throw signal.reason ?? err;
         onLog(`接口查询失败，这批文件需手动处理：${String(err).slice(0, 120)}`);
         for (const id of chunk) manual.push(`CurseForge 文件 ID ${id}（文件信息查询失败）`);
         continue;
@@ -1410,6 +1473,7 @@ async function installCurseForge(
     const serverRequiredDependencyProjects = requiredCurseForgeDependencyProjects(filesInfo);
 
     for (const f of filesInfo) {
+        signal?.throwIfAborted();
         if (!f.id) continue;
         const projectId = f.projectId ?? f.modId ?? projectByFile.get(f.id);
         if (projectId) projectIds.add(projectId);
@@ -1445,7 +1509,7 @@ async function installCurseForge(
           if (f.downloadUrl) urls.push(f.downloadUrl);
           const fileId = String(f.id);
           urls.push(`https://edge.forgecdn.net/files/${fileId.slice(0, fileId.length - 3)}/${fileId.slice(-3)}/${encodeURIComponent(fileName)}`);
-          ok = await downloadWithFallback(urls, dest, onLog);
+          ok = await downloadWithFallback(urls, dest, onLog, 45_000, signal);
         }
         if (ok) {
           if (isPackArchive) {
@@ -1525,7 +1589,7 @@ async function installCurseForge(
 
     onLog(`发现 ${allowed.length} 个清单外的必需依赖，正在按 ${mc ?? '未知版本'} / ${loader ?? '未知加载器'} 查找兼容文件`);
     const allowFabricBridge = hasFabricModBridge(path.join(serverDir, 'mods'));
-    const { matches: resolved, ignored } = await curseForgeDependencyFiles(allowed, api, key, mc, loader, requiredProjectSources, onLog, allowFabricBridge);
+    const { matches: resolved, ignored } = await curseForgeDependencyFiles(allowed, api, key, mc, loader, requiredProjectSources, onLog, allowFabricBridge, signal);
     pendingFileIds = [];
     for (const id of allowed) {
       if (ignored.has(id)) {
@@ -1555,13 +1619,15 @@ async function installCurseForge(
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ modIds: ids, filterPcOnly: true }),
-      });
+      }, signal);
       projectMetadata = new Map((response.data ?? []).filter((mod) => Number.isInteger(mod.id)).map((mod) => [mod.id!, mod]));
       projectMetadataAvailable = true;
     } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
       onLog(`校验客户端依赖关系失败，保留冲突项并阻止启动 / Could not verify client-only dependencies; keeping them blocked: ${String(err).slice(0, 120)}`);
     }
     for (const conflict of pendingClientDependencyConflicts) {
+      signal?.throwIfAborted();
       const sources = allRequiredProjectSources.get(conflict.projectId) ?? [];
       const project = projectMetadata.get(conflict.projectId);
       let requiredByServer = !projectMetadataAvailable || (sources.length > 0 && !project);
@@ -1585,7 +1651,7 @@ async function installCurseForge(
       }
     }
   }
-  const jarDependencyResult = await installMissingJarDependencies(serverDir, api, key, mc, loader, onLog);
+  const jarDependencyResult = await installMissingJarDependencies(serverDir, api, key, mc, loader, onLog, signal);
   if (jarDependencyResult.installed) {
     downloaded += jarDependencyResult.installed;
     autoDependencyCount += jarDependencyResult.installed;
@@ -1630,7 +1696,9 @@ function findEntry(zip: yauzl.ZipFile, name: string): Promise<ZipEntry> {
 }
 
 /** 主入口：把整合包内容装进某个世界 */
-export async function extractPack(file: string, instanceId: string, onLog: (s: string) => void): Promise<{ manual: string[]; extracted: number }> {
+export async function extractPack(file: string, instanceId: string, onLog: (s: string) => void, opts: { signal?: AbortSignal } = {}): Promise<{ manual: string[]; extracted: number }> {
+  const { signal } = opts;
+  signal?.throwIfAborted();
   const info = await inspectPack(file);
   onLog(`识别为：${info.format}${info.packName ? `（${info.packName}）` : ''} — ${info.note}`);
   const serverDir = instanceServerDir(instanceId);
@@ -1651,19 +1719,19 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
     case 'multimc':
     case 'hmcl':
       onLog('直接解压包内文件（不走网络）');
-      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)(mods|config|defaultconfigs|kubejs|scripts|resourcepacks|datapacks)\//i, stripPrefix, onLog });
+      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)(mods|config|defaultconfigs|kubejs|scripts|resourcepacks|datapacks)\//i, stripPrefix, onLog, signal });
       break;
     case 'curseforge': {
       onLog('解压 overrides/ …');
-      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, stripChildPrefix: 'overrides/', onLog });
-      const r = await installCurseForge(file, instanceId, info.mc, info.loader, onLog);
+      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, stripChildPrefix: 'overrides/', onLog, signal });
+      const r = await installCurseForge(file, instanceId, info.mc, info.loader, onLog, signal);
       manual = r.manual;
       onLog(`MOD 下载完成 ${r.downloaded} 个${manual.length ? `，${manual.length} 个需要手动处理` : ''}`);
       break;
     }
     case 'modrinth': {
       onLog('解压 overrides/ …');
-      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, stripChildPrefix: 'overrides/', onLog });
+      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)overrides\//i, stripPrefix, stripChildPrefix: 'overrides/', onLog, signal });
       const zip = await openZip(file);
       const idxName = names.find((n) => /modrinth\.index\.json$/.test(n))!;
       const idx = JSON.parse((await readEntry(zip, await findEntry(zip, idxName))).toString('utf8')) as {
@@ -1675,6 +1743,7 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
       let okCount = 0;
       let clientOnlySkipped = 0;
       for (const f of idx.files ?? []) {
+        signal?.throwIfAborted();
         if (!f.path.toLowerCase().startsWith('mods/')) continue;
         if (!isModrinthServerModFile(f)) {
           clientOnlySkipped++;
@@ -1683,7 +1752,7 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
         }
         const dest = path.join(modsDir, path.basename(f.path));
         const urls = [...f.downloads.map((u) => `${panel.mirrors.githubMirror}${u}`), ...f.downloads];
-        const ok = await downloadWithFallback(urls, dest, onLog);
+        const ok = await downloadWithFallback(urls, dest, onLog, 45_000, signal);
         if (ok) okCount++;
         else manual.push(path.basename(f.path));
       }
@@ -1693,8 +1762,9 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
     }
     default:
       onLog('未知格式：尝试直接解压 mods/ 与 config/');
-      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)(mods|config)\//i, stripPrefix, onLog });
+      extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)(mods|config)\//i, stripPrefix, onLog, signal });
   }
+  signal?.throwIfAborted();
   const embeddedClientOnly = await filterClientOnlyMods(serverDir, onLog, info.loader);
   if (embeddedClientOnly) onLog(`已从服务端目录移出 ${embeddedClientOnly} 个随包提供的客户端专用 MOD`);
   const missingJarDependencies = await missingRequiredModDependencies(path.join(serverDir, 'mods'), info.loader);

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { JOBS_DIR } from '../core/paths.ts';
 import { atomicWriteJsonSync, readJsonSync } from '../core/fsx.ts';
-import { notFound } from '../core/errors.ts';
+import { conflict, notFound } from '../core/errors.ts';
 import type { Job } from '../types.ts';
 
 const bus = new EventEmitter();
@@ -11,6 +11,7 @@ bus.setMaxListeners(100);
 
 const KEEP = 60;
 let pendingSetups = 0;
+const abortControllers = new Map<string, AbortController>();
 
 /** Count API requests that have begun creating a job but have not returned its job ID yet. */
 export function beginJobSetup(): () => void {
@@ -51,7 +52,7 @@ export function listJobs(): Job[] {
 
 export function listRunningJobs(): Job[] {
   return readAllJobs()
-    .filter((job) => job.status === 'running')
+    .filter((job) => job.status === 'running' || job.status === 'cancelling')
     .map(({ lines, ...rest }) => ({ ...rest, lines: [] }) as Job);
 }
 
@@ -76,6 +77,7 @@ export async function createJob(input: Partial<Job> & { kind: Job['kind']; title
     endedAt: input.endedAt ?? null,
   };
   fs.mkdirSync(JOBS_DIR, { recursive: true });
+  if (job.status === 'running') abortControllers.set(job.id, new AbortController());
   persist(job);
   bus.emit(job.id, job);
   return job;
@@ -110,12 +112,32 @@ export function setStage(jobId: string, key: string, status: Job['stages'][numbe
 }
 
 export function finishJob(jobId: string, error?: string): Job {
-  return updateJob(jobId, {
-    status: error ? 'failed' : 'done',
-    error: error ?? null,
+  const controller = abortControllers.get(jobId);
+  const current = getJob(jobId);
+  const cancelled = current.status === 'cancelling' || controller?.signal.aborted === true;
+  const result = updateJob(jobId, {
+    status: cancelled ? 'cancelled' : error ? 'failed' : 'done',
+    error: cancelled ? null : error ?? null,
     endedAt: Date.now(),
-    progress: error ? 100 : 100,
+    progress: cancelled ? current.progress : 100,
   });
+  abortControllers.delete(jobId);
+  return result;
+}
+
+export function jobSignal(jobId: string): AbortSignal | undefined {
+  return abortControllers.get(jobId)?.signal;
+}
+
+export function requestJobCancellation(jobId: string): Job {
+  const job = getJob(jobId);
+  if (job.kind !== 'import') throw conflict('当前类型的任务不能取消');
+  if (job.status === 'cancelling') return job;
+  if (job.status !== 'running') throw conflict('任务已经结束，不能取消');
+  const controller = abortControllers.get(jobId);
+  if (!controller) throw conflict('任务进度已失效，请刷新后重试');
+  controller.abort(new Error('用户取消了整合包导入'));
+  return updateJob(jobId, { status: 'cancelling', error: null });
 }
 
 /** 面板重启后把「运行中」的任务标成 interrupted —— 不假装还能续跑 */
@@ -123,7 +145,7 @@ export function markInterrupted(): void {
   try {
     for (const n of fs.readdirSync(JOBS_DIR).filter((f) => f.endsWith('.json'))) {
       const job = readJsonSync<Job | null>(path.join(JOBS_DIR, n), null);
-      if (job && job.status === 'running') {
+      if (job && (job.status === 'running' || job.status === 'cancelling')) {
         atomicWriteJsonSync(path.join(JOBS_DIR, n), { ...job, status: 'interrupted', endedAt: Date.now() });
       }
     }

@@ -121,6 +121,7 @@ function normalizeConfig(cfg: InstanceConfig, id: string): InstanceConfig {
     // 正常关服照样会完整存盘，只有「断电/被强杀」时可能丢最近几秒。
     syncChunkWrites: cfg.syncChunkWrites ?? false,
     maxTickTime: cfg.maxTickTime ?? 60000,
+    allowFlight: cfg.allowFlight ?? false,
     frp: cfg.frp ?? { enabled: true, remotePort: null, mode: 'auto' },
     backup: { ...defaultBackupPolicy(), ...(cfg.backup ?? {}) },
     schedule: { ...defaultSchedule(), ...(cfg.schedule ?? {}) },
@@ -157,7 +158,7 @@ export function saveState(id: string, patch: Partial<InstanceState>): InstanceSt
 const RESTART_KEYS: (keyof InstanceConfig)[] = [
   'port', 'rconPort', 'memoryMb', 'minMemoryMb', 'jvmExtra', 'mc', 'loader', 'loaderVersion',
   'javaMajor', 'javaPath', 'onlineMode', 'whiteList', 'levelName', 'levelSeed', 'gamemode',
-  'difficulty', 'pvp', 'hardcore', 'allowNether', 'spawnMonsters', 'spawnAnimals', 'spawnNpcs',
+  'difficulty', 'pvp', 'hardcore', 'allowNether', 'allowFlight', 'spawnMonsters', 'spawnAnimals', 'spawnNpcs',
   'generateStructures', 'enableCommandBlock', 'maxPlayers', 'motd',
 ];
 
@@ -182,6 +183,7 @@ const PROP_KEYS: [keyof InstanceConfig, string][] = [
   ['pvp', 'pvp'],
   ['hardcore', 'hardcore'],
   ['allowNether', 'allow-nether'],
+  ['allowFlight', 'allow-flight'],
   ['spawnMonsters', 'spawn-monsters'],
   ['spawnAnimals', 'spawn-animals'],
   ['spawnNpcs', 'spawn-npcs'],
@@ -297,6 +299,7 @@ export interface CreateParams {
   pvp?: boolean;
   hardcore?: boolean;
   allowNether?: boolean;
+  allowFlight?: boolean;
   generateStructures?: boolean;
   onlineMode?: boolean;
   whiteList?: boolean;
@@ -390,6 +393,7 @@ export async function createInstance(params: CreateParams): Promise<InstanceConf
     syncChunkWrites: params.syncChunkWrites ?? false,
     maxTickTime: params.maxTickTime ?? 60000,
     allowNether: params.allowNether ?? true,
+    allowFlight: params.allowFlight ?? false,
     spawnMonsters: true,
     spawnAnimals: true,
     spawnNpcs: true,

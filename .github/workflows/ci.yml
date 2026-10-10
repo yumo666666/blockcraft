@@ -42,4 +42,7 @@ jobs:
 
       - name: 编译 Windows 托盘启动器
         working-directory: packaging/windows
-        run: GOOS=windows GOARCH=amd64 go build -mod=readonly -trimpath -o /tmp/BlockCraft.exe .
+        run: |
+          trap 'rm -f blockcraft_windows_amd64.syso' EXIT
+          go run github.com/akavel/rsrc@v0.10.2 -ico blockcraft.ico -o blockcraft_windows_amd64.syso -arch amd64
+          GOOS=windows GOARCH=amd64 go build -mod=readonly -trimpath -o /tmp/BlockCraft.exe .

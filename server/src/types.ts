@@ -91,6 +91,7 @@ export interface InstanceConfig {
   /** 单 tick 超过多少毫秒就判定卡死（服务端自带看门狗；0 = 关闭） */
   maxTickTime: number;
   allowNether: boolean;
+  allowFlight: boolean;
   spawnMonsters: boolean;
   spawnAnimals: boolean;
   spawnNpcs: boolean;
@@ -225,7 +226,7 @@ export interface Job {
   kind: 'create' | 'import' | 'copy' | 'backup' | 'rollback' | 'install';
   title: string;
   instanceId: string | null;
-  status: 'running' | 'done' | 'failed' | 'interrupted';
+  status: 'running' | 'cancelling' | 'cancelled' | 'done' | 'failed' | 'interrupted';
   stages: { key: string; label: string; status: 'pending' | 'running' | 'done' | 'failed' }[];
   lines: string[];
   progress: number;

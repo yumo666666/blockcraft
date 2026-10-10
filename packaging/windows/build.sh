@@ -44,7 +44,12 @@ cp -R bin/. "$OUT/app/bin/"
 NODE_VERSION="${BC_WINDOWS_NODE_VERSION:-24.19.0}"
 ARCHIVE="node-v${NODE_VERSION}-win-x64.zip"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+ICON_RESOURCE=""
+cleanup_build() {
+  if [[ -n "${ICON_RESOURCE:-}" ]]; then rm -f "$ICON_RESOURCE"; fi
+  rm -rf "$TMP"
+}
+trap cleanup_build EXIT
 curl --fail --location --silent --show-error "https://nodejs.org/dist/v${NODE_VERSION}/${ARCHIVE}" -o "$TMP/$ARCHIVE"
 python3 - "$TMP/$ARCHIVE" "$OUT/runtime/node.exe" <<'PY'
 import sys
@@ -57,6 +62,8 @@ with zipfile.ZipFile(archive) as bundle:
         target.write(source.read())
 PY
 
+ICON_RESOURCE="$ROOT/packaging/windows/blockcraft_windows_amd64.syso"
+(cd packaging/windows && "$GO_BIN" run github.com/akavel/rsrc@v0.10.2 -ico blockcraft.ico -o blockcraft_windows_amd64.syso -arch amd64)
 (cd packaging/windows && GO111MODULE=on GOOS=windows GOARCH=amd64 "$GO_BIN" build -mod=readonly -trimpath -ldflags='-s -w -H=windowsgui' -o "$OUT/BlockCraft.exe" .)
 cat > "$OUT/README.txt" <<'EOF'
 BlockCraft Windows x64

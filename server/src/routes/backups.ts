@@ -4,6 +4,7 @@ import { audit } from '../core/logger.ts';
 import * as I from '../services/instanceService.ts';
 import * as sup from '../services/supervisor.ts';
 import * as B from '../services/backupService.ts';
+import { getJob, requestJobCancellation } from '../services/jobService.ts';
 
 export function registerBackupRoutes(app: Express): void {
   app.get('/api/instances/:id/backups', (req, res) => {
@@ -149,6 +150,12 @@ export function registerBackupRoutes(app: Express): void {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: '任务不存在' } });
       }
     });
+  });
+
+  app.post('/api/jobs/:jobId/cancel', (req, res) => {
+    const job = requestJobCancellation(req.params.jobId);
+    audit({ ip: req.ip, action: 'job.cancel', target: job.id, detail: { instanceId: job.instanceId, kind: job.kind } });
+    res.json({ ok: true, job: getJob(job.id) });
   });
 
   app.get('/api/jobs/:jobId/stream', (req, res) => {

@@ -127,7 +127,7 @@ export function registerInstanceRoutes(app: Express): void {
     //   RESTART_KEYS→ 需要重启才生效的（含上面这组）
     const PROP_KEYS = [
       'motd', 'maxPlayers', 'port', 'rconPort', 'onlineMode', 'whiteList', 'levelSeed', 'levelName',
-      'gamemode', 'difficulty', 'pvp', 'hardcore', 'allowNether', 'spawnMonsters', 'spawnAnimals',
+      'gamemode', 'difficulty', 'pvp', 'hardcore', 'allowNether', 'allowFlight', 'spawnMonsters', 'spawnAnimals',
       'spawnNpcs', 'generateStructures', 'enableCommandBlock', 'viewDistance', 'simulationDistance',
     ] as const;
     const RESTART_KEYS = [...PROP_KEYS, 'memoryMb', 'minMemoryMb', 'jvmExtra', 'mc', 'loader', 'loaderVersion', 'javaMajor', 'javaPath'] as const;
