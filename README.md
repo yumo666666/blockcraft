@@ -28,7 +28,7 @@
 | **世界生命周期** | 启动 / 优雅停止（保存 → 公告 → 踢人 → 关服）/ 重启；每个世界独立端口 |
 | **配置** | 名称、种子、模式、难度、PVP、白名单、正版验证、视距、内存、JVM 参数、15 项游戏规则；改完标出哪些需要重启 |
 | **控制台** | 实时日志（SSE）、命令输入、快捷命令、**定时开服/停服**，停服前 N 分钟自动公告，到点还有人在线就等最后一人下线 |
-| **备份与回退** | 按「世界名+时间」命名，删除与回退都要二次确认；回退 = 停服 → 保底另存 → 解压 → 自动启动 |
+| **备份与回退** | 按「世界名+时间」命名，支持 ZIP 下载/上传迁移；删除与回退都要二次确认；回退 = 停服 → 保底另存 → 解压 → 自动启动 |
 | **MOD 管理** | 搜索 / 分页 / 来源识别（Modrinth、CurseForge、本地）/ 批量导入 / 链接下载 / 启停 / 删除 / 缺依赖检查 |
 | **玩家管理** | 在线玩家循环走路皮肤卡片、设/取消管理员、踢出、白名单、拉黑；共用皮肤池支持多选 PNG 上传和浏览器缓存 |
 | **复制为新世界** | 带种子与新参数，把源世界的 MOD 与配置**真实复制**一份，几十秒得到一个全新独立档 |
@@ -41,17 +41,36 @@
 
 ## 快速开始
 
-要求 **Node.js ≥ 22.6**（用到原生 TypeScript 类型剥离，不需要编译步骤）。
+从源码运行时用到 Node.js 原生 TypeScript 类型剥离，系统 Node.js 需 **≥ 22.6**；Linux 启动脚本会在缺少合适版本时下载项目本地运行时。
 
-### Ubuntu
+### Linux（推荐 Ubuntu Server 24.04 LTS）
 
-在桌面 Ubuntu 上运行一个脚本即可启动。系统没有合适版本的 Node.js 时，脚本会在项目目录下载便携版运行时；首次运行会安装依赖并构建页面。
+Ubuntu Server 24.04 LTS x64 是最省事的选择；Debian 12 也可以。把源码包解压到长期保留的目录后，先前台运行一次。系统没有合适版本的 Node.js 时，脚本会在项目目录下载便携版运行时；首次运行会安装依赖并构建页面。
 
 ```bash
-./bin/ubuntu.sh
+bash bin/ubuntu.sh
 ```
 
-服务端会在终端前台运行，浏览器会自动打开本机管理页。按 `Ctrl+C` 关闭面板；已经启动的 Minecraft 世界不会被面板退出连带关闭。
+无桌面环境时，终端会显示面板端口；登录令牌保存在 `data/panel.json`。第一次准备完成后按 `Ctrl+C`，再安装开机服务：
+
+```bash
+sudo bash bin/install-systemd.sh
+sudo systemctl status blockcraft
+sudo journalctl -u blockcraft -f
+```
+
+服务会在开机时启动面板和看门狗，也会随面板设置自启世界。`systemctl restart blockcraft` 重启面板时，已运行的 Minecraft 世界会继续运行。管理命令：
+
+```bash
+sudo systemctl stop blockcraft
+sudo systemctl start blockcraft
+sudo systemctl restart blockcraft
+sudo bash bin/install-systemd.sh uninstall   # 移除服务，不删除世界和配置
+```
+
+外部设备访问时，在防火墙放行面板端口（默认 8081）和你分配的游戏端口；使用 FRP 时按 FRP 设置配置远端端口。首次打开地址可从 `data/panel.json` 读取 token：`http://服务器IP:8081/?token=你的token`。
+
+桌面 Linux 也可以直接运行 `bash bin/ubuntu.sh`，按 `Ctrl+C` 关闭面板；已启动的 Minecraft 世界不会因此被结束。
 
 ### Windows
 
@@ -109,7 +128,7 @@ bin/start.sh    # 只起面板
 bin/stop.sh     # 只停面板（不会结束正在运行的世界）
 ```
 
-想让它在开机时自动跑，把 `bin/boot.sh` 挂到你的启动钩子上即可（crontab `@reboot`、DSH web profile 插件、supervisor 都行）。
+没有 systemd 的环境可以把 `bin/boot.sh` 挂到启动钩子上（例如 crontab `@reboot`、DSH web profile 插件或 supervisor）。普通 Ubuntu/Debian 主机优先用上面的 `bin/install-systemd.sh`。
 
 ### 环境变量
 
@@ -199,7 +218,7 @@ instances/<世界id>/        每个世界一份，完全独立
 自己出一份源码包：
 
 ```bash
-git archive --format=tar.gz --prefix=blockcraft-2.3.18/ -o blockcraft-2.3.18.tar.gz HEAD
+git archive --format=tar.gz --prefix=blockcraft-2.3.19/ -o blockcraft-2.3.19.tar.gz HEAD
 ```
 
 ## 测试

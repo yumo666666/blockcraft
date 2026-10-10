@@ -5,6 +5,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="$ROOT/.runtime"
 LOCAL_NODE="$RUNTIME/node"
 NODE_VERSION="${BC_UBUNTU_NODE_VERSION:-24.19.0}"
+OPEN_BROWSER=1
+START_WATCHDOG=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-browser) OPEN_BROWSER=0 ;;
+    --watchdog) START_WATCHDOG=1 ;;
+    *) echo "Unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 
 node_ok() {
   "$1" -e 'const [major,minor]=process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)' >/dev/null 2>&1
@@ -43,6 +53,7 @@ fi
 export BC_ROOT="${BC_ROOT:-$ROOT}"
 export BC_DATA_DIR="${BC_DATA_DIR:-$ROOT/data}"
 export BC_INSTANCE_DIR="${BC_INSTANCE_DIR:-$ROOT/instances}"
+mkdir -p "$BC_DATA_DIR/logs"
 NODE_PROXY_ARGS=()
 if "$NODE_BIN" --help 2>&1 | grep -q -- '--use-env-proxy'; then
   NODE_PROXY_ARGS+=(--use-env-proxy)
@@ -74,13 +85,19 @@ fi
 cd "$ROOT"
 "$NODE_BIN" "${NODE_PROXY_ARGS[@]}" --experimental-strip-types "$ROOT/server/src/index.ts" &
 PANEL_PID=$!
-stop_panel() {
+WATCHDOG_PID=""
+cleanup() {
+  if [ -n "$WATCHDOG_PID" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+    kill -TERM "$WATCHDOG_PID" 2>/dev/null || true
+    wait "$WATCHDOG_PID" 2>/dev/null || true
+  fi
   if kill -0 "$PANEL_PID" 2>/dev/null; then
     kill -TERM "$PANEL_PID" 2>/dev/null || true
     wait "$PANEL_PID" 2>/dev/null || true
   fi
 }
-trap stop_panel EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 0' INT TERM
 
 if [ -n "${BC_PORT:-}" ]; then
   PORT="$BC_PORT"
@@ -93,10 +110,16 @@ if ! "$NODE_BIN" -e 'const until=Date.now()+90000; (async()=>{ while(Date.now()<
   exit 1
 fi
 
+if [ "$START_WATCHDOG" = "1" ]; then
+  "$NODE_BIN" "${NODE_PROXY_ARGS[@]}" --experimental-strip-types "$ROOT/server/src/watchdog.ts" >> "$BC_DATA_DIR/logs/watchdog-service.out" 2>&1 &
+  WATCHDOG_PID=$!
+  echo "BlockCraft watchdog started (PID $WATCHDOG_PID)."
+fi
+
 TOKEN="$($NODE_BIN -e 'try { const cfg=require(process.argv[1]); process.stdout.write(cfg.panel?.token ?? ""); } catch {}' "$BC_DATA_DIR/panel.json")"
 PANEL_URL="http://127.0.0.1:${PORT}/"
 if [ -n "$TOKEN" ]; then PANEL_URL="${PANEL_URL}?token=${TOKEN}"; fi
-if command -v xdg-open >/dev/null 2>&1; then
+if [ "$OPEN_BROWSER" = "1" ] && command -v xdg-open >/dev/null 2>&1; then
   xdg-open "$PANEL_URL" >/dev/null 2>&1 &
   echo "BlockCraft is ready. Your browser is opening the local panel."
 else

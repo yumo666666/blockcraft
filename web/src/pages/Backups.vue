@@ -69,10 +69,14 @@ const showCleanup = ref(false);
 const cleanupPlan = ref<CleanupPlan | null>(null);
 const planBusy = ref(false);
 const cleaning = ref(false);
+const uploading = ref(false);
+const backupInput = ref<HTMLInputElement | null>(null);
 
 let stageTimer: number | null = null;
 let pollTimer: number | null = null;
+let listPollTimer: number | null = null;
 let closed = false;
+let pollingLiveState = false;
 
 const name = computed(() => detail.value?.instance?.name ?? props.id);
 const status = computed(() => detail.value?.instance?.status ?? 'stopped');
@@ -143,6 +147,23 @@ async function loadDetail(): Promise<void> {
     detail.value = await api.get<InstanceDetail>(`/api/instances/${props.id}`);
   } catch (err) {
     toastError(err, '读取世界信息失败');
+  }
+}
+
+async function pollLiveState(): Promise<void> {
+  if (pollingLiveState || closed) return;
+  pollingLiveState = true;
+  try {
+    const [nextDetail, nextBackups] = await Promise.all([
+      api.get<InstanceDetail>(`/api/instances/${props.id}`),
+      api.get<BackupsPayload>(`/api/instances/${props.id}/backups`),
+    ]);
+    detail.value = nextDetail;
+    running.value = Boolean(nextBackups.running);
+  } catch {
+    // Background refreshes should not interrupt the page with a toast every few seconds.
+  } finally {
+    pollingLiveState = false;
   }
 }
 
@@ -236,6 +257,36 @@ async function doRollback(): Promise<void> {
   }
 }
 
+function chooseBackupUpload(): void {
+  if (!uploading.value) backupInput.value?.click();
+}
+
+async function uploadBackup(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  uploading.value = true;
+  try {
+    const result = await api.uploadFile<{ ok: boolean; entry: BackupEntry }>(`/api/instances/${props.id}/backups/upload`, file);
+    toast('ok', '备份上传完成', `${result.entry.file} · ${fmtBytes(result.entry.bytes)}`);
+    await reload();
+  } catch (err) {
+    toastError(err, '备份上传失败');
+  } finally {
+    uploading.value = false;
+    input.value = '';
+  }
+}
+
+function downloadBackup(entry: BackupEntry): void {
+  const link = document.createElement('a');
+  link.href = `/api/instances/${encodeURIComponent(props.id)}/backups/${encodeURIComponent(entry.file)}/download`;
+  link.download = entry.file;
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
 // ---------------------------------------------------------------- 清理（先预演再执行）
 
 async function planCleanup(): Promise<void> {
@@ -298,13 +349,17 @@ async function savePolicy(): Promise<void> {
 onMounted(async () => {
   await reload();
   if (closed) return;
-  pollTimer = window.setInterval(load, 10000);
+  // A rollback restarts the server asynchronously. Keep the live badge in sync
+  // after the request returns instead of leaving the initial "starting" snapshot.
+  pollTimer = window.setInterval(pollLiveState, 3000);
+  listPollTimer = window.setInterval(load, 10000);
 });
 
 onUnmounted(() => {
   closed = true;
   if (stageTimer) window.clearInterval(stageTimer);
   if (pollTimer) window.clearInterval(pollTimer);
+  if (listPollTimer) window.clearInterval(listPollTimer);
 });
 
 watch(
@@ -365,6 +420,10 @@ watch(
         <h2>📦 备份列表</h2>
         <div class="row gap-2">
           <span v-if="loading" class="spinner" />
+          <button class="btn btn-sm" :disabled="uploading" @click="chooseBackupUpload">
+            <span v-if="uploading" class="spinner" />
+            {{ uploading ? '正在上传…' : '上传备份 ZIP' }}
+          </button>
           <button class="btn btn-sm" :disabled="planBusy || cleaning" @click="planCleanup">
             <span v-if="planBusy" class="spinner" />
             清理旧备份
@@ -373,6 +432,7 @@ watch(
       </div>
 
       <div class="card-body col gap-3">
+        <p class="text-3 small">只上传由 BlockCraft 导出的 ZIP 备份，单个文件最大 20 GB。备份只含世界存档，不含 MOD 和服务器配置；迁移后请让目标世界的 Minecraft 版本、加载器与模组保持一致。</p>
         <div v-if="!backups.length && !loading" class="empty">
           <div class="empty-icon">📦</div>
           <div>还没有任何备份</div>
@@ -398,6 +458,7 @@ watch(
 
             <div class="row gap-2 wrap-right">
               <span v-if="b.status !== 'ok'" class="text-3 small">该备份不完整，禁止回退</span>
+              <button class="btn btn-sm" :disabled="rolling" @click="downloadBackup(b)">下载</button>
               <button class="btn btn-sm btn-danger" :disabled="rolling" @click="askDelete(b)">删除</button>
               <button
                 class="btn btn-sm btn-primary"
@@ -412,6 +473,14 @@ watch(
         </div>
       </div>
     </div>
+
+    <input
+      ref="backupInput"
+      type="file"
+      accept=".zip,application/zip"
+      style="display: none"
+      @change="uploadBackup"
+    />
 
     <!-- 自动备份设置 -->
     <div class="card">

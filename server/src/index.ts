@@ -115,7 +115,7 @@ export function boot(): void {
   });
 
   app.get('/api/ping', (_req, res) => {
-    res.json({ ok: true, name: 'BlockCraft', version: '2.3.10' });
+    res.json({ ok: true, name: 'BlockCraft', version: '2.3.19' });
   });
 
   // ---- 鉴权中间件
@@ -259,10 +259,13 @@ export function boot(): void {
     }
   }, 3600_000).unref();
 
-  app.listen(cfg.panel.port, cfg.panel.host, () => {
+  const httpServer = app.listen(cfg.panel.port, cfg.panel.host, () => {
     logger.info(`BlockCraft 面板已启动：http://${cfg.panel.host}:${cfg.panel.port}`);
     logger.info(`世界目录：${INSTANCES_DIR}`);
   });
+  // Save uploads are streamed to disk and can be several gigabytes on a home
+  // connection. Allow a long transfer window instead of Node's short default.
+  httpServer.requestTimeout = 2 * 60 * 60 * 1000;
 
   startFrpService().catch((err) => logger.warn('FRP 服务启动失败', String(err)));
   startScheduler();

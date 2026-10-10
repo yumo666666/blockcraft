@@ -11,6 +11,7 @@
  */
 
 import fs from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 // yazl / yauzl 是 CJS 且不带类型声明，按默认导入 + 断言使用
@@ -20,7 +21,7 @@ import yazlModule from 'yazl';
 import yauzlModule from 'yauzl';
 import { INSTANCE_ID_RE, instanceBackupDir, instanceServerDir } from '../core/paths.ts';
 import { atomicWriteJsonWithBackupSync, dirSizeSync, listFilesSync, readJsonSync } from '../core/fsx.ts';
-import { bad, busy, notFound, notReady } from '../core/errors.ts';
+import { bad, badBilingual, busy, notFound, notReady, payloadTooLarge } from '../core/errors.ts';
 import { createLogger } from '../core/logger.ts';
 import { withLock } from '../core/lock.ts';
 import type { BackupEntry, BackupPolicy, Loader } from '../types.ts';
@@ -31,6 +32,8 @@ const logger = createLogger('backup');
 const MAX_SCAN_FILES = 20000;
 /** 打包列文件的上限（防御性，避免被异常目录拖死） */
 const MAX_ARCHIVE_FILES = 200000;
+export const MAX_BACKUP_UPLOAD_BYTES = 20 * 1024 * 1024 * 1024;
+const MAX_UNPACKED_UPLOAD_BYTES = 200 * 1024 * 1024 * 1024;
 /** level.dat 至少这么大才算世界已经生成（正常约 386B 起） */
 const MIN_LEVEL_DAT_BYTES = 200;
 /** 区域文件后缀：.mca（Anvil）/ .mcr（旧版 McRegion） */
@@ -292,6 +295,65 @@ function countZipRegions(file: string): Promise<{ entries: number; regions: numb
   });
 }
 
+/** Validate an uploaded archive before it becomes a selectable backup. */
+function inspectUploadedArchive(file: string): Promise<{ entries: number; regions: number }> {
+  return new Promise((resolve, reject) => {
+    yauzl.open(file, { lazyEntries: true, autoClose: true, validateEntrySizes: true }, (err: Error | null, zip: any) => {
+      if (err || !zip) {
+        reject(err ?? new Error('无法打开 ZIP 文件'));
+        return;
+      }
+      let entries = 0;
+      let regions = 0;
+      let hasLevelDat = false;
+      let unpackedBytes = 0;
+      let settled = false;
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        try { zip.close(); } catch { /* ignore */ }
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+      zip.on('error', fail);
+      zip.on('entry', (entry: any) => {
+        if (settled) return;
+        entries++;
+        if (entries > MAX_ARCHIVE_FILES) {
+          fail(new Error(`备份包含超过 ${MAX_ARCHIVE_FILES} 个文件`));
+          return;
+        }
+        const name = String(entry?.fileName ?? '').replace(/\\/g, '/');
+        const segments = name.split('/');
+        if (!name || name.startsWith('/') || /^[A-Za-z]:/.test(name) || segments.includes('..') || name.includes('\0')) {
+          fail(new Error(`ZIP 内含非法路径：${name || '(空路径)'}`));
+          return;
+        }
+        const uncompressed = Number(entry?.uncompressedSize ?? 0);
+        if (Number.isFinite(uncompressed) && uncompressed > 0) unpackedBytes += uncompressed;
+        if (unpackedBytes > MAX_UNPACKED_UPLOAD_BYTES) {
+          fail(new Error('备份解压后超过 200 GB 限制'));
+          return;
+        }
+        if (REGION_RE.test(name)) regions++;
+        if (name.toLowerCase() === 'level.dat') hasLevelDat = true;
+        zip.readEntry();
+      });
+      zip.on('end', () => {
+        if (settled) return;
+        settled = true;
+        if (!hasLevelDat) {
+          reject(new Error('ZIP 内没有 level.dat，不是完整的世界存档备份'));
+        } else if (regions <= 0) {
+          reject(new Error('ZIP 内没有区域文件（.mca/.mcr），存档不完整'));
+        } else {
+          resolve({ entries, regions });
+        }
+      });
+      zip.readEntry();
+    });
+  });
+}
+
 /** 解压到 destDir；stripPrefix（如 `world/`）会被剥掉，兼容两种打包布局 */
 function extractZip(zipFile: string, destDir: string, stripPrefix: string): Promise<{ entries: number; regions: number }> {
   return new Promise((resolve, reject) => {
@@ -429,6 +491,109 @@ function writeIndex(instanceId: string, entries: BackupEntry[]): void {
 export function listBackups(instanceId: string): BackupEntry[] {
   assertInstanceId(instanceId);
   return readIndex(instanceId);
+}
+
+/** Return a checked path for a backup that is present in this instance's index. */
+export function backupPath(instanceId: string, rawFile: string): string {
+  assertInstanceId(instanceId);
+  const file = safeBackupFile(rawFile);
+  if (!readIndex(instanceId).some((entry) => entry.file === file)) throw notFound(`备份不存在：${file}`);
+  const target = path.join(backupDirOf(instanceId), file);
+  try {
+    if (!fs.statSync(target).isFile()) throw notFound(`备份不存在：${file}`);
+  } catch {
+    throw notFound(`备份不存在：${file}`);
+  }
+  return target;
+}
+
+/** Stream an uploaded BlockCraft backup to disk, validate it, then add it to the index. */
+export async function importBackup(
+  instanceId: string,
+  originalName: string,
+  input: AsyncIterable<Uint8Array>,
+  context: { name: string; mc: string; loader: Loader },
+): Promise<BackupEntry> {
+  assertInstanceId(instanceId);
+  const uploadedName = path.basename(String(originalName ?? '')).trim();
+  if (!uploadedName || !uploadedName.toLowerCase().endsWith('.zip')) {
+    throw badBilingual('请选择 BlockCraft 的 ZIP 备份文件', 'Choose a BlockCraft backup ZIP file.');
+  }
+
+  const dir = backupDirOf(instanceId);
+  const tmpDir = tmpDirOf(instanceId);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpFile = path.join(tmpDir, `.upload-${crypto.randomUUID()}.part`);
+  let handle: FileHandle | undefined;
+  let bytes = 0;
+  let tooLarge = false;
+  try {
+    handle = await fs.promises.open(tmpFile, 'wx');
+    for await (const value of input) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      bytes += chunk.length;
+      if (bytes > MAX_BACKUP_UPLOAD_BYTES) {
+        tooLarge = true;
+        continue; // Drain the request so the browser receives a structured 413.
+      }
+      await handle.writeFile(chunk);
+    }
+    await handle.close();
+    handle = undefined;
+    if (tooLarge) throw payloadTooLarge('备份 ZIP 超过 20 GB 上传限制', 'Backup ZIP exceeds the 20 GB upload limit.');
+    if (bytes < 22) throw badBilingual('上传的文件不是有效 ZIP 备份', 'The uploaded file is not a valid ZIP backup.');
+
+    let inspected: { entries: number; regions: number };
+    try {
+      inspected = await inspectUploadedArchive(tmpFile);
+    } catch (err) {
+      throw badBilingual(
+        `备份 ZIP 校验失败：${err instanceof Error ? err.message : String(err)}`,
+        'Backup ZIP validation failed. It must contain level.dat and region files, and must not contain unsafe paths.',
+      );
+    }
+    const { sha256 } = await hashFile(tmpFile);
+    return await withLock(lockKey(instanceId), async () => {
+      fs.mkdirSync(dir, { recursive: true });
+      const inputBase = uploadedName.replace(/\.zip$/i, '');
+      const base = `${safeName(inputBase)}-${stamp()}-imported`;
+      let file = `${base}.zip`;
+      for (let n = 2; fs.existsSync(path.join(dir, file)); n++) file = `${base}-${n}.zip`;
+      const target = path.join(dir, file);
+      fs.renameSync(tmpFile, target);
+      const entry: BackupEntry = {
+        file,
+        created: Date.now(),
+        type: 'manual',
+        worldName: context.name,
+        bytes,
+        sha256,
+        regions: inspected.regions,
+        status: 'ok',
+        note: `从其他服务器导入；${inspected.entries} 个条目，区域文件 ${inspected.regions} 个`,
+        mc: context.mc,
+        loader: context.loader,
+      };
+      try {
+        const index = readIndex(instanceId);
+        index.push(entry);
+        writeIndex(instanceId, index);
+      } catch (err) {
+        fs.rmSync(target, { force: true });
+        throw err;
+      }
+      logger.info(`导入备份完成：${instanceId}/${file}（${bytes} 字节，区域文件 ${inspected.regions} 个）`);
+      return entry;
+    });
+  } catch (err) {
+    await handle?.close().catch(() => undefined);
+    await fs.promises.rm(tmpFile, { force: true }).catch(() => undefined);
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (['ENOSPC', 'EACCES', 'EPERM', 'EROFS'].includes(String(code))) {
+      throw new Error(`无法保存备份 ZIP，请检查磁盘空间和数据目录权限（${code}） / Could not save the backup ZIP. Check free disk space and data-directory permissions (${code}).`);
+    }
+    throw err;
+  }
 }
 
 export function backupUsage(instanceId: string): { bytes: number; count: number } {

@@ -1,5 +1,5 @@
 import type { Express } from 'express';
-import { bad, notFound } from '../core/errors.ts';
+import { bad, badBilingual, notFound } from '../core/errors.ts';
 import { audit } from '../core/logger.ts';
 import * as I from '../services/instanceService.ts';
 import * as sup from '../services/supervisor.ts';
@@ -16,6 +16,55 @@ export function registerBackupRoutes(app: Express): void {
       policy: cfg.backup,
       running: sup.isRunning(id),
     });
+  });
+
+  app.get('/api/instances/:id/backups/:file/download', (req, res, next) => {
+    const { id, file } = req.params;
+    I.getConfig(id);
+    const target = B.backupPath(id, file);
+    audit({ ip: req.ip, action: 'backup.download', target: `${id}/${file}` });
+    res.download(target, file, (err) => {
+      if (err && !res.headersSent) next(err);
+    });
+  });
+
+  app.post('/api/instances/:id/backups/upload', async (req, res) => {
+    const id = req.params.id;
+    const cfg = I.getConfig(id);
+    if (!req.is('application/octet-stream')) {
+      req.resume();
+      throw badBilingual('请上传 BlockCraft 备份 ZIP 文件', 'Upload a BlockCraft backup ZIP file.');
+    }
+    let originalName = '';
+    try {
+      originalName = decodeURIComponent(String(req.headers['x-blockcraft-filename'] ?? ''));
+    } catch {
+      req.resume();
+      throw badBilingual('备份文件名无效', 'The backup file name is invalid.');
+    }
+    if (!originalName.toLowerCase().endsWith('.zip')) {
+      req.resume();
+      throw badBilingual('只支持 .zip 格式的 BlockCraft 备份', 'Only BlockCraft .zip backups are supported.');
+    }
+    const contentLength = Number(req.headers['content-length'] ?? 0);
+    if (contentLength > B.MAX_BACKUP_UPLOAD_BYTES) {
+      req.resume();
+      res.status(413).json({
+        error: {
+          code: 'PAYLOAD_TOO_LARGE',
+          message: '备份 ZIP 超过 20 GB 上传限制',
+          message_en: 'Backup ZIP exceeds the 20 GB upload limit.',
+        },
+      });
+      return;
+    }
+    const entry = await B.importBackup(id, originalName, req, {
+      name: cfg.name,
+      mc: cfg.mc,
+      loader: cfg.loader,
+    });
+    audit({ ip: req.ip, action: 'backup.upload', target: `${id}/${entry.file}`, detail: { bytes: entry.bytes, regions: entry.regions } });
+    res.json({ ok: true, entry });
   });
 
   app.post('/api/instances/:id/backups', async (req, res) => {

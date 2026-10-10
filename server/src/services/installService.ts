@@ -467,13 +467,21 @@ export async function copyInstance(srcId: string, params: CopyParams, onLog: (s:
       skip.add(d);
     }
   }
-  const skipFiles = new Set(['session.lock', 'usercache.json', 'ops.json', 'banned-ips.json', 'banned-players.json']);
+  const skipFiles = new Set(['session.lock', 'usercache.json', 'ops.json', 'whitelist.json', 'banned-ips.json', 'banned-players.json']);
   onLog('开始复制服务端目录（真实复制，零共享）…');
   const stats = copyTree(from, to, { skipDirs: skip, skipFiles, onLog });
   onLog(`复制完成：${stats.files} 个文件，${(stats.bytes / 1024 / 1024).toFixed(1)} MB`);
 
   if (params.inheritOps !== false) copyIfExists(path.join(from, 'ops.json'), path.join(to, 'ops.json'));
   if (params.inheritWhitelist !== false) copyIfExists(path.join(from, 'whitelist.json'), path.join(to, 'whitelist.json'));
+  if (params.includeWorld) {
+    // Player management builds its "all known players" list from usercache.json
+    // as well as the operator, whitelist, and ban lists. Keep the player cache
+    // and player bans with a copied save so the new world shows the same roster.
+    copyIfExists(path.join(from, 'usercache.json'), path.join(to, 'usercache.json'));
+    copyIfExists(path.join(from, 'banned-players.json'), path.join(to, 'banned-players.json'));
+    onLog('已复制全部已知玩家记录（usercache 与封禁名单）');
+  }
 
   // 覆盖级配置：与源世界不同的部分
   I.saveConfig(created.id, {
