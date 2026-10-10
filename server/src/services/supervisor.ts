@@ -65,6 +65,27 @@ class ConsoleBuffer extends EventEmitter {
     }
   }
 
+  /** Close the append stream so Windows can move/delete the instance directory. */
+  async closeFile(): Promise<void> {
+    const file = this.file;
+    this.file = null;
+    if (!file || file.closed) return;
+
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        file.off('close', finish);
+        file.off('error', finish);
+        resolve();
+      };
+      file.once('close', finish);
+      file.once('error', () => {
+        if (!file.destroyed) file.destroy();
+        if (file.closed) finish();
+      });
+      file.end();
+    });
+  }
+
   since(seq: number): ConsoleLine[] {
     return this.lines.filter((l) => l.seq > seq);
   }
@@ -105,6 +126,11 @@ export function console_(id: string): ConsoleBuffer {
     buffers.set(id, b);
   }
   return b;
+}
+
+/** Release the console.log handle before deleting or moving an instance. */
+export async function closeConsoleFile(id: string): Promise<void> {
+  await buffers.get(id)?.closeFile();
 }
 
 // ------------------------------------------------------------------ RCON

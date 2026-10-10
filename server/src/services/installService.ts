@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
@@ -30,31 +31,53 @@ async function fetchJson<T>(url: string, init: RequestInit = {}, timeoutMs = 200
 }
 
 /** 带大小校验的流式下载（防半包）；本地缓存命中时不重复下载 */
-export async function downloadTo(url: string, dest: string, onLog?: (s: string) => void, opts: { retries?: number } = {}): Promise<void> {
+async function sha1File(file: string): Promise<string> {
+  const hash = createHash('sha1');
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk as Buffer);
+  return hash.digest('hex');
+}
+
+export async function downloadTo(
+  url: string,
+  dest: string,
+  onLog?: (s: string) => void,
+  opts: { retries?: number; timeoutMs?: number; sha1?: string } = {},
+): Promise<void> {
   const retries = opts.retries ?? 3;
+  const timeoutMs = opts.timeoutMs ?? 180_000;
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const tmp = `${dest}.part`;
   for (let attempt = 1; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error(`下载超过 ${Math.round(timeoutMs / 1000)} 秒`)), timeoutMs);
     try {
-      onLog?.(`下载 ${path.basename(dest)}（第 ${attempt} 次）← ${url}`);
-      const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': 'BlockCraft/2.0' } });
+      onLog?.(`下载 ${path.basename(dest)}（第 ${attempt}/${retries} 次）← ${url}`);
+      const res = await fetch(url, { redirect: 'follow', signal: controller.signal, headers: { 'user-agent': 'BlockCraft/2.0' } });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       const expect = Number(res.headers.get('content-length') ?? 0);
       await pipeline(Readable.fromWeb(res.body as never), fs.createWriteStream(tmp));
       const size = fs.statSync(tmp).size;
       if (size === 0) throw new Error('下载到 0 字节');
       if (expect && size !== expect) throw new Error(`下载不完整：${size}/${expect}`);
+      if (opts.sha1) {
+        const actual = await sha1File(tmp);
+        if (actual.toLowerCase() !== opts.sha1.toLowerCase()) throw new Error(`SHA-1 校验失败：实际 ${actual}，预期 ${opts.sha1}`);
+      }
       fs.renameSync(tmp, dest);
       onLog?.(`完成 ${path.basename(dest)}（${(size / 1024 / 1024).toFixed(1)} MB）`);
       return;
     } catch (err) {
+      const failure = controller.signal.aborted ? new Error(`下载超时（${Math.round(timeoutMs / 1000)} 秒）`) : err;
       try {
         fs.rmSync(tmp, { force: true });
       } catch {
         /* ignore */
       }
-      if (attempt === retries) throw err;
+      if (attempt === retries) throw failure;
+      onLog?.(`下载失败，将重试：${String(failure).slice(0, 160)}`);
       await new Promise((r) => setTimeout(r, 1500 * attempt));
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }
@@ -81,23 +104,65 @@ export async function listVersions(): Promise<{ id: string; type: string }[]> {
   return m.versions.map((v) => ({ id: v.id, type: v.type }));
 }
 
-async function vanillaServerUrl(mc: string): Promise<{ url: string; javaMajor: number }> {
+async function vanillaServerUrl(mc: string): Promise<{ url: string; sha1?: string; javaMajor: number }> {
   const m = await versionManifest();
   const v = m.versions.find((x) => x.id === mc);
   if (!v) throw bad(`找不到 Minecraft 版本 ${mc}`);
-  const detail = await fetchJson<{ downloads: { server?: { url: string } }; javaVersion?: { majorVersion: number } }>(v.url);
+  const detail = await fetchJson<{ downloads: { server?: { url: string; sha1?: string } }; javaVersion?: { majorVersion: number } }>(v.url);
   if (!detail.downloads.server) throw bad(`Minecraft ${mc} 没有服务端下载`);
-  return { url: detail.downloads.server.url, javaMajor: detail.javaVersion?.majorVersion ?? 17 };
+  return { url: detail.downloads.server.url, sha1: detail.downloads.server.sha1, javaMajor: detail.javaVersion?.majorVersion ?? 17 };
+}
+
+async function ensureVanillaServerJar(mc: string, onLog: (s: string) => void): Promise<string> {
+  const { url, sha1 } = await vanillaServerUrl(mc);
+  const cache = path.join(STORE_DIR, 'vanilla', mc, 'minecraft_server.jar');
+  if (fs.existsSync(cache)) {
+    let cacheValid = !sha1;
+    if (sha1) {
+      try {
+        cacheValid = (await sha1File(cache)).toLowerCase() === sha1.toLowerCase();
+      } catch {
+        cacheValid = false;
+      }
+    }
+    if (cacheValid) {
+      onLog(`复用已校验的 Minecraft ${mc} 服务端（SHA-1 ${sha1 ? '匹配' : '不可用'}）`);
+      return cache;
+    }
+    onLog(`缓存的 Minecraft ${mc} 服务端校验失败，删除后重新下载`);
+    fs.rmSync(cache, { force: true });
+  }
+  await downloadTo(url, cache, onLog, { retries: 4, timeoutMs: 180_000, sha1 });
+  return cache;
+}
+
+/** Pass the configured HTTP(S) proxy to Java installers that ignore Node's proxy settings. */
+function javaProxyArgs(onLog: (s: string) => void): string[] {
+  const value = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
+  if (!value) return [];
+  try {
+    const proxy = new URL(value);
+    if (!['http:', 'https:'].includes(proxy.protocol) || !proxy.hostname) return [];
+    const port = proxy.port || (proxy.protocol === 'https:' ? '443' : '80');
+    const args = [
+      `-Dhttp.proxyHost=${proxy.hostname}`,
+      `-Dhttp.proxyPort=${port}`,
+      `-Dhttps.proxyHost=${proxy.hostname}`,
+      `-Dhttps.proxyPort=${port}`,
+    ];
+    onLog('Java 安装器将通过系统 HTTP(S) 代理下载依赖');
+    return args;
+  } catch {
+    onLog('系统代理地址无法解析，Java 安装器将直接连接下载依赖');
+    return [];
+  }
 }
 
 // ------------------------------------------------------------------ 各加载器安装
 
 async function installVanilla(cfg: InstanceConfig, onLog: (s: string) => void): Promise<void> {
   const serverDir = instanceServerDir(cfg.id);
-  const { url } = await vanillaServerUrl(cfg.mc);
-  const cache = path.join(STORE_DIR, 'vanilla', cfg.mc, 'minecraft_server.jar');
-  if (!fs.existsSync(cache)) await downloadTo(url, cache, onLog);
-  else onLog(`复用已下载的原版服务端（${cfg.mc}）`);
+  const cache = await ensureVanillaServerJar(cfg.mc, onLog);
   copyIntoTarget(cache, path.join(serverDir, 'minecraft_server.jar'));
 }
 
@@ -138,25 +203,7 @@ async function installFabric(cfg: InstanceConfig, onLog: (s: string) => void): P
 
   // Fabric 的 server/jar API 已不可用。运行官方安装器生成真正的
   // fabric-server-launch.jar 和 libraries；安装器 Java 网络请求跟随常见代理环境变量。
-  const proxyArgs: string[] = [];
-  const proxyValue = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
-  if (proxyValue) {
-    try {
-      const proxy = new URL(proxyValue);
-      if (proxy.protocol === 'http:' && proxy.hostname) {
-        const port = proxy.port || '80';
-        proxyArgs.push(
-          `-Dhttp.proxyHost=${proxy.hostname}`,
-          `-Dhttp.proxyPort=${port}`,
-          `-Dhttps.proxyHost=${proxy.hostname}`,
-          `-Dhttps.proxyPort=${port}`,
-        );
-        onLog('为 Fabric 安装器启用系统 HTTP 代理');
-      }
-    } catch {
-      onLog('无法解析系统代理地址，Fabric 安装器将直接连接');
-    }
-  }
+  const proxyArgs = javaProxyArgs(onLog);
 
   onLog(`运行 Fabric 安装器（Minecraft ${cfg.mc} / Loader ${fabricVersion}）…`);
   await new Promise<void>((resolve, reject) => {
@@ -177,9 +224,7 @@ async function installFabric(cfg: InstanceConfig, onLog: (s: string) => void): P
   if (!fs.existsSync(launcher)) throw new Error('Fabric 安装器未生成 fabric-server-launch.jar');
 
   // Fabric 自举启动器从当前目录的 server.jar 加载 Mojang 服务端。
-  const { url } = await vanillaServerUrl(cfg.mc);
-  const cache = path.join(STORE_DIR, 'vanilla', cfg.mc, 'minecraft_server.jar');
-  if (!fs.existsSync(cache)) await downloadTo(url, cache, onLog);
+  const cache = await ensureVanillaServerJar(cfg.mc, onLog);
   copyIntoTarget(cache, path.join(serverDir, 'server.jar'));
 }
 
@@ -264,11 +309,19 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
 
   const installerCopy = path.join(serverDir, fileName);
   copyIntoTarget(cache, installerCopy);
+  // Forge's Java installer downloads the Mojang server jar itself with a short
+  // read timeout. Fetch and checksum it through BlockCraft's retrying downloader,
+  // then let Forge reuse the expected minecraft_server.<version>.jar file.
+  const vanillaCache = await ensureVanillaServerJar(cfg.mc, onLog);
+  const vanillaTarget = path.join(serverDir, `minecraft_server.${cfg.mc}.jar`);
+  fs.rmSync(vanillaTarget, { force: true });
+  copyIntoTarget(vanillaCache, vanillaTarget);
+  onLog(`已预下载并校验 Minecraft ${cfg.mc} 服务端，将由 ${neo ? 'NeoForge' : 'Forge'} 安装器复用`);
   onLog('运行安装程序（首次会下载依赖，可能几分钟）…');
   await new Promise<void>((resolve, reject) => {
     const child = execFile(
       java.runtime!.path,
-      ['-jar', fileName, '--installServer'],
+      [...javaProxyArgs(onLog), '-jar', fileName, '--installServer'],
       { cwd: serverDir, maxBuffer: 32 * 1024 * 1024 },
       (err, stdout, stderr) => {
         for (const line of (stdout + stderr).split('\n').slice(-40)) if (line.trim()) onLog(line.trim());

@@ -163,6 +163,9 @@ export function registerInstanceRoutes(app: Express): void {
       }
     }
     const purge = String(req.query.purge ?? '0') === '1';
+    // ConsoleBuffer keeps console.log open for the lifetime of the panel. On Windows
+    // that handle prevents renaming the stopped world's directory into the trash.
+    await sup.closeConsoleFile(id);
     await I.deleteInstance(id, purge);
     await frp.removeInstance(id).catch(() => undefined);
     invalidateModCount(id);

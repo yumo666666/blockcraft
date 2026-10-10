@@ -280,6 +280,10 @@ type CurseForgeFile = {
   id?: number;
   modId?: number;
   fileName?: string;
+  fileDate?: string;
+  releaseType?: number;
+  modLoaderType?: number;
+  gameVersions?: string[];
   downloadUrl?: string | null;
   dependencies?: CurseForgeDependency[];
 };
@@ -290,7 +294,15 @@ type CurseForgeFileIndex = {
   releaseType?: number;
   modLoader?: number;
 };
-type CurseForgeMod = { id?: number; latestFilesIndexes?: CurseForgeFileIndex[] };
+type CurseForgeMod = {
+  id?: number;
+  name?: string;
+  slug?: string;
+  links?: { websiteUrl?: string };
+  latestFilesIndexes?: CurseForgeFileIndex[];
+};
+
+type CurseForgeDependencyMatch = { index: CurseForgeFileIndex; projectId: number };
 
 const CURSEFORGE_LOADER_TYPES: Record<string, number> = {
   forge: 1,
@@ -299,13 +311,61 @@ const CURSEFORGE_LOADER_TYPES: Record<string, number> = {
   neoforge: 6,
 };
 
+// Some CurseForge authors publish each loader as a separate project. Required
+// relations may still point at the Fabric project even in a Forge modpack, so
+// use only known same-mod ports when the original project has no matching file.
+const CURSEFORGE_LOADER_ALIASES: Record<number, Partial<Record<string, number>>> = {
+  978786: { forge: 979761, neoforge: 979761 }, // Storage Delight (Fabric) -> Forge/NeoForge
+  527023: { forge: 570544, neoforge: 570544 }, // Eating Animation [Fabric] -> Neo/Forge
+  993166: { forge: 398521 }, // Farmer's Delight Refabricated -> Farmer's Delight (Forge)
+};
+
+function compatibleCurseForgeIndex(mod: CurseForgeMod, mc: string, loaderType: number): CurseForgeFileIndex | null {
+  return (mod.latestFilesIndexes ?? [])
+    .filter((entry) => entry.fileId && entry.gameVersion === mc && (entry.modLoader === loaderType || entry.modLoader === 0))
+    .sort((a, b) => {
+      const loaderRank = (x: CurseForgeFileIndex) => x.modLoader === loaderType ? 0 : 1;
+      const releaseRank = (x: CurseForgeFileIndex) => x.releaseType === 1 ? 0 : x.releaseType === 2 ? 1 : 2;
+      return loaderRank(a) - loaderRank(b) || releaseRank(a) - releaseRank(b);
+    })[0] ?? null;
+}
+
+async function queryCompatibleCurseForgeFile(
+  projectId: number,
+  api: string,
+  key: string,
+  mc: string,
+  loaderType: number,
+): Promise<CurseForgeFileIndex | null> {
+  const query = new URLSearchParams({ gameVersion: mc, modLoaderType: String(loaderType), pageSize: '50', index: '0' });
+  const response = await curseForgeRequest<{ data?: CurseForgeFile[] }>(`${api}/mods/${projectId}/files?${query}`, key, { method: 'GET' });
+  const files = (response.data ?? [])
+    .filter((file) => file.id && file.fileName && (file.gameVersions ?? []).includes(mc) && (file.modLoaderType === loaderType || file.modLoaderType === 0))
+    .sort((a, b) => {
+      const releaseRank = (x: CurseForgeFile) => x.releaseType === 1 ? 0 : x.releaseType === 2 ? 1 : 2;
+      return releaseRank(a) - releaseRank(b) || Date.parse(b.fileDate ?? '') - Date.parse(a.fileDate ?? '') || (b.id ?? 0) - (a.id ?? 0);
+    });
+  const file = files[0];
+  if (!file?.id) return null;
+  return {
+    gameVersion: mc,
+    fileId: file.id,
+    filename: file.fileName,
+    releaseType: file.releaseType,
+    modLoader: file.modLoaderType,
+  };
+}
+
 async function curseForgeRequest<T>(url: string, key: string, init: RequestInit): Promise<T> {
   let lastError = '未知错误';
   for (let attempt = 0; attempt < 3; attempt += 1) {
     let retryable = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('CurseForge API 请求超时')), 30_000);
     try {
       const res = await fetch(url, {
         ...init,
+        signal: controller.signal,
         headers: { ...(init.headers ?? {}), 'x-api-key': key, 'user-agent': 'BlockCraft/2.0' },
       });
       if (!res.ok) {
@@ -317,6 +377,8 @@ async function curseForgeRequest<T>(url: string, key: string, init: RequestInit)
       }
     } catch (err) {
       lastError = String(err);
+    } finally {
+      clearTimeout(timeout);
     }
     if (retryable && attempt < 2) await new Promise((resolve) => setTimeout(resolve, 700 * 2 ** attempt));
   }
@@ -331,8 +393,8 @@ async function curseForgeDependencyFiles(
   mc: string | null,
   loader: string | null,
   onLog: (s: string) => void,
-): Promise<Map<number, CurseForgeFileIndex>> {
-  const out = new Map<number, CurseForgeFileIndex>();
+): Promise<Map<number, CurseForgeDependencyMatch>> {
+  const out = new Map<number, CurseForgeDependencyMatch>();
   if (!mc) {
     for (const id of modIds) onLog(`  无法自动选取 CurseForge 依赖 ${id}：整合包没有声明 Minecraft 版本`);
     return out;
@@ -351,16 +413,63 @@ async function curseForgeDependencyFiles(
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ modIds: chunk, filterPcOnly: true }),
       });
-      for (const mod of response.data ?? []) {
-        if (!mod.id) continue;
-        const candidates = (mod.latestFilesIndexes ?? [])
-          .filter((entry) => entry.fileId && entry.gameVersion === mc && (entry.modLoader === loaderType || entry.modLoader === 0))
-          .sort((a, b) => {
-            const loaderRank = (x: CurseForgeFileIndex) => x.modLoader === loaderType ? 0 : 1;
-            const releaseRank = (x: CurseForgeFileIndex) => x.releaseType === 1 ? 0 : x.releaseType === 2 ? 1 : 2;
-            return loaderRank(a) - loaderRank(b) || releaseRank(a) - releaseRank(b);
+      const projects = new Map((response.data ?? []).filter((mod) => Number.isInteger(mod.id)).map((mod) => [mod.id!, mod]));
+      const missingIndexes: { id: number; mod: CurseForgeMod }[] = [];
+      for (const id of chunk) {
+        const mod = projects.get(id);
+        if (!mod) continue;
+        const candidate = compatibleCurseForgeIndex(mod, mc, loaderType);
+        if (candidate) out.set(id, { index: candidate, projectId: id });
+        else missingIndexes.push({ id, mod });
+      }
+
+      // latestFilesIndexes is only a compact summary; ask the official filtered
+      // files endpoint before declaring a compatible project unavailable.
+      const aliasIds = [...new Set(missingIndexes.map(({ id }) => CURSEFORGE_LOADER_ALIASES[id]?.[loader?.toLowerCase() ?? '']).filter((id): id is number => Number.isInteger(id)))];
+      const aliasProjects = new Map<number, CurseForgeMod>();
+      if (aliasIds.length) {
+        try {
+          const aliasResponse = await curseForgeRequest<{ data?: CurseForgeMod[] }>(`${api}/mods`, key, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ modIds: aliasIds, filterPcOnly: true }),
           });
-        if (candidates[0]) out.set(mod.id, candidates[0]);
+          for (const mod of aliasResponse.data ?? []) if (Number.isInteger(mod.id)) aliasProjects.set(mod.id!, mod);
+        } catch (err) {
+          onLog(`  查询加载器替代项目失败：${String(err).slice(0, 120)}`);
+        }
+      }
+
+      for (const { id, mod } of missingIndexes) {
+        try {
+          const directFile = await queryCompatibleCurseForgeFile(id, api, key, mc, loaderType);
+          if (directFile) {
+            out.set(id, { index: directFile, projectId: id });
+            continue;
+          }
+        } catch (err) {
+          onLog(`  查询「${mod.name ?? `项目 ${id}`}」的精确版本列表失败：${String(err).slice(0, 100)}`);
+        }
+
+        const aliasId = CURSEFORGE_LOADER_ALIASES[id]?.[loader?.toLowerCase() ?? ''];
+        if (aliasId) {
+          const aliasMod = aliasProjects.get(aliasId);
+          let aliasFile = aliasMod ? compatibleCurseForgeIndex(aliasMod, mc, loaderType) : null;
+          if (!aliasFile) {
+            try {
+              aliasFile = await queryCompatibleCurseForgeFile(aliasId, api, key, mc, loaderType);
+            } catch (err) {
+              onLog(`  查询替代项目 ${aliasId} 的文件失败：${String(err).slice(0, 100)}`);
+            }
+          }
+          if (aliasFile) {
+            out.set(id, { index: aliasFile, projectId: aliasId });
+            onLog(`  已将「${mod.name ?? `项目 ${id}`}」(${id}) 映射到 ${loader} 兼容项目「${aliasMod?.name ?? `项目 ${aliasId}`}」(${aliasId})`);
+            continue;
+          }
+        }
+        const page = mod.links?.websiteUrl || (mod.slug ? `https://www.curseforge.com/minecraft/mc-mods/${mod.slug}` : `CurseForge 项目 ${id}`);
+        onLog(`  ${mod.name ? `「${mod.name}」` : `项目 ${id}`} 没有 ${mc} / ${loader} 文件（${page}）。不能把 Fabric 文件装进 Forge 世界。`);
       }
     } catch (err) {
       onLog(`  查询 CurseForge 依赖文件失败：${String(err).slice(0, 120)}`);
@@ -461,6 +570,18 @@ async function installCurseForge(
       }
     }
 
+    // A required dependency may be published as a separate project per loader.
+    // If this pack already includes that dependency's Forge/NeoForge project,
+    // count it as satisfied instead of reporting a missing Fabric project or
+    // downloading a duplicate jar under a different project ID.
+    for (const id of requiredProjectIds) {
+      if (projectIds.has(id)) continue;
+      const aliasId = CURSEFORGE_LOADER_ALIASES[id]?.[loader?.toLowerCase() ?? ''];
+      if (!aliasId || !projectIds.has(aliasId)) continue;
+      projectIds.add(id);
+      onLog(`  依赖项目 ${id} 已由整合包清单中的 ${loader} 项目 ${aliasId} 满足，跳过重复下载`);
+    }
+
     const unresolvedProjects = [...requiredProjectIds].filter((id) => !projectIds.has(id));
     if (!unresolvedProjects.length) {
       pendingFileIds = [];
@@ -476,14 +597,16 @@ async function installCurseForge(
     const resolved = await curseForgeDependencyFiles(allowed, api, key, mc, loader, onLog);
     pendingFileIds = [];
     for (const id of allowed) {
-      const index = resolved.get(id);
-      if (!index?.fileId) {
+      const match = resolved.get(id);
+      const index = match?.index;
+      if (!index?.fileId || match?.projectId === undefined) {
         manual.push(`CurseForge 项目 ${id}（未找到兼容的 ${mc ?? '未知版本'} / ${loader ?? '未知加载器'} 文件）`);
         projectIds.add(id);
         continue;
       }
       projectIds.add(id);
-      projectByFile.set(index.fileId, id);
+      projectIds.add(match.projectId);
+      projectByFile.set(index.fileId, match.projectId);
       pendingFileIds.push(index.fileId);
       autoDependencyCount++;
     }
