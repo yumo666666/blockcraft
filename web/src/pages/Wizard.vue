@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import JobProgress from '../components/JobProgress.vue';
+import { setBackgroundJob } from '../lib/backgroundJob.ts';
 
 defineOptions({ name: 'Wizard' });
 
@@ -232,6 +233,11 @@ function closeJob() {
   step.value = 1;
   resetFlowForm();
   router.push('/');
+}
+
+function backgroundJob() {
+  if (jobId.value) setBackgroundJob(jobId.value);
+  showJob.value = false;
 }
 </script>
 
@@ -474,7 +480,7 @@ function closeJob() {
       </div>
     </div>
 
-    <JobProgress :open="showJob" :job-id="jobId" @close="closeJob" />
+    <JobProgress :open="showJob" :job-id="jobId" @close="closeJob" @background="backgroundJob" />
   </div>
 </template>
 

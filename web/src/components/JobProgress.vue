@@ -5,7 +5,7 @@ import type { Job } from '../lib/types.ts';
 import Modal from './Modal.vue';
 
 const props = defineProps<{ open: boolean; jobId: string | null }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; background: [] }>();
 
 const job = ref<Job | null>(null);
 const logEl = ref<HTMLElement | null>(null);
@@ -75,7 +75,7 @@ function onLogScroll(event: Event): void {
       </div>
     </div>
     <template #footer>
-      <button class="btn" @click="emit('close')">{{ job?.status === 'running' ? '后台继续' : '关闭' }}</button>
+      <button class="btn" @click="job?.status === 'running' ? emit('background') : emit('close')">{{ job?.status === 'running' ? '后台继续' : '关闭' }}</button>
     </template>
   </Modal>
 </template>

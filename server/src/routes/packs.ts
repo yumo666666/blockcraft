@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { STORE_DIR } from '../core/paths.ts';
-import { bad, notFound } from '../core/errors.ts';
+import { bad, conflict, notFound } from '../core/errors.ts';
 import { createJob, finishJob, logJob, setStage } from '../services/jobService.ts';
 import { installServer } from '../services/installService.ts';
 import * as I from '../services/instanceService.ts';
@@ -151,6 +151,7 @@ export function registerPackRoutes(app: Express): void {
 
   /** 导入整合包：解析 → 建实例 → 装加载器 → 解压 overrides → 启动 */
   app.post('/api/packs/:id/import', async (req, res) => {
+    if (sup.isPanelShutdownRequested()) throw conflict('BlockCraft 正在关闭，暂时不能导入整合包');
     const body = req.body as { name?: string; mc?: string; loader?: never; loaderVersion?: string; memoryMb?: number; start?: boolean };
     if (!body.name) throw bad('请填写新世界的名称');
     if (!body.mc) throw bad('请指定 Minecraft 版本');

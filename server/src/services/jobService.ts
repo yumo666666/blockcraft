@@ -10,12 +10,28 @@ const bus = new EventEmitter();
 bus.setMaxListeners(100);
 
 const KEEP = 60;
+let pendingSetups = 0;
+
+/** Count API requests that have begun creating a job but have not returned its job ID yet. */
+export function beginJobSetup(): () => void {
+  pendingSetups += 1;
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    pendingSetups = Math.max(0, pendingSetups - 1);
+  };
+}
+
+export function pendingJobSetups(): number {
+  return pendingSetups;
+}
 
 function file(jobId: string): string {
   return path.join(JOBS_DIR, `${jobId}.json`);
 }
 
-export function listJobs(): Job[] {
+function readAllJobs(): Job[] {
   let names: string[] = [];
   try {
     names = fs.readdirSync(JOBS_DIR).filter((f) => f.endsWith('.json'));
@@ -26,7 +42,17 @@ export function listJobs(): Job[] {
     .map((n) => readJsonSync<Job | null>(path.join(JOBS_DIR, n), null))
     .filter((j): j is Job => Boolean(j))
     .sort((a, b) => b.startedAt - a.startedAt);
-  return jobs.slice(0, KEEP).map(({ lines, ...rest }) => ({ ...rest, lines: [] }) as Job);
+  return jobs;
+}
+
+export function listJobs(): Job[] {
+  return readAllJobs().slice(0, KEEP).map(({ lines, ...rest }) => ({ ...rest, lines: [] }) as Job);
+}
+
+export function listRunningJobs(): Job[] {
+  return readAllJobs()
+    .filter((job) => job.status === 'running')
+    .map(({ lines, ...rest }) => ({ ...rest, lines: [] }) as Job);
 }
 
 export function getJob(jobId: string): Job {

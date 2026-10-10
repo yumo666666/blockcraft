@@ -20,7 +20,7 @@ import * as playerService from './services/playerService.ts';
 import { registerPackRoutes } from './routes/packs.ts';
 import { startScheduler } from './services/scheduler.ts';
 import { startFrpService } from './services/frpService.ts';
-import { createJob } from './services/jobService.ts';
+import { beginJobSetup, createJob } from './services/jobService.ts';
 import { evSystem } from './services/eventLog.ts';
 import { createSession as createSessionRec, destroySession, isValidSession as isValidSessionRec, prune } from './core/sessions.ts';
 
@@ -136,6 +136,22 @@ export function boot(): void {
         return;
       }
     }
+    next();
+  });
+
+  // A create/import request can be between allocating a world and writing its
+  // persistent job record. Count that short window so tray shutdown cannot
+  // mistake it for an idle panel and terminate mid-setup.
+  app.use('/api', (req, res, next) => {
+    const setupRequest = req.method === 'POST' && (
+      req.path === '/instances' ||
+      req.path === '/packs/upload' ||
+      /^\/packs\/[^/]+\/import$/.test(req.path) ||
+      /^\/instances\/[^/]+\/(copy|reinstall)$/.test(req.path)
+    );
+    if (!setupRequest) return next();
+    const finish = beginJobSetup();
+    res.once('finish', finish);
     next();
   });
 

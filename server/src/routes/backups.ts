@@ -85,7 +85,11 @@ export function registerBackupRoutes(app: Express): void {
   });
 
   app.get('/api/jobs', (_req, res) => {
-    import('../services/jobService.ts').then((m) => res.json({ jobs: m.listJobs() }));
+    import('../services/jobService.ts').then((m) => res.json({
+      jobs: m.listJobs(),
+      runningJobs: m.listRunningJobs(),
+      pendingSetups: m.pendingJobSetups(),
+    }));
   });
 
   app.get('/api/jobs/:jobId', (req, res) => {

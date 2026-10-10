@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { BLOCK_ICON_SVG } from './lib/blockIcon.ts';
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, setUnauthorizedHandler } from './lib/api.ts';
 import { toast, toastError } from './lib/toast.ts';
 import ToastHost from './components/ToastHost.vue';
 import ThemeSwitcher from './components/ThemeSwitcher.vue';
+import JobProgress from './components/JobProgress.vue';
+import { backgroundJobId, setBackgroundJob } from './lib/backgroundJob.ts';
+import type { Job } from './lib/types.ts';
 
 const router = useRouter();
 const ready = ref(false);
@@ -15,6 +18,33 @@ const loginBusy = ref(false);
 const loginError = ref('');
 const addresses = ref<{ label: string; value: string; kind: string }[]>([]);
 const publicAddr = ref<string | null>(null);
+const showBackgroundJob = ref(false);
+const backgroundJob = ref<Job | null>(null);
+const backgroundJobLabel = computed(() => {
+  if (!backgroundJobId.value) return '';
+  if (!backgroundJob.value) return '后台任务';
+  return backgroundJob.value.status === 'running' ? '任务进行中' : '查看任务结果';
+});
+
+watch(() => [authed.value, backgroundJobId.value] as const, ([loggedIn, id], _old, onCleanup) => {
+  backgroundJob.value = null;
+  if (!loggedIn || !id) return;
+  let active = true;
+  const refresh = async () => {
+    try {
+      const job = await api.get<Job>(`/api/jobs/${encodeURIComponent(id)}`);
+      if (active) backgroundJob.value = job;
+    } catch {
+      // Keep the recovery button visible if the server is briefly reconnecting.
+    }
+  };
+  void refresh();
+  const timer = window.setInterval(refresh, 3000);
+  onCleanup(() => {
+    active = false;
+    window.clearInterval(timer);
+  });
+});
 
 async function loadShell() {
   const res = await api.get<{ config: { panel: { port: number } }; addresses: { label: string; value: string; kind: string }[] }>(
@@ -135,6 +165,9 @@ defineExpose({});
         <button class="btn btn-ghost btn-sm" :class="{ 'btn-soft': $route.name === 'websites' }" @click="router.push('/new')">
           相关网站
         </button>
+        <button v-if="backgroundJobId" class="btn btn-sm btn-soft" @click="showBackgroundJob = true">
+          {{ backgroundJobLabel }}<span v-if="backgroundJob?.status === 'running'" class="spinner" style="width: 12px; height: 12px; margin-left: 6px" />
+        </button>
       </nav>
       <div class="header-meta">
         <ThemeSwitcher />
@@ -151,5 +184,11 @@ defineExpose({});
     </router-view>
 
     <ToastHost />
+    <JobProgress
+      :open="showBackgroundJob"
+      :job-id="backgroundJobId"
+      @background="showBackgroundJob = false"
+      @close="((showBackgroundJob = false), setBackgroundJob(null))"
+    />
   </template>
 </template>

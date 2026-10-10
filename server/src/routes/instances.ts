@@ -9,7 +9,7 @@ import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
 import * as ports from '../services/portService.ts';
 import { summarize, summarizeAll, invalidateModCount } from '../services/overview.ts';
-import { createJob, finishJob, logJob, setStage } from '../services/jobService.ts';
+import { createJob, finishJob, listRunningJobs, logJob, setStage } from '../services/jobService.ts';
 import { installServer, copyInstance } from '../services/installService.ts';
 import { validateInstall } from '../launcher/index.ts';
 import { loadConfig } from '../config.ts';
@@ -153,9 +153,17 @@ export function registerInstanceRoutes(app: Express): void {
     const id = requireId(req.params.id);
     const confirm = String(req.query.confirm ?? '');
     if (confirm !== id) throw bad('请输入完整的世界 id 以确认删除');
-    if (sup.isRunning(id)) await sup.stop(id, { message: '这个世界即将被删除' }).catch(() => undefined);
+    if (listRunningJobs().some((job) => job.instanceId === id)) {
+      throw conflict('这个世界仍有创建、导入或安装任务在运行。请等任务结束后再删除。 / A create, import, or install task is still running for this world. Wait for it to finish before deleting it.');
+    }
+    if (sup.isRunning(id) || await sup.hasActiveProcessEvidence(id)) {
+      const stopped = await sup.stop(id, { message: '这个世界即将被删除' }).catch((err) => ({ ok: false, error: String(err) }));
+      if (!stopped.ok || await sup.hasActiveProcessEvidence(id)) {
+        throw conflict(stopped.error ?? '世界还没有完全停止，暂时不能删除。请等待保存和进程退出后重试。 / The world is still stopping; wait for its process to exit before deleting it.');
+      }
+    }
     const purge = String(req.query.purge ?? '0') === '1';
-    I.deleteInstance(id, purge);
+    await I.deleteInstance(id, purge);
     await frp.removeInstance(id).catch(() => undefined);
     invalidateModCount(id);
     audit({ ip: req.ip, action: 'instance.delete', target: id, detail: { purge } });
@@ -260,6 +268,7 @@ export function registerInstanceRoutes(app: Express): void {
   });
 
   app.post('/api/instances/:id/reinstall', async (req, res) => {
+    if (sup.isPanelShutdownRequested()) throw conflict('BlockCraft 正在关闭，暂时不能重新安装服务端');
     const id = requireId(req.params.id);
     if (sup.isRunning(id)) throw conflict('请先停服再重新安装服务端');
     const cfg = I.getConfig(id);

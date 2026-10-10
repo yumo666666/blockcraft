@@ -12,6 +12,7 @@ import PortsDialog from '../components/PortsDialog.vue';
 import CopyDialog from '../components/CopyDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import JobProgress from '../components/JobProgress.vue';
+import { setBackgroundJob } from '../lib/backgroundJob.ts';
 import { STATUS_TEXT, statusClass } from '../lib/format.ts';
 
 defineOptions({ name: 'Overview' });
@@ -193,6 +194,11 @@ function openJob(id: string) {
   jobId.value = id;
   showJob.value = true;
 }
+
+function backgroundJob() {
+  if (jobId.value) setBackgroundJob(jobId.value);
+  showJob.value = false;
+}
 </script>
 
 <template>
@@ -280,7 +286,7 @@ function openJob(id: string) {
       @close="showDelete = false"
       @confirm="doDelete"
     />
-    <JobProgress :open="showJob" :job-id="jobId" @close="showJob = false" />
+    <JobProgress :open="showJob" :job-id="jobId" @close="showJob = false" @background="backgroundJob" />
   </div>
 </template>
 

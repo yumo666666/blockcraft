@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { levelDatPath, readWorldSeed } from '../core/nbt.ts';
-import { INSTANCES_DIR, INSTANCE_ID_RE, instanceConfigFile, instanceDir, instanceServerDir, instanceStateFile } from '../core/paths.ts';
+import { INSTANCES_DIR, TRASH_DIR, INSTANCE_ID_RE, instanceConfigFile, instanceDir, instanceServerDir, instanceStateFile } from '../core/paths.ts';
 import { atomicWriteJsonWithBackupSync, atomicWriteFileSync, readJsonSync, dirSizeSync, dirSizeAsync } from '../core/fsx.ts';
 import { bad, conflict, notFound } from '../core/errors.ts';
 import { createLogger } from '../core/logger.ts';
@@ -412,17 +412,40 @@ export async function createInstance(params: CreateParams): Promise<InstanceConf
   return cfg;
 }
 
-export function markDeleted(id: string): void {
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function markDeleted(id: string): Promise<void> {
   const dir = instanceDir(id);
-  const trash = path.join(path.dirname(dir), '..', 'data', 'trash');
-  fs.mkdirSync(trash, { recursive: true });
-  const target = path.join(trash, `${id}-${Date.now()}`);
-  fs.renameSync(dir, target);
+  fs.mkdirSync(TRASH_DIR, { recursive: true });
+  const target = path.join(TRASH_DIR, `${id}-${Date.now()}`);
+  const delays = [150, 300, 600, 1200, 2000, 3000];
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      await fs.promises.rename(dir, target);
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '') || attempt === delays.length) break;
+      await wait(delays[attempt]);
+    }
+  }
+  if (lastError) {
+    const code = (lastError as NodeJS.ErrnoException).code;
+    if (['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '')) {
+      throw conflict('Windows 仍锁定着这个世界目录，已自动重试多次但未能移入回收站。请确认世界已停止，并关闭正在浏览该世界文件的窗口后重试。 / Windows still has the world folder locked. Automatic retries failed; confirm the world is stopped and close any file browser using it, then retry.', { code, path: dir });
+    }
+    throw lastError;
+  }
   ports.release(id);
   logger.info(`世界 ${id} 已移入回收站`, { target });
 }
 
-export function deleteInstance(id: string, purge: boolean): void {
+export async function deleteInstance(id: string, purge: boolean): Promise<void> {
   const dir = instanceDir(id);
   if (!fs.existsSync(dir)) throw notFound(`世界不存在：${id}`);
   if (purge) {
@@ -430,7 +453,7 @@ export function deleteInstance(id: string, purge: boolean): void {
     ports.release(id);
     logger.warn(`世界 ${id} 已彻底删除`);
   } else {
-    markDeleted(id);
+    await markDeleted(id);
   }
 }
 

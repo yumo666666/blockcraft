@@ -1,10 +1,11 @@
 import type { Express, Request, Response } from 'express';
 import fs from 'node:fs';
-import { DATA_DIR, INSTANCES_DIR, PROJECT_ROOT } from '../core/paths.ts';
+import { DATA_DIR, INSTANCES_DIR, PROJECT_ROOT, TRASH_DIR } from '../core/paths.ts';
 import { dirSizeSync } from '../core/fsx.ts';
 import { loadConfig, publicConfig, saveConfig, randomToken } from '../config.ts';
 import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
+import { listRunningJobs, pendingJobSetups } from '../services/jobService.ts';
 import { evSystem, listEvents as evList } from '../services/eventLog.ts';
 import { bad } from '../core/errors.ts';
 import { destroyAllSessions, sessionCount } from '../core/sessions.ts';
@@ -154,7 +155,7 @@ export function registerSystemRoutes(app: Express): void {
     }
     let trashBytes = 0;
     try {
-      trashBytes = dirSizeSync(DATA_DIR + '/trash');
+      trashBytes = dirSizeSync(TRASH_DIR) + dirSizeSync(DATA_DIR + '/trash');
     } catch {
       trashBytes = 0;
     }
@@ -182,17 +183,19 @@ export function registerSystemRoutes(app: Express): void {
 
   app.post('/api/system/storage/clean', (req, res) => {
     const body = req.body as { target?: string };
-    const map: Record<string, string> = { trash: DATA_DIR + '/trash', logs: DATA_DIR + '/logs' };
-    const dir = map[body.target ?? ''];
-    if (!dir) {
+    const map: Record<string, string[]> = { trash: [TRASH_DIR, DATA_DIR + '/trash'], logs: [DATA_DIR + '/logs'] };
+    const dirs = map[body.target ?? ''];
+    if (!dirs) {
       res.status(400).json({ error: { code: 'BAD_INPUT', message: '只能清理回收站或日志目录' } });
       return;
     }
     let freed = 0;
     try {
-      freed = dirSizeSync(dir);
-      fs.rmSync(dir, { recursive: true, force: true });
-      fs.mkdirSync(dir, { recursive: true });
+      for (const dir of dirs) {
+        freed += dirSizeSync(dir);
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(dir, { recursive: true });
+      }
     } catch (err) {
       res.status(500).json({ error: { code: 'INTERNAL', message: String(err) } });
       return;
@@ -209,8 +212,23 @@ export function registerSystemRoutes(app: Express): void {
   });
 
   /** Windows 托盘退出：先并行安全停止所有活动世界，全部成功后再退出面板。 */
+  app.get('/api/panel/shutdown-status', async (_req, res) => {
+    const worlds = await summarizeAll();
+    const active = (await Promise.all(worlds.map(async (world) => {
+      const statusActive = ['running', 'starting', 'stopping', 'stuck'].includes(world.status);
+      return statusActive || await sup.hasActiveProcessEvidence(world.id)
+        ? { name: world.name, status: world.status }
+        : null;
+    }))).filter((world) => world !== null);
+    res.json({
+      worlds: active,
+      jobs: listRunningJobs().map(({ id, title, progress }) => ({ id, title, progress })),
+      pendingSetups: pendingJobSetups(),
+    });
+  });
+
   app.post('/api/panel/shutdown-after-worlds', async (_req, res) => {
-    if (shutdownAfterWorldsInProgress || !sup.beginPanelShutdown()) {
+    if (shutdownAfterWorldsInProgress || (!sup.isPanelShutdownRequested() && !sup.beginPanelShutdown())) {
       shutdownLogger.warn('收到托盘关闭请求，但面板已在停止中');
       res.status(409).json({ error: { code: 'BUSY', message: '正在停止世界，请稍候' } });
       return;
@@ -218,6 +236,21 @@ export function registerSystemRoutes(app: Express): void {
     shutdownAfterWorldsInProgress = true;
     try {
       shutdownLogger.info('收到托盘关闭请求，开始检查并停止世界');
+      let lastJobLog = 0;
+      while (true) {
+        const jobs = listRunningJobs();
+        const pendingSetups = pendingJobSetups();
+        if (jobs.length === 0 && pendingSetups === 0) break;
+        if (Date.now() - lastJobLog >= 10_000) {
+          shutdownLogger.info('托盘关机：等待正在执行的创建、导入或安装任务结束', {
+            jobs: jobs.map((job) => ({ title: job.title, progress: job.progress })),
+            pendingSetups,
+          });
+          lastJobLog = Date.now();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      shutdownLogger.info('托盘关机：后台任务已结束，继续停止世界');
       const worlds = await summarizeAll();
       const active = (await Promise.all(worlds.map(async (world) => {
         const statusActive = ['running', 'starting', 'stopping', 'stuck'].includes(world.status);
@@ -237,7 +270,6 @@ export function registerSystemRoutes(app: Express): void {
       const failed = results.filter(({ result }) => !result.ok);
       if (failed.length) {
         shutdownAfterWorldsInProgress = false;
-        sup.cancelPanelShutdown();
         const details = failed.map(({ world, result }) => `${world.name}：${result.error || '未能确认停止'}`).join('；');
         shutdownLogger.warn('托盘关机：有世界未能安全停止，面板保持运行', { worlds: details });
         res.status(409).json({
@@ -258,7 +290,6 @@ export function registerSystemRoutes(app: Express): void {
       }))).filter((world): world is (typeof latestWorlds)[number] => Boolean(world));
       if (stillActive.length) {
         shutdownAfterWorldsInProgress = false;
-        sup.cancelPanelShutdown();
         shutdownLogger.warn('托盘关机：二次检查仍发现活动世界', { worlds: stillActive.map((world) => world.name) });
         res.status(409).json({
           error: {
@@ -271,7 +302,6 @@ export function registerSystemRoutes(app: Express): void {
       const frpStop = await frp.stopChannelsForShutdown();
       if (!frpStop.ok) {
         shutdownAfterWorldsInProgress = false;
-        sup.cancelPanelShutdown();
         shutdownLogger.warn('托盘关机：FRP 通道未全部退出，面板保持运行', { error: frpStop.error });
         res.status(409).json({
           error: {
@@ -286,7 +316,6 @@ export function registerSystemRoutes(app: Express): void {
       setTimeout(() => process.exit(0), 350);
     } catch (error) {
       shutdownAfterWorldsInProgress = false;
-      sup.cancelPanelShutdown();
       frp.cancelShutdown();
       shutdownLogger.error('托盘关机异常，面板保持运行', { error: String(error) });
       res.status(500).json({ error: { code: 'INTERNAL', message: String(error) } });

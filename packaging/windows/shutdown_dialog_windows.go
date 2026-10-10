@@ -5,7 +5,10 @@ package main
 import (
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -25,6 +28,7 @@ const (
 	wmApp             = 0x8000
 	shutdownDialogEnd = wmApp + 31
 	wmSetFont         = 0x0030
+	wmSetText         = 0x000C
 	colorBtnFace      = 15
 	smCxScreen        = 0
 	smCyScreen        = 1
@@ -121,26 +125,48 @@ func shutdownWindowReady() bool {
 	return syscall.GetLastError() == syscall.Errno(1410)
 }
 
-func shutdownProgressText(worlds []string) string {
+func shutdownProgressText(stage string, items []string, detail string) string {
 	var text strings.Builder
-	if len(worlds) > 0 {
-		text.WriteString("正在安全关闭以下世界：\r\n\r\n")
-	} else {
-		text.WriteString("正在确认所有世界均已停止：\r\n\r\n")
-	}
-	for _, world := range worlds {
+	text.WriteString("BlockCraft 正在安全关闭。所有项目关闭并确认后，启动器才会退出。\r\n\r\n当前步骤：")
+	text.WriteString(stage)
+	text.WriteString("\r\n\r\n待关闭项目：\r\n")
+	for _, world := range items {
 		text.WriteString("  • ")
 		text.WriteString(world)
 		text.WriteString("\r\n")
 	}
-	text.WriteString("\r\n请耐心等待世界完成保存并关闭。\r\n随后依次关闭世界 FRP、面板 FRP、面板服务和托盘启动器。\r\n请勿手动结束进程，以免世界存档损坏。")
+	if detail != "" {
+		text.WriteString("\r\n正在等待并自动重试：\r\n")
+		text.WriteString(detail)
+		text.WriteString("\r\n")
+	}
+	text.WriteString("\r\n请耐心等待。请勿手动结束进程，以免世界存档损坏。")
 	return text.String()
 }
 
-// showShutdownProgress displays a topmost, non-dismissible native window while
-// the tray waits for the panel to finish stopping every world.
-func showShutdownProgress(worlds []string) (func(), bool) {
+// showShutdownProgress starts a topmost, non-dismissible native window while
+// the tray waits for the panel to finish stopping every world. It reports
+// whether the window was actually created so the caller can refuse to start
+// shutdown if it cannot keep the progress visible.
+func showShutdownProgress(items []string) (func(string, []string, string), func(), bool) {
 	ready := make(chan uintptr, 1)
+	cancel := make(chan struct{})
+	var closeOnce sync.Once
+	var editHandle atomic.Uintptr
+	var textMu sync.Mutex
+	currentText := shutdownProgressText("正在检查世界与创建/导入任务", items, "")
+	update := func(stage string, nextItems []string, detail string) {
+		text := shutdownProgressText(stage, nextItems, detail)
+		textMu.Lock()
+		currentText = text
+		edit := editHandle.Load()
+		textMu.Unlock()
+		if edit != 0 {
+			utf16 := syscall.StringToUTF16(text)
+			sendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(&utf16[0])))
+			runtime.KeepAlive(utf16)
+		}
+	}
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
@@ -149,8 +175,8 @@ func showShutdownProgress(worlds []string) (func(), bool) {
 			return
 		}
 
-		const width, minHeight, rowHeight = 580, 215, 24
-		height := minHeight + rowHeight*len(worlds)
+		const width, minHeight, rowHeight = 620, 260, 24
+		height := minHeight + rowHeight*len(items)
 		if height > 650 {
 			height = 650
 		}
@@ -159,7 +185,9 @@ func showShutdownProgress(worlds []string) (func(), bool) {
 		x := int32((int(screenWidth) - width) / 2)
 		y := int32((int(screenHeight) - height) / 2)
 		title := syscall.StringToUTF16Ptr("正在安全关闭 BlockCraft")
-		text := syscall.StringToUTF16Ptr(shutdownProgressText(worlds))
+		textMu.Lock()
+		text := syscall.StringToUTF16Ptr(currentText)
+		textMu.Unlock()
 		instance, _, _ := getModuleHandleW.Call(0)
 		// No WS_SYSMENU means Windows does not draw a close button. WM_CLOSE is
 		// also ignored above so Alt+F4 cannot interrupt the save and shutdown.
@@ -184,8 +212,20 @@ func showShutdownProgress(worlds []string) (func(), bool) {
 			18, 18, uintptr(width-36), uintptr(height-36),
 			hwnd, 0, instance, 0,
 		)
+		textMu.Lock()
+		editHandle.Store(edit)
+		latestText := syscall.StringToUTF16Ptr(currentText)
+		textMu.Unlock()
+		sendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(latestText)))
 		font, _, _ := getStockObject.Call(17) // DEFAULT_GUI_FONT
 		sendMessageW.Call(edit, wmSetFont, font, 1)
+		select {
+		case <-cancel:
+			destroyWindow.Call(hwnd)
+			ready <- 0
+			return
+		default:
+		}
 		showWindow.Call(hwnd, swShow)
 		updateWindow.Call(hwnd)
 		setForegroundWindow.Call(hwnd)
@@ -201,12 +241,22 @@ func showShutdownProgress(worlds []string) (func(), bool) {
 			dispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
 		}
 	}()
-
-	hwnd := <-ready
-	if hwnd == 0 {
-		return func() {}, false
+	var hwnd uintptr
+	select {
+	case hwnd = <-ready:
+		if hwnd == 0 {
+			return update, func() {}, false
+		}
+	case <-time.After(10 * time.Second):
+		close(cancel)
+		return update, func() {}, false
 	}
-	return func() {
-		postMessageW.Call(hwnd, shutdownDialogEnd, 0, 0)
-	}, true
+
+	closeProgress := func() {
+		closeOnce.Do(func() {
+			close(cancel)
+			postMessageW.Call(hwnd, shutdownDialogEnd, 0, 0)
+		})
+	}
+	return update, closeProgress, true
 }

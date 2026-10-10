@@ -19,7 +19,9 @@ export const INSTANCES_DIR = process.env.BC_INSTANCE_DIR
 
 export const LOG_DIR = path.join(DATA_DIR, 'logs');
 export const STORE_DIR = path.join(DATA_DIR, 'store');
-export const TRASH_DIR = path.join(DATA_DIR, 'trash');
+// Store world folders beside live worlds. Windows can otherwise reject a
+// directory move when data/ and instances/ have different ACLs or volumes.
+export const TRASH_DIR = path.join(INSTANCES_DIR, '.trash');
 export const JDK_DIR = path.join(DATA_DIR, 'jdk');
 export const WEB_DIST = path.join(PROJECT_ROOT, 'web', 'dist');
 export const BIN_DIR = path.join(PROJECT_ROOT, 'bin');
@@ -52,7 +54,7 @@ export function instanceBackupDir(id: string): string {
 export const INSTANCE_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
 
 export function ensureDirs(): void {
-  for (const d of [DATA_DIR, INSTANCES_DIR, LOG_DIR, STORE_DIR, JOBS_DIR, path.dirname(TRASH_DIR), BIN_DIR]) {
+  for (const d of [DATA_DIR, INSTANCES_DIR, TRASH_DIR, LOG_DIR, STORE_DIR, JOBS_DIR, BIN_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
 }

@@ -143,7 +143,7 @@ func stopWorldsAndClosePanel(dataDir string) error {
 	if token == "" {
 		return fmt.Errorf("没有找到面板令牌，无法安全关闭世界")
 	}
-	return trayPanelPost(port, token, "/api/panel/shutdown-after-worlds", 10*time.Minute)
+	return trayPanelPost(port, token, "/api/panel/shutdown-after-worlds", 24*time.Hour)
 }
 
 func activeWorldNames(dataDir string) ([]string, error) {
@@ -152,22 +152,67 @@ func activeWorldNames(dataDir string) ([]string, error) {
 		return nil, fmt.Errorf("没有找到面板令牌，无法确认正在运行的世界")
 	}
 	var response struct {
-		Instances []struct {
+		Worlds []struct {
 			Name   string `json:"name"`
 			Status string `json:"status"`
-		} `json:"instances"`
+		} `json:"worlds"`
+		Jobs []struct {
+			ID       string `json:"id"`
+			Title    string `json:"title"`
+			Progress int    `json:"progress"`
+		} `json:"jobs"`
+		PendingSetups int `json:"pendingSetups"`
 	}
-	if err := trayPanelGetJSON(port, token, "/api/instances", 15*time.Second, &response); err != nil {
+	if err := trayPanelGetJSON(port, token, "/api/panel/shutdown-status", 15*time.Second, &response); err != nil {
 		return nil, err
 	}
-	worlds := make([]string, 0, len(response.Instances))
-	for _, world := range response.Instances {
+	worlds := make([]string, 0, len(response.Worlds)+len(response.Jobs)+4)
+	for _, world := range response.Worlds {
 		switch world.Status {
 		case "running", "starting", "stopping", "stuck":
-			worlds = append(worlds, world.Name)
+			status := map[string]string{
+				"running":  "运行中",
+				"starting": "启动中",
+				"stopping": "关闭中",
+				"stuck":    "进程异常",
+			}[world.Status]
+			worlds = append(worlds, fmt.Sprintf("%s（%s）", world.Name, status))
 		}
 	}
-	return worlds, nil
+	for _, job := range response.Jobs {
+		worlds = append(worlds, fmt.Sprintf("正在创建/安装：%s（%d%%）", job.Title, job.Progress))
+	}
+	if response.PendingSetups > 0 {
+		worlds = append(worlds, fmt.Sprintf("正在提交创建/导入请求：%d 项", response.PendingSetups))
+	}
+	return append(worlds, "世界 FRP 通道", "面板 FRP 通道", "面板服务", "BlockCraft 启动器（最后退出）"), nil
+}
+
+func appendClosedStatuses(items []string) []string {
+	closed := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == "BlockCraft 启动器（最后退出）" {
+			closed = append(closed, "BlockCraft 启动器（所有项目关闭后最后退出）")
+		} else {
+			closed = append(closed, item+"（已关闭）")
+		}
+	}
+	return closed
+}
+
+func appendShutdownStatuses(items []string) []string {
+	statuses := make([]string, 0, len(items))
+	for _, item := range items {
+		switch item {
+		case "面板服务":
+			statuses = append(statuses, "面板服务（正在退出）")
+		case "BlockCraft 启动器（最后退出）":
+			statuses = append(statuses, "BlockCraft 启动器（等待其他项目关闭后最后退出）")
+		default:
+			statuses = append(statuses, item+"（已关闭）")
+		}
+	}
+	return statuses
 }
 
 func restartPanelOnly(dataDir string) error {
@@ -178,23 +223,16 @@ func restartPanelOnly(dataDir string) error {
 	return trayPanelPost(port, token, "/api/panel/shutdown", 10*time.Second)
 }
 
-// After the panel confirms that all worlds stopped safely, wait for its process
-// to exit. If the shutdown response succeeded but Node does not exit, terminate
-// only the panel process so the tray cannot disappear while the panel stays up.
-func waitForPanelExit(exited <-chan struct{}, process *os.Process, timeout time.Duration) error {
+// After the panel confirms that worlds and FRP stopped safely, wait for its
+// process to exit. Never kill it on timeout: the close window stays visible
+// until the process itself and its listening ports are gone.
+func waitForPanelExit(exited <-chan struct{}, timeout time.Duration) error {
 	select {
 	case <-exited:
 		return nil
 	case <-time.After(timeout):
 	}
-
-	_ = process.Kill()
-	select {
-	case <-exited:
-		return nil
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("面板服务进程在安全停服后仍未退出")
-	}
+	return fmt.Errorf("面板服务在 %s 内仍未退出", timeout)
 }
 
 func waitForPanelUnavailable(dataDir string, timeout time.Duration) bool {
@@ -437,100 +475,109 @@ func run() int {
 					restartItem.Disable()
 					systray.SetTooltip("正在安全停止 Minecraft 世界…")
 					go func() {
-						worlds, err := activeWorldNames(dataDir)
-						if err != nil {
-							shutdownAfterWorldsRequested.Store(false)
-							quitItem.Enable()
-							restartItem.Enable()
-							systray.SetTooltip("BlockCraft 世界管理面板")
-							message, _ := syscall.UTF16PtrFromString("无法读取正在运行的世界列表，BlockCraft 保持运行。\n\n" + err.Error())
-							title, _ := syscall.UTF16PtrFromString("无法关闭 BlockCraft")
-							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
-							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
-							return
-						}
-						logLauncher(logFile, "关闭前发现 %d 个活动世界：%s", len(worlds), strings.Join(worlds, ", "))
-						closeProgress, shown := showShutdownProgress(worlds)
+						initialItems := []string{"正在运行或正在创建/导入的世界", "世界 FRP 通道", "面板 FRP 通道", "面板服务", "BlockCraft 启动器（最后退出）"}
+						updateProgress, closeProgress, shown := showShutdownProgress(initialItems)
 						if !shown {
+							logLauncher(logFile, "无法显示安全关闭进度窗口；没有开始关闭流程")
 							shutdownAfterWorldsRequested.Store(false)
 							quitItem.Enable()
 							restartItem.Enable()
 							systray.SetTooltip("BlockCraft 世界管理面板")
-							message, _ := syscall.UTF16PtrFromString("安全关闭进度窗口没有显示，因此没有开始关闭世界。请重试或重新启动 BlockCraft。")
-							title, _ := syscall.UTF16PtrFromString("无法安全关闭 BlockCraft")
-							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
-							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
+							showError("无法显示安全关闭进度窗口，因此没有关闭世界、FRP 或面板。请检查系统桌面后重试。")
 							return
 						}
-						if err := stopWorldsAndClosePanel(dataDir); err != nil {
-							logLauncher(logFile, "面板拒绝关闭请求：%v", err)
-							shutdownAfterWorldsRequested.Store(false)
-							closeProgress()
-							quitItem.Enable()
-							restartItem.Enable()
-							systray.SetTooltip("BlockCraft 世界管理面板")
-							message, _ := syscall.UTF16PtrFromString("世界尚未全部停止，BlockCraft 仍保持运行。\n\n请等待世界完成保存后再重试。\n" + err.Error())
-							title, _ := syscall.UTF16PtrFromString("无法关闭 BlockCraft")
-							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
-							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
-							return
-						}
-						logLauncher(logFile, "面板已确认世界及 FRP 通道停止，等待面板进程退出")
-						var exitErr error
-						if adoptedPanel {
-							select {
-							case <-serverStopped:
-							case <-time.After(10 * time.Second):
-								exitErr = fmt.Errorf("同目录面板服务在 10 秒内没有退出")
+						shutdownAccepted := false
+						requestInFlight := false
+						retryAt := time.Now()
+						requestResult := make(chan error, 1)
+						poll := time.NewTicker(2 * time.Second)
+						defer poll.Stop()
+						currentItems := initialItems
+						seenItems := make(map[string]bool)
+						allItems := make([]string, 0)
+						rememberItems := func(items []string) {
+							for _, item := range items {
+								if !seenItems[item] {
+									seenItems[item] = true
+									allItems = append(allItems, item)
+								}
 							}
-						} else {
-							exitErr = waitForPanelExit(serverStopped, cmd.Process, 5*time.Second)
 						}
-						if exitErr != nil {
-							logLauncher(logFile, "等待面板服务退出失败：%v", exitErr)
-							shutdownAfterWorldsRequested.Store(false)
-							closeProgress()
-							quitItem.Enable()
-							restartItem.Enable()
-							systray.SetTooltip("BlockCraft 世界管理面板")
-							message, _ := syscall.UTF16PtrFromString("世界已安全停止，但 BlockCraft 面板服务仍未退出。请查看 data\\logs\\launcher.log。\n\n" + err.Error())
-							title, _ := syscall.UTF16PtrFromString("BlockCraft 面板未退出")
-							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
-							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
-							return
+						for {
+							if shutdownAccepted {
+								select {
+								case <-serverStopped:
+									logLauncher(logFile, "已确认面板进程退出")
+									closedItems := appendClosedStatuses(allItems)
+									updateProgress("确认面板监听端口已关闭", closedItems, "")
+									for !waitForPanelUnavailable(dataDir, 3*time.Second) {
+										updateProgress("等待 127.0.0.1 面板服务完全停止", closedItems, "面板端口仍有服务响应")
+										time.Sleep(3 * time.Second)
+									}
+									for {
+										openFrpPorts := waitForFrpAdminPortsClosed(dataDir, 3*time.Second)
+										if len(openFrpPorts) == 0 {
+											break
+										}
+										logLauncher(logFile, "FRP 管理端口仍在监听：%v；保持关闭弹窗等待", openFrpPorts)
+										updateProgress("等待世界 FRP 和面板 FRP 完全停止", closedItems, fmt.Sprintf("仍在监听的 FRP 管理端口：%v", openFrpPorts))
+										time.Sleep(3 * time.Second)
+									}
+									logLauncher(logFile, "所有世界、创建任务、FRP 通道和面板服务均已关闭，退出托盘")
+									updateProgress("所有项目已关闭，正在退出启动器", closedItems, "")
+									closeProgress()
+									systray.Quit()
+									return
+								default:
+									updateProgress("世界和 FRP 通道已关闭，等待面板服务退出", currentItems, "")
+									time.Sleep(1 * time.Second)
+									continue
+								}
+							}
+							if !requestInFlight && !time.Now().Before(retryAt) {
+								items, err := activeWorldNames(dataDir)
+								if err != nil {
+									logLauncher(logFile, "读取关闭目标失败，将继续显示弹窗并重试：%v", err)
+									updateProgress("正在检查世界、创建/导入任务和服务进程", currentItems, err.Error())
+									retryAt = time.Now().Add(3 * time.Second)
+								} else {
+									currentItems = items
+									rememberItems(items)
+									logLauncher(logFile, "关闭前待处理项目：%s", strings.Join(items, ", "))
+									updateProgress("准备安全停止世界并结束创建/导入任务", items, "")
+									logLauncher(logFile, "正在向面板请求安全停止世界、FRP 通道并关闭面板")
+									requestInFlight = true
+									go func() { requestResult <- stopWorldsAndClosePanel(dataDir) }()
+								}
+							}
+							select {
+							case err := <-requestResult:
+								requestInFlight = false
+								if err != nil {
+									logLauncher(logFile, "关闭流程未完成；保持弹窗并自动重试：%v", err)
+									updateProgress("等待世界、FRP 通道和面板安全关闭", currentItems, err.Error())
+									retryAt = time.Now().Add(5 * time.Second)
+								} else {
+									shutdownAccepted = true
+									logLauncher(logFile, "面板已确认世界和 FRP 通道停止，等待面板进程退出")
+									currentItems = appendShutdownStatuses(allItems)
+									updateProgress("世界和两个 FRP 通道已关闭，正在关闭面板服务", currentItems, "")
+								}
+							case <-poll.C:
+								items, err := activeWorldNames(dataDir)
+								if err != nil {
+									updateProgress("正在关闭世界、FRP 通道和面板", currentItems, "正在刷新状态："+err.Error())
+									continue
+								}
+								currentItems = items
+								rememberItems(items)
+								stage := "检查待关闭项目"
+								if requestInFlight {
+									stage = "正在安全停止世界并等待创建/导入任务结束"
+								}
+								updateProgress(stage, items, "")
+							}
 						}
-						logLauncher(logFile, "已确认面板进程退出")
-						if !waitForPanelUnavailable(dataDir, 3*time.Second) {
-							logLauncher(logFile, "面板端口仍有服务响应，保持托盘运行")
-							shutdownAfterWorldsRequested.Store(false)
-							closeProgress()
-							quitItem.Enable()
-							restartItem.Enable()
-							systray.SetTooltip("BlockCraft 世界管理面板")
-							message, _ := syscall.UTF16PtrFromString("世界已经安全停止，但 127.0.0.1 面板地址仍有进程响应，不能确认面板已关闭。托盘保持运行，请检查该端口对应的进程后重试。")
-							title, _ := syscall.UTF16PtrFromString("面板服务仍未关闭")
-							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
-							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x30)
-							return
-						}
-						logLauncher(logFile, "确认面板监听端口已关闭")
-						openFrpPorts := waitForFrpAdminPortsClosed(dataDir, 3*time.Second)
-						if len(openFrpPorts) > 0 {
-							logLauncher(logFile, "FRP 管理端口仍在监听：%v；保持托盘运行", openFrpPorts)
-							shutdownAfterWorldsRequested.Store(false)
-							closeProgress()
-							quitItem.Enable()
-							restartItem.Enable()
-							systray.SetTooltip("BlockCraft 仍有 FRP 进程运行")
-							message, _ := syscall.UTF16PtrFromString(fmt.Sprintf("面板已退出，但 FRP 管理端口仍在监听：%v。托盘保持运行，请勿直接清理进程；检查端口对应的 frpc 后再重试。", openFrpPorts))
-							title, _ := syscall.UTF16PtrFromString("FRP 通道仍未关闭")
-							proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
-							proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x30)
-							return
-						}
-						logLauncher(logFile, "面板端口和两个 FRP 管理端口均已关闭，退出托盘")
-						closeProgress()
-						systray.Quit()
 					}()
 				}
 			}
