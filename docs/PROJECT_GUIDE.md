@@ -165,22 +165,187 @@ MOD 管理页按来源、状态和名称筛选；运行中的世界会限制可�
 
 ## 11. 项目目录
 
+下面分开说明 GitHub 上的源码目录和运行后产生的目录。BlockCraft 的 Node.js 后端位于根目录 `server/`；每个世界对应的 Minecraft 服务端位于 `instances/<世界ID>/server/`。
+
+### 仓库源码
+
 ```text
-server/src/
-  routes/       HTTP API 路由
-  services/     世界、备份、MOD、玩家、FRP、下载与配置服务
-  core/         配置、目录、日志和公共类型
-  launcher/     Minecraft 版本、Java 与服务端安装逻辑
-web/src/
-  pages/        总览、创建/导入、控制台、备份、MOD、玩家、设置与事件页面
-  components/   世界卡片、表单、弹窗和共享组件
-  router.ts     页面路由
-bin/            Ubuntu/Linux 启停、看门狗和 systemd 脚本
-packaging/windows/
-                Windows 启动器、托盘、安全关闭窗口与 Windows ZIP 构建
+BlockCraft/
+├─ .github/workflows/            ci.yml、release-windows.yml
+├─ bin/                          ubuntu.sh、start.sh、stop.sh、boot.sh、proc-find.sh、systemd 脚本
+├─ docs/
+│  ├─ PROJECT_GUIDE.md           本使用手册
+│  └─ assets/
+│     ├─ screenshots/            总览、世界设置、控制台、MOD、玩家、FRP 等操作截图
+│     ├─ shutdown-confirm.svg    深绿色退出二次确认窗口图
+│     └─ skin-switch.mp4         皮肤切换演示
+├─ packaging/windows/            Windows GUI 启动器与发布包
+│  ├─ main_windows.go            Windows 托盘/启动器入口
+│  ├─ shutdown_confirm_windows.go / shutdown_dialog_windows.go
+│  ├─ panel_api.go / portable_paths.go
+│  ├─ *_test.go                  Windows 启动器相关测试
+│  ├─ blockcraft.ico             Windows 图标
+│  └─ build.sh、go.mod、go.sum   构建脚本与 Go 依赖
+├─ server/
+│  ├─ src/
+│  │  ├─ core/                    paths、fsx、日志、会话、NBT、错误、锁、Minecraft ping 等基础模块
+│  │  ├─ launcher/index.ts        Minecraft/加载器/JDK 安装与启动参数
+│  │  ├─ java/                    Forge 安装辅助 Java 源码
+│  │  ├─ routes/                  backups、console、frp、instances、mods、packs、players、system API
+│  │  ├─ services/                世界、安装、进程、备份、MOD、整合包、玩家、FRP、皮肤、JDK 等业务
+│  │  ├─ types/                   第三方库补充类型声明
+│  │  ├─ config.ts                面板配置读写与默认值
+│  │  ├─ index.ts                 面板 HTTP 服务入口
+│  │  ├─ types.ts                 后端共享数据类型
+│  │  └─ watchdog.ts              面板进程看门狗
+│  ├─ test/                      后端、启动器和整合包处理测试
+│  ├─ package.json               后端依赖与命令
+│  └─ tsconfig.json              TypeScript 配置
+├─ tools/                        辅助工具（例如 Minecraft ping 检查）
+├─ web/
+│  ├─ public/                    网页静态资源与图标
+│  ├─ src/
+│  │  ├─ __tests__/              前端组件与功能测试
+│  │  ├─ components/             弹窗、表单、状态标记、世界卡片等共享组件
+│  │  ├─ lib/                    API、类型、主题、格式化、公告与命令辅助代码
+│  │  ├─ pages/                  Overview、Wizard、Console、Backups、Mods、Players、Settings、Events 等页面
+│  │  ├─ styles/                 全局样式
+│  │  ├─ App.vue                 应用外壳与导航
+│  │  └─ router.ts               页面路由
+│  ├─ dist/                      前端构建产物，运行时由构建生成
+│  ├─ index.html                 网页入口 HTML
+│  ├─ package.json               前端依赖与命令
+│  ├─ vite.config.ts             Vite 构建配置
+│  ├─ vitest.config.ts           前端测试配置
+│  └─ tsconfig.json              TypeScript 配置
+├─ .dockerignore / .editorconfig  Docker 忽略规则与编辑器格式约定
+├─ .gitignore                    Git 忽略规则
+├─ CHANGELOG.md                  版本更新记录
+├─ CONTRIBUTING.md               开发贡献说明
+├─ Dockerfile                    Docker 镜像构建配置
+├─ docker-compose.yml            Docker 部署配置
+├─ LICENSE                       开源许可证
+├─ README.md                     GitHub 项目主页说明
+├─ package.json                  工作区命令与根依赖
+├─ pnpm-lock.yaml                锁定的依赖版本
+└─ pnpm-workspace.yaml           pnpm 工作区定义
 ```
 
-运行数据不入 Git：`data/` 保存面板配置、日志、下载缓存与 Java；`instances/<world-id>/` 保存对应世界的服务端文件、配置、存档和备份。
+`node_modules/`、`web/dist/`、`data/`、`instances/` 和发布包 `dist-release/` 由本机安装或构建生成；源码仓库跟踪构建配置与源文件。
+
+### 运行数据：面板设置、缓存和日志
+
+默认情况下，数据目录位于项目根目录的 `data/`。Windows ZIP 版也会把它放在 `BlockCraft.exe` 旁边；Linux/Docker 还可以通过环境变量把数据目录和世界目录放到其他磁盘。
+
+```text
+data/
+├─ panel.json                 面板、登录令牌、FRP、端口范围、API Key 等设置（敏感）
+├─ panel.json.bak             设置文件的上一份备份，存在时才会出现
+├─ sessions.json              登录会话
+├─ ports.json                 已分配的本地游戏/RCON 端口与 FRP 端口
+├─ mods-cache.json            MOD 来源查询缓存
+├─ players-cache.json         玩家资料缓存
+├─ skin-bindings.json         玩家与皮肤绑定信息（使用相关功能后可能出现）
+├─ skin-pool.json             公共皮肤池索引
+├─ skins/                     皮肤图片及预览缓存
+├─ skin-pool/                 公共皮肤图片、预览和动图
+├─ skin-assignments/          发给各世界皮肤插件使用的图片
+├─ frpc-panel.toml            面板 FRP 客户端配置
+├─ frpc-worlds.toml           世界 FRP 客户端配置
+├─ jobs/                      创建、导入等后台任务记录
+├─ jdk/                       BlockCraft 下载的 Temurin Java 运行环境
+├─ logs/
+│  ├─ panel.log               面板运行日志
+│  ├─ events.jsonl             世界启动、就绪、关闭与崩溃事件
+│  ├─ audit.jsonl              管理操作审计记录
+│  ├─ panel.out / boot.log     Linux 启动输出（依启动方式而异）
+│  └─ watchdog*.log            看门狗日志（启用时产生）
+└─ store/                     下载与导入缓存
+   ├─ packs/                  上传的整合包压缩文件
+   ├─ versions/               Minecraft 版本清单缓存
+   ├─ vanilla/                原版服务端下载缓存
+   ├─ paper/ / fabric/        Paper/Fabric 安装缓存
+   ├─ forge/ / neoforge/      Forge/NeoForge 安装缓存
+   └─ mods-upload/            网页上传 MOD 的临时处理目录
+```
+
+不是每个文件夹一开始都会有：例如没用皮肤池时不会有皮肤缓存，没启用 FRP 时也可能没有 FRP 配置文件。不要公开 `panel.json`、FRP TOML 或日志中的令牌、密码和公网地址。
+
+### 世界实例：每个世界各自一份
+
+`instances/` 下每个直接子目录代表一个世界。目录 ID 一般由英文世界名称转换而来，例如 `World 1` 通常生成 `world_1`，`Cozy Zen` 通常生成 `cozy_zen`；卡片上的显示名称仍保存在配置里。
+
+```text
+instances/
+├─ .trash/                         面板删除世界时暂存的回收站内容
+└─ world_1/                        示例世界 ID；假设创建时名称为 World 1
+   ├─ config.json                  世界配置：版本、加载器、内存、端口、种子等
+   ├─ config.json.bak              世界配置上一份副本（存在时）
+   ├─ state.json                   面板保存的启动/停止状态等运行状态
+   ├─ state.json.bak               状态文件上一份副本（存在时）
+   ├─ server.pid                   世界运行时的进程标识（运行时生成）
+   ├─ .stop-intent                 优雅停止期间的临时标记
+   ├─ logs/
+   │  ├─ server.out                服务端标准输出与错误输出
+   │  └─ console.log               控制台命令与日志记录
+   ├─ backups/
+   │  ├─ index.json                备份列表、校验值、存档目录等索引
+   │  ├─ *.zip                     BlockCraft 导出的世界存档备份
+   │  └─ .tmp/                     创建/上传备份时的临时文件
+   └─ server/                      Minecraft 服务端工作目录
+      ├─ server.properties         服务端属性，面板会同步维护受管选项
+      ├─ eula.txt                  Minecraft EULA 接受状态
+      ├─ user_jvm_args.txt         JVM 参数；部分加载器启动方式会使用
+      ├─ ops.json                  管理员名单
+      ├─ whitelist.json            白名单
+      ├─ banned-players.json       封禁玩家名单
+      ├─ banned-ips.json           封禁 IP 名单（使用后可能出现）
+      ├─ usercache.json            最近识别的玩家资料
+      ├─ minecraft_server.jar      原版服务端文件（原版加载器组合时可能出现）
+      ├─ server.jar / paper.jar    加载器对应的服务端文件（具体名称依加载器而异）
+      ├─ run.sh / run.bat           Forge 等安装器生成的启动脚本（可能出现）
+      ├─ mods/                     Forge/Fabric/NeoForge 服务端 MOD（相应加载器需要时）
+      ├─ client-mods/               整合包客户端专用文件的留存位置（需要时出现）
+      ├─ plugins/                  Paper 等插件端的插件（安装插件后出现）
+      ├─ config/                   加载器和 MOD 的配置
+      ├─ defaultconfigs/           MOD 默认配置（整合包可能附带）
+      ├─ kubejs/ / scripts/        整合包脚本（整合包可能附带）
+      ├─ resourcepacks/            整合包资源包文件
+      ├─ client-files/shaderpacks/ 客户端光影文件，不在服务端加载
+      ├─ libraries/ / versions/    Forge 等加载器下载的库与版本信息
+      ├─ .pack-downloads/          整合包下载过程中的临时文件（处理期间可能出现）
+      ├─ logs/                     Minecraft 服务端日志，如 latest.log
+      ├─ crash-reports/            服务端崩溃报告
+      └─ world/                    默认存档目录；名称受 server.properties 的 level-name 控制
+```
+
+### “世界 1”的存档目录里有什么
+
+上面 `server/world/` 是默认示例。若 `level-name` 被改成 `survival`，存档就会是 `server/survival/`。世界刚创建时许多文件还不存在；启动并生成地形后通常会逐步出现：
+
+```text
+server/world/                     （也可能是其他 level-name）
+├─ level.dat                      世界基本信息、种子和游戏规则
+├─ level.dat_old                  上一份世界元数据副本（可能出现）
+├─ session.lock                   服务端运行时锁文件
+├─ region/                        主世界区块地形文件（*.mca）
+├─ entities/                      主世界实体区块数据
+├─ poi/                           兴趣点数据，例如村民工作站
+├─ playerdata/                    玩家 UUID 存档：背包、位置、经验等
+├─ stats/                         玩家统计数据
+├─ advancements/                  玩家进度/成就
+├─ data/                          地图、计分板等世界级数据
+├─ datapacks/                     这个世界加载的数据包
+├─ DIM-1/                         下界维度数据（依版本而定）
+├─ DIM1/                           末地维度数据（依版本而定）
+└─ dimensions/                    模组或新格式的额外维度（有相关内容时）
+```
+
+`region/`、`playerdata/`、维度目录和其他内容会随 Minecraft 版本、加载器及模组变化。备份页将整个存档目录打包为 ZIP；MOD、`server.properties`、白名单和管理员名单保存在服务端目录的其他位置，不会进入这个 ZIP。迁移时要另行准备相同版本、加载器与 MOD。
+
+注意区分两类玩家相关文件：`server/ops.json`、`whitelist.json`、`banned-players.json` 是服务端权限/名单；`world/playerdata/`、`stats/` 和 `advancements/` 是玩家在这个世界里的角色存档。它们位于不同位置，因此世界备份包含后者，不包含前者。
+
+如果通过“接管已有服务端目录”添加世界，`instances/<id>/server` 可能是指向外部服务端目录的符号链接；真实服务端文件仍留在原位置。复制或迁移时应确认外部目录也一起保留。
 
 ## 12. 开发与构建
 

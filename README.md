@@ -74,13 +74,19 @@ node --experimental-strip-types server/src/index.ts
 ## 项目结构
 
 ```text
-server/src/                 Node.js 服务端：API、世界进程、安装器与存储服务
-web/src/                    Vue 网页：总览、创建/导入、控制台、设置和管理页面
-bin/                        Linux 启动、停止与 systemd 脚本
-packaging/windows/          Windows 托盘启动器和构建脚本
-docs/                       图文使用手册与截图
-instances/                  每个 Minecraft 世界的独立目录（运行时生成）
-data/                       面板设置、日志、下载缓存和 Java（运行时生成）
+server/src/                 Node.js 服务端：core、routes、services、launcher
+web/src/                    Vue 网页：pages、components、lib、styles
+bin/                        Linux/Ubuntu 启动、停止、看门狗与 systemd 脚本
+packaging/windows/          Windows 托盘启动器、关闭窗口与构建脚本
+docs/                       图文手册、截图、关闭窗口图和皮肤演示视频
+data/                       面板配置、玩家/皮肤缓存、日志、下载缓存和 Java
+instances/<世界ID>/         每个世界的配置、状态、日志、备份和服务端目录
+  server/                   Minecraft 服务端：MOD/插件/配置/整合包文件
+    <level-name>/            世界存档目录，默认叫 world，也可以自定义名称
+      region/                区块地形数据（*.mca）
+      playerdata/            玩家背包、位置、经验等角色存档
+      advancements/ stats/    玩家进度和统计数据
+      data/ datapacks/        世界数据和数据包
 ```
 
-完整目录说明与操作指南：[docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md)。
+完整仓库源码树、`data/` 运行数据，以及每个世界和存档内部的示例结构见[项目使用手册第 11 节](docs/PROJECT_GUIDE.md#11-项目目录)。
