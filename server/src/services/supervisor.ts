@@ -274,6 +274,16 @@ function isAlive(pid: number): boolean {
   return true;
 }
 
+function isMinecraftServerProcess(pid: number): boolean {
+  if (!isAlive(pid)) return false;
+  try {
+    const cmd = processCommandLine(pid) ?? '';
+    return /java/i.test(cmd) && /(nogui|unix_args)/i.test(cmd);
+  } catch {
+    return false;
+  }
+}
+
 export function alivePid(id: string): number | null {
   const tracked = procs.get(id);
   const fromMap = tracked?.pid;
@@ -282,14 +292,8 @@ export function alivePid(id: string): number | null {
   // 该进程由当前面板直接创建，PID 已确定；Windows 进程信息查询偶发失败时，
   // 不能因此把世界误判为停止并拒绝命令。面板重启后只剩 PID 文件时仍需检查命令行，避免 PID 复用。
   if (isTrackedChildAlive(tracked, pid)) return pid;
-  if (!isAlive(pid)) return null;
-  // 校验 cmdline 里确实是我们的服务端，避免 PID 复用误判
-  try {
-    const cmd = processCommandLine(pid) ?? '';
-    if (!/java/.test(cmd) || !/(nogui|unix_args)/.test(cmd)) return null;
-  } catch {
-    return null;
-  }
+  // PID 文件可能指向已退出 Java 后被 Windows 分配给其他程序的 PID。
+  if (!isMinecraftServerProcess(pid)) return null;
   return pid;
 }
 
@@ -301,8 +305,8 @@ export function alivePid(id: string): number | null {
 export async function hasActiveProcessEvidence(id: string): Promise<boolean> {
   const cfg = I.getConfig(id);
   if (alivePid(id)) return true;
-  const pid = readPidFile(id);
-  if (pid && isAlive(pid)) return true;
+  // 不把“PID 文件里的数字仍对应某个进程”单独当作世界仍在运行的证据：
+  // PID 可能已经被 Windows 复用。具体进程必须先通过上面的 Java 命令行校验。
   return portOpen(cfg.port, '127.0.0.1', 500);
 }
 
@@ -682,9 +686,12 @@ export async function stop(id: string, opts: StopOptions = {}): Promise<{ ok: bo
     I.saveState(id, { status: 'stopping', phase: '正在保存并关闭', intentionalStop: true });
     if (!pid) {
       const pidFromFile = readPidFile(id);
-      const pidFileAlive = Boolean(pidFromFile && isAlive(pidFromFile));
+      const pidFileAlive = Boolean(pidFromFile && isMinecraftServerProcess(pidFromFile));
       const listening = await portOpen(cfg.port, '127.0.0.1', 500);
       if (!pidFileAlive && !listening) {
+        if (pidFromFile && isAlive(pidFromFile)) {
+          logger.warn(`世界 ${id} 的 PID 文件已指向其他进程，按已停止状态清理`, { pid: pidFromFile });
+        }
         try { fs.unlinkSync(pidFile(id)); } catch { /* no stale PID file */ }
         I.saveState(id, { status: 'stopped', pid: null, listening: false, players: 0, phase: '已停止' });
         return { ok: true, graceful: true };

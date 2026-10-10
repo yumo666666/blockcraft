@@ -15,30 +15,32 @@ import (
 
 const (
 	wsPopup           = 0x80000000
-	wsChild           = 0x40000000
-	wsVisible         = 0x10000000
-	wsVScroll         = 0x00200000
-	esMultiline       = 0x0004
-	esReadOnly        = 0x0800
-	esAutoVScroll     = 0x0040
 	wsExTopmost       = 0x00000008
 	wmClose           = 0x0010
 	wmDestroy         = 0x0002
 	wmPaint           = 0x000F
 	wmEraseBkgnd      = 0x0014
-	wmCtlColorEdit    = 0x0133
+	wmTimer           = 0x0113
 	wmApp             = 0x8000
 	shutdownDialogEnd = wmApp + 31
-	wmSetFont         = 0x0030
-	wmSetText         = 0x000C
-	emSetMargins      = 0x00D3
-	textSingleLine    = 0x0020
-	textVCenter       = 0x0004
-	bkOpaque          = 2
-	fontWeightBold    = 700
-	smCxScreen        = 0
-	smCyScreen        = 1
-	swShow            = 5
+
+	textSingleLine = 0x0020
+	textVCenter    = 0x0004
+	textWordBreak  = 0x0010
+	textNoPrefix   = 0x0800
+	bkTransparent  = 1
+	fontWeight     = 400
+	fontWeightBold = 700
+
+	smCxScreen = 0
+	smCyScreen = 1
+	swShow     = 5
+
+	swpNoSize            = 0x0001
+	swpNoMove            = 0x0002
+	swpNoActivate        = 0x0010
+	swpShowWindow        = 0x0040
+	shutdownTopmostTimer = 1
 )
 
 type shutdownPoint struct {
@@ -93,10 +95,14 @@ var (
 	showWindow              = shutdownUser32.NewProc("ShowWindow")
 	updateWindow            = shutdownUser32.NewProc("UpdateWindow")
 	setForegroundWindow     = shutdownUser32.NewProc("SetForegroundWindow")
+	setWindowPos            = shutdownUser32.NewProc("SetWindowPos")
+	setTimer                = shutdownUser32.NewProc("SetTimer")
+	killTimer               = shutdownUser32.NewProc("KillTimer")
 	getMessageW             = shutdownUser32.NewProc("GetMessageW")
 	translateMessage        = shutdownUser32.NewProc("TranslateMessage")
 	dispatchMessageW        = shutdownUser32.NewProc("DispatchMessageW")
 	postMessageW            = shutdownUser32.NewProc("PostMessageW")
+	invalidateRect          = shutdownUser32.NewProc("InvalidateRect")
 	destroyWindow           = shutdownUser32.NewProc("DestroyWindow")
 	defWindowProcW          = shutdownUser32.NewProc("DefWindowProcW")
 	postQuitMessage         = shutdownUser32.NewProc("PostQuitMessage")
@@ -111,16 +117,15 @@ var (
 	createSolidBrush        = shutdownGdi32.NewProc("CreateSolidBrush")
 	deleteObject            = shutdownGdi32.NewProc("DeleteObject")
 	setTextColor            = shutdownGdi32.NewProc("SetTextColor")
-	setBkColor              = shutdownGdi32.NewProc("SetBkColor")
 	setBkMode               = shutdownGdi32.NewProc("SetBkMode")
 	createFontW             = shutdownGdi32.NewProc("CreateFontW")
 	selectObject            = shutdownGdi32.NewProc("SelectObject")
-	sendMessageW            = shutdownUser32.NewProc("SendMessageW")
 	getSystemMetrics        = shutdownUser32.NewProc("GetSystemMetrics")
 	getModuleHandleW        = shutdownKernel32.NewProc("GetModuleHandleW")
 	shutdownWindowClassName = syscall.StringToUTF16Ptr("BlockCraftWorldShutdownProgress")
 	shutdownWindowProc      = syscall.NewCallback(shutdownWindowProcedure)
-	shutdownEditBrush       atomic.Uintptr
+	shutdownWindowHandle    atomic.Uintptr
+	shutdownCurrentText     atomic.Pointer[string]
 )
 
 func shutdownRGB(r, g, b byte) uintptr {
@@ -129,11 +134,43 @@ func shutdownRGB(r, g, b byte) uintptr {
 
 func drawShutdownText(hdc uintptr, value string, rect shutdownRect, color uintptr, flags uintptr) {
 	text := syscall.StringToUTF16(value)
-	length := int32(-1)
+	if len(text) == 0 {
+		return
+	}
 	setTextColor.Call(hdc, color)
-	setBkMode.Call(hdc, bkOpaque)
-	drawTextW.Call(hdc, uintptr(unsafe.Pointer(&text[0])), uintptr(length), uintptr(unsafe.Pointer(&rect)), flags)
+	setBkMode.Call(hdc, bkTransparent)
+	drawTextW.Call(hdc, uintptr(unsafe.Pointer(&text[0])), uintptr(uint32(len(text)-1)), uintptr(unsafe.Pointer(&rect)), flags|textNoPrefix)
 	runtime.KeepAlive(text)
+}
+
+func selectedShutdownFont(hdc uintptr, height int32, weight uintptr) (uintptr, uintptr) {
+	face := syscall.StringToUTF16("Segoe UI")
+	font, _, _ := createFontW.Call(
+		uintptr(uint32(height)), 0, 0, 0, weight, 0, 0, 0,
+		1, 0, 0, 5, 0, uintptr(unsafe.Pointer(&face[0])),
+	)
+	oldFont := uintptr(0)
+	if font != 0 {
+		oldFont, _, _ = selectObject.Call(hdc, font)
+	}
+	runtime.KeepAlive(face)
+	return font, oldFont
+}
+
+func restoreShutdownFont(hdc uintptr, font, oldFont uintptr) {
+	if font == 0 {
+		return
+	}
+	selectObject.Call(hdc, oldFont)
+	deleteObject.Call(font)
+}
+
+func currentShutdownText() string {
+	value := shutdownCurrentText.Load()
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func paintShutdownWindow(hwnd uintptr) uintptr {
@@ -145,7 +182,8 @@ func paintShutdownWindow(hwnd uintptr) uintptr {
 	var client shutdownRect
 	getClientRect.Call(hwnd, uintptr(unsafe.Pointer(&client)))
 	background, _, _ := createSolidBrush.Call(shutdownRGB(17, 23, 19))
-	panel, _, _ := createSolidBrush.Call(shutdownRGB(29, 39, 33))
+	headerBrush, _, _ := createSolidBrush.Call(shutdownRGB(29, 39, 33))
+	cardBrush, _, _ := createSolidBrush.Call(shutdownRGB(23, 32, 27))
 	border, _, _ := createSolidBrush.Call(shutdownRGB(49, 66, 55))
 	accent, _, _ := createSolidBrush.Call(shutdownRGB(132, 200, 95))
 	if background != 0 {
@@ -155,41 +193,37 @@ func paintShutdownWindow(hwnd uintptr) uintptr {
 		stripe := shutdownRect{left: 0, top: 0, right: client.right, bottom: 5}
 		fillRect.Call(hdc, uintptr(unsafe.Pointer(&stripe)), accent)
 	}
-	if panel != 0 {
-		header := shutdownRect{left: 1, top: 5, right: client.right - 1, bottom: 79}
-		fillRect.Call(hdc, uintptr(unsafe.Pointer(&header)), panel)
-		card := shutdownRect{left: 18, top: 88, right: client.right - 18, bottom: client.bottom - 49}
-		fillRect.Call(hdc, uintptr(unsafe.Pointer(&card)), panel)
+	if headerBrush != 0 {
+		header := shutdownRect{left: 1, top: 5, right: client.right - 1, bottom: 89}
+		fillRect.Call(hdc, uintptr(unsafe.Pointer(&header)), headerBrush)
+	}
+	card := shutdownRect{left: 20, top: 102, right: client.right - 20, bottom: client.bottom - 60}
+	if cardBrush != 0 {
+		fillRect.Call(hdc, uintptr(unsafe.Pointer(&card)), cardBrush)
 	}
 	if border != 0 {
 		frameRect.Call(hdc, uintptr(unsafe.Pointer(&client)), border)
-		separator := shutdownRect{left: 1, top: 78, right: client.right - 1, bottom: 79}
+		separator := shutdownRect{left: 1, top: 89, right: client.right - 1, bottom: 90}
 		fillRect.Call(hdc, uintptr(unsafe.Pointer(&separator)), border)
-		card := shutdownRect{left: 18, top: 88, right: client.right - 18, bottom: client.bottom - 49}
 		frameRect.Call(hdc, uintptr(unsafe.Pointer(&card)), border)
 	}
-	face := syscall.StringToUTF16("Segoe UI")
-	fontHeight := int32(-22)
-	font, _, _ := createFontW.Call(
-		uintptr(fontHeight), 0, 0, 0, fontWeightBold, 0, 0, 0,
-		1, 0, 0, 5, 0, uintptr(unsafe.Pointer(&face[0])),
-	)
-	oldFont := uintptr(0)
-	if font != 0 {
-		oldFont, _, _ = selectObject.Call(hdc, font)
-	}
-	title := shutdownRect{left: 25, top: 19, right: client.right - 24, bottom: 51}
+
+	titleFont, oldTitleFont := selectedShutdownFont(hdc, -22, fontWeightBold)
+	title := shutdownRect{left: 28, top: 19, right: client.right - 28, bottom: 52}
 	drawShutdownText(hdc, "正在安全关闭 BlockCraft", title, shutdownRGB(229, 237, 231), textSingleLine|textVCenter)
-	if font != 0 {
-		selectObject.Call(hdc, oldFont)
-		deleteObject.Call(font)
-	}
-	runtime.KeepAlive(face)
-	subtitle := shutdownRect{left: 26, top: 50, right: client.right - 24, bottom: 73}
+	restoreShutdownFont(hdc, titleFont, oldTitleFont)
+
+	subtitleFont, oldSubtitleFont := selectedShutdownFont(hdc, -14, fontWeight)
+	subtitle := shutdownRect{left: 29, top: 55, right: client.right - 28, bottom: 80}
 	drawShutdownText(hdc, "等待世界、FRP 与面板服务全部停止后，启动器才会退出", subtitle, shutdownRGB(155, 171, 160), textSingleLine|textVCenter)
-	footer := shutdownRect{left: 26, top: client.bottom - 38, right: client.right - 24, bottom: client.bottom - 14}
+	body := shutdownRect{left: 38, top: 116, right: client.right - 36, bottom: client.bottom - 70}
+	drawShutdownText(hdc, currentShutdownText(), body, shutdownRGB(221, 231, 224), textWordBreak)
+
+	footer := shutdownRect{left: 29, top: client.bottom - 47, right: client.right - 28, bottom: client.bottom - 19}
 	drawShutdownText(hdc, "请耐心等待 · 请勿手动结束进程，以免世界存档损坏", footer, shutdownRGB(155, 171, 160), textSingleLine|textVCenter)
-	for _, brush := range []uintptr{background, panel, border, accent} {
+	restoreShutdownFont(hdc, subtitleFont, oldSubtitleFont)
+
+	for _, brush := range []uintptr{background, headerBrush, cardBrush, border, accent} {
 		if brush != 0 {
 			deleteObject.Call(brush)
 		}
@@ -204,18 +238,20 @@ func shutdownWindowProcedure(hwnd uintptr, message uint32, wParam, lParam uintpt
 		return paintShutdownWindow(hwnd)
 	case wmEraseBkgnd:
 		return 1
-	case wmCtlColorEdit:
-		setTextColor.Call(wParam, shutdownRGB(221, 231, 224))
-		setBkColor.Call(wParam, shutdownRGB(29, 39, 33))
-		setBkMode.Call(wParam, bkOpaque)
-		return shutdownEditBrush.Load()
+	case wmTimer:
+		// Keep the non-dismissible progress window above ordinary and other
+		// topmost windows throughout a potentially long shutdown sequence.
+		setWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
+		return 0
 	case wmClose:
 		// Deliberately do not close: the user should wait for safe world shutdown.
 		return 0
 	case shutdownDialogEnd:
+		killTimer.Call(hwnd, shutdownTopmostTimer)
 		destroyWindow.Call(hwnd)
 		return 0
 	case wmDestroy:
+		shutdownWindowHandle.Store(0)
 		postQuitMessage.Call(0)
 		return 0
 	default:
@@ -269,19 +305,13 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 	startupFailure := make(chan error, 1)
 	cancel := make(chan struct{})
 	var closeOnce sync.Once
-	var editHandle atomic.Uintptr
-	var textMu sync.Mutex
-	currentText := shutdownProgressText("正在检查世界与创建/导入任务", items, "")
+	initialText := shutdownProgressText("正在检查世界与创建/导入任务", items, "")
+	shutdownCurrentText.Store(&initialText)
 	update := func(stage string, nextItems []string, detail string) {
 		text := shutdownProgressText(stage, nextItems, detail)
-		textMu.Lock()
-		currentText = text
-		edit := editHandle.Load()
-		textMu.Unlock()
-		if edit != 0 {
-			utf16 := syscall.StringToUTF16(text)
-			sendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(&utf16[0])))
-			runtime.KeepAlive(utf16)
+		shutdownCurrentText.Store(&text)
+		if hwnd := shutdownWindowHandle.Load(); hwnd != 0 {
+			invalidateRect.Call(hwnd, 0, 1)
 		}
 	}
 	go func() {
@@ -321,7 +351,7 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 			return
 		}
 
-		const width, minHeight, rowHeight = 700, 390, 26
+		const width, minHeight, rowHeight = 760, 420, 26
 		height := minHeight + rowHeight*len(items)
 		if height > 690 {
 			height = 690
@@ -330,12 +360,7 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 		screenHeight, _, _ := getSystemMetrics.Call(smCyScreen)
 		x := int32((int(screenWidth) - width) / 2)
 		y := int32((int(screenHeight) - height) / 2)
-		textMu.Lock()
-		text := syscall.StringToUTF16Ptr(currentText)
-		textMu.Unlock()
 		instance, _, _ := getModuleHandleW.Call(0)
-		// A custom frameless window matches the panel's dark green theme and
-		// deliberately has no close button.
 		hwnd, _, _ = createWindowExW.Call(
 			wsExTopmost,
 			uintptr(unsafe.Pointer(shutdownWindowClassName)),
@@ -348,64 +373,18 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 			failStartup(fmt.Errorf("创建关闭进度窗失败：%v", syscall.GetLastError()))
 			return
 		}
-		brush, _, _ := createSolidBrush.Call(shutdownRGB(29, 39, 33))
-		if brush == 0 {
-			destroyWindow.Call(hwnd)
-			hwnd = 0
-			failStartup(fmt.Errorf("创建进度窗背景失败：%v", syscall.GetLastError()))
-			return
-		}
-		shutdownEditBrush.Store(brush)
-		controlClass := syscall.StringToUTF16Ptr("EDIT")
-		edit, _, _ := createWindowExW.Call(
-			0,
-			uintptr(unsafe.Pointer(controlClass)),
-			uintptr(unsafe.Pointer(text)),
-			wsChild|wsVisible|wsVScroll|esMultiline|esReadOnly|esAutoVScroll,
-			24, 94, uintptr(width-48), uintptr(height-151),
-			hwnd, 0, instance, 0,
-		)
-		if edit == 0 {
-			deleteObject.Call(brush)
-			shutdownEditBrush.Store(0)
-			destroyWindow.Call(hwnd)
-			hwnd = 0
-			failStartup(fmt.Errorf("创建关闭进度文本框失败：%v", syscall.GetLastError()))
-			return
-		}
-		if edit == 0 {
-			destroyWindow.Call(hwnd)
-			hwnd = 0
-			failStartup(fmt.Errorf("创建关闭进度文本框失败：%v", syscall.GetLastError()))
-			return
-		}
-		textMu.Lock()
-		editHandle.Store(edit)
-		latestText := syscall.StringToUTF16Ptr(currentText)
-		textMu.Unlock()
-		sendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(latestText)))
-		font, _, _ := getStockObject.Call(17) // DEFAULT_GUI_FONT
-		if font == 0 {
-			deleteObject.Call(brush)
-			shutdownEditBrush.Store(0)
-			destroyWindow.Call(hwnd)
-			hwnd = 0
-			failStartup(fmt.Errorf("读取 Windows 默认字体失败：%v", syscall.GetLastError()))
-			return
-		}
-		sendMessageW.Call(edit, wmSetFont, font, 1)
-		sendMessageW.Call(edit, emSetMargins, 0, uintptr(12)|(uintptr(12)<<16))
+		shutdownWindowHandle.Store(hwnd)
 		select {
 		case <-cancel:
 			destroyWindow.Call(hwnd)
-			deleteObject.Call(brush)
-			shutdownEditBrush.Store(0)
 			hwnd = 0
 			signalReady(0)
 			return
 		default:
 		}
 		showWindow.Call(hwnd, swShow)
+		setWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
+		setTimer.Call(hwnd, shutdownTopmostTimer, 1000, 0)
 		updateWindow.Call(hwnd)
 		setForegroundWindow.Call(hwnd)
 		signalReady(hwnd)
@@ -419,13 +398,12 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 			translateMessage.Call(uintptr(unsafe.Pointer(&message)))
 			dispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
 		}
-		deleteObject.Call(brush)
-		shutdownEditBrush.Store(0)
 	}()
 	var hwnd uintptr
 	select {
 	case hwnd = <-ready:
 		if hwnd == 0 {
+			shutdownCurrentText.Store(nil)
 			select {
 			case err := <-startupFailure:
 				return update, func() {}, false, err
@@ -435,6 +413,7 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 		}
 	case <-time.After(10 * time.Second):
 		close(cancel)
+		shutdownCurrentText.Store(nil)
 		return update, func() {}, false, fmt.Errorf("等待关闭进度窗显示超过 10 秒")
 	}
 
@@ -442,6 +421,7 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 		closeOnce.Do(func() {
 			close(cancel)
 			postMessageW.Call(hwnd, shutdownDialogEnd, 0, 0)
+			shutdownCurrentText.Store(nil)
 		})
 	}
 	return update, closeProgress, true, nil

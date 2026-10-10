@@ -11,6 +11,7 @@ import * as I from '../services/instanceService.ts';
 import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
 import { ensureSkinSupport, skinSupportInstallStageLabel } from '../services/skinSupportService.ts';
+import { loadConfig } from '../config.ts';
 
 const PACKS_DIR = path.join(STORE_DIR, 'packs');
 
@@ -157,6 +158,11 @@ export function registerPackRoutes(app: Express): void {
     if (!body.mc) throw bad('请指定 Minecraft 版本');
     const packFile = path.join(PACKS_DIR, path.basename(req.params.id));
     if (!fs.existsSync(packFile)) throw notFound('整合包不存在');
+    const { inspectPack } = await import('../services/packService.ts');
+    const packInfo = await inspectPack(packFile);
+    if (packInfo.format === 'curseforge' && !loadConfig().mirrors.curseforgeApiKey.trim()) {
+      throw conflict('导入 CurseForge 整合包前需要先配置 API Key。请到「设置」填写并保存 API Key，然后返回「导入整合包」重新选择并导入。新建世界不受此限制。 / A CurseForge API Key is required to import this pack. Add and save it in Settings, then return to Import and select the pack again. This does not affect creating a new world.');
+    }
     const cfg = await I.createInstance({
       name: body.name,
       mc: body.mc,
@@ -185,7 +191,12 @@ export function registerPackRoutes(app: Express): void {
         setStage(job.id, 'install', 'done');
         setStage(job.id, 'extract', 'running');
         const { extractPack } = await import('../services/packService.ts');
-        await extractPack(packFile, cfg.id, (line) => logJob(job.id, line));
+        const extracted = await extractPack(packFile, cfg.id, (line) => logJob(job.id, line));
+        if (extracted.manual.length) {
+          logJob(job.id, `以下 ${extracted.manual.length} 个模组或依赖未能自动安装：`);
+          for (const item of extracted.manual) logJob(job.id, `  • ${item}`);
+          logJob(job.id, '请按日志中的文件名、文件 ID 或项目 ID 手动补齐；完整错误原因见上方下载日志。');
+        }
         setStage(job.id, 'extract', 'done');
         setStage(job.id, 'skin', 'running');
         await ensureSkinSupport(cfg.id, (line) => logJob(job.id, line));

@@ -112,7 +112,7 @@ export async function inspectPack(file: string): Promise<PackInspection> {
     note: '',
   };
 
-  if (has(/(^|\/)manifest\.json$/) && has(/(^|\/)overrides\//)) {
+  if (has(/(^|\/)manifest\.json$/)) {
     out.format = 'curseforge';
     const buf = await readSmall(names.find((n) => /(^|\/)manifest\.json$/.test(n))!);
     if (buf) {
@@ -131,7 +131,7 @@ export async function inspectPack(file: string): Promise<PackInspection> {
           out.loaderVersion = rest.join('-');
         }
         out.filesToDownload = manifest.files?.length ?? 0;
-        out.note = 'CurseForge 格式：包内不含 MOD 本体，需要联网按清单下载（需要 CurseForge API Key，否则会列出人工清单）';
+        out.note = 'CurseForge 格式：需要配置 API Key 才能自动下载 MOD 与必需依赖。';
       } catch {
         out.note = 'manifest.json 解析失败';
       }
@@ -393,9 +393,7 @@ async function installCurseForge(
   const manual: string[] = [];
   let downloaded = 0;
   if (!key) {
-    onLog(`没有配置 CurseForge API Key：${manifest.files.length} 个 MOD 无法自动下载，已列成人工清单`);
-    for (const f of manifest.files) manual.push(`https://www.curseforge.com/minecraft/mc-mods/search?projectId=${f.projectID}`);
-    return { downloaded, manual };
+    throw bad('导入 CurseForge 整合包需要先在设置中填写并保存 API Key / A CurseForge API Key must be saved in Settings before importing this pack.');
   }
   const projectIds = new Set(manifest.files.map((f) => f.projectID));
   const projectByFile = new Map(manifest.files.map((f) => [f.fileID, f.projectID]));
@@ -423,13 +421,16 @@ async function installCurseForge(
         files = response.data ?? [];
       } catch (err) {
         onLog(`接口查询失败，这批文件需手动处理：${String(err).slice(0, 120)}`);
-        for (const id of chunk) manual.push(`https://www.curseforge.com/minecraft/mc-mods/search?fileId=${id}`);
+        for (const id of chunk) manual.push(`CurseForge 文件 ID ${id}（文件信息查询失败）`);
         continue;
       }
 
       const received = new Set(files.map((entry) => entry.id).filter((id): id is number => Number.isInteger(id)));
       for (const id of chunk) {
-        if (!received.has(id)) manual.push(`https://www.curseforge.com/minecraft/mc-mods/search?fileId=${id}`);
+        if (!received.has(id)) {
+          manual.push(`CurseForge 文件 ID ${id}（API 未返回该文件）`);
+          onLog(`  未找到清单文件 ID ${id} 的 CurseForge 文件信息`);
+        }
       }
 
       for (const f of files) {
@@ -450,7 +451,7 @@ async function installCurseForge(
           downloaded++;
           onLog(`  ✔ ${fileName}${projectId && !manifest.files.some((entry) => entry.projectID === projectId) ? '（自动补齐的必需依赖）' : ''}`);
         } else {
-          manual.push(fileName);
+          manual.push(`${fileName}（下载失败）`);
         }
         for (const dependency of f.dependencies ?? []) {
           if (dependency.relationType === 3 && Number.isInteger(dependency.modId) && !projectIds.has(dependency.modId!)) {
@@ -488,6 +489,7 @@ async function installCurseForge(
     }
   }
   if (autoDependencyCount) onLog(`已自动补齐 ${autoDependencyCount} 个 CurseForge 必需依赖`);
+  if (manual.length) onLog(`仍有 ${manual.length} 个 CurseForge 文件或依赖未能自动安装，稍后列出明细`);
   return { downloaded, manual };
 }
 

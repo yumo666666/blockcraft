@@ -55,7 +55,9 @@ const form = ref({
 });
 
 // 导入
-const packs = ref<{ id: string; file: string; bytes: number; uploadedAt: number }[]>([]);
+const packs = ref<{ id: string; file: string; bytes: number; uploadedAt: number; format?: string | null }[]>([]);
+const curseForgeKeyConfigured = ref(false);
+const importSettingsLoading = ref(true);
 const importForm = ref({
   packId: '',
   name: '',
@@ -115,7 +117,7 @@ function resetFlowForm() {
 function loadFlowOptions() {
   resetFlowForm();
   if (mode.value === 'new') void loadVersions();
-  else void loadPacks();
+  else void Promise.all([loadPacks(), loadImportSettings()]);
 }
 
 onMounted(loadFlowOptions);
@@ -146,10 +148,22 @@ async function refreshLoaders() {
 
 async function loadPacks() {
   try {
-    const r = await api.get<{ packs: { id: string; file: string; bytes: number; uploadedAt: number }[] }>('/api/packs');
+    const r = await api.get<{ packs: { id: string; file: string; bytes: number; uploadedAt: number; format?: string | null }[] }>('/api/packs');
     packs.value = r.packs;
   } catch {
     packs.value = [];
+  }
+}
+
+async function loadImportSettings() {
+  importSettingsLoading.value = true;
+  try {
+    const r = await api.get<{ config: { mirrors: { curseforgeApiKey: string } } }>('/api/panel');
+    curseForgeKeyConfigured.value = Boolean(r.config.mirrors.curseforgeApiKey);
+  } catch {
+    curseForgeKeyConfigured.value = false;
+  } finally {
+    importSettingsLoading.value = false;
   }
 }
 
@@ -207,6 +221,10 @@ async function submitNew() {
 }
 
 async function submitImport() {
+  if (inspection.value?.format === 'curseforge' && !curseForgeKeyConfigured.value) {
+    toast('error', '请先设置 CurseForge API Key / Configure the CurseForge API Key first', '保存后返回导入页，重新选择整合包再导入 / Save it, then return and select the pack again.');
+    return;
+  }
   busy.value = true;
   try {
     const r = await api.post<{ jobId: string }>(`/api/packs/${encodeURIComponent(importForm.value.packId)}/import`, {
@@ -425,6 +443,15 @@ function backgroundJob() {
           </button>
         </div>
 
+        <div v-if="inspection?.format === 'curseforge' && !importSettingsLoading && !curseForgeKeyConfigured" class="import-key-warning">
+          <div>
+            <strong>需要先设置 CurseForge API Key / CurseForge API Key required</strong>
+            <p>此整合包需要 API Key 才能下载模组和必需依赖。请到设置页填写并保存，然后返回本页重新选择整合包再导入。新建世界不受影响。</p>
+            <p>This pack needs an API Key to download mods and required dependencies. Save the key in Settings, then return here and select the pack again. Creating a new world is unaffected.</p>
+          </div>
+          <button class="btn btn-soft" @click="router.push('/settings')">去设置 / Settings</button>
+        </div>
+
         <div v-if="inspecting" class="row gap-2"><span class="spinner" /> 解析中…</div>
         <div v-else-if="inspection" class="card card-pad" style="background: var(--surface-2)">
           <div class="col gap-2">
@@ -473,8 +500,8 @@ function backgroundJob() {
         </template>
       </div>
       <div class="card-foot row-between">
-        <span class="text-3 small">CurseForge 格式的包需要 API Key 才能自动下载 MOD；没有 Key 时会列出人工清单</span>
-        <button class="btn btn-primary" :disabled="busy || !inspection || !importForm.name || !importForm.mc" @click="submitImport">
+        <span class="text-3 small">CurseForge 整合包需要在设置页保存 API Key 后才能导入；新建世界不受影响。</span>
+        <button class="btn btn-primary" :disabled="busy || importSettingsLoading || !inspection || !importForm.name || !importForm.mc || (inspection.format === 'curseforge' && !curseForgeKeyConfigured)" @click="submitImport">
           开始导入
         </button>
       </div>
@@ -520,4 +547,7 @@ function backgroundJob() {
 }
 .pack-row:hover { border-color: var(--border-strong); }
 .pack-row.active { border-color: var(--accent); background: var(--accent-soft); }
+.import-key-warning { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: var(--r-sm); background: var(--surface-2); }
+.import-key-warning p { margin: 6px 0 0; }
+@media (max-width: 620px) { .import-key-warning { align-items: flex-start; flex-direction: column; } }
 </style>

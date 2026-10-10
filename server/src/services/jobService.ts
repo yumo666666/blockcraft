@@ -95,7 +95,9 @@ export function updateJob(jobId: string, patch: Partial<Job>): Job {
 
 export function logJob(jobId: string, line: string): Job {
   const job = getJob(jobId);
-  const lines = [...job.lines, line].slice(-200);
+  // Pack imports may need to explain hundreds of missing files/dependencies.
+  // Keep enough history for the complete manual-install list to remain visible.
+  const lines = [...job.lines, line].slice(-1000);
   return updateJob(jobId, { lines });
 }
 

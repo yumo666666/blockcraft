@@ -430,6 +430,7 @@ export async function markDeleted(id: string): Promise<void> {
     } catch (err) {
       lastError = err;
       const code = (err as NodeJS.ErrnoException).code;
+      logger.warn(`移入回收站失败（第 ${attempt + 1} 次）`, { id, code, path: dir, error: String(err) });
       if (!['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '') || attempt === delays.length) break;
       await wait(delays[attempt]);
     }

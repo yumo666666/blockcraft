@@ -342,10 +342,10 @@ async function killWorld(id: string) {
           <div class="card-head"><h3>数据源</h3></div>
           <div class="card-body col gap-3">
             <div class="field">
-              <label class="field-label">CurseForge API Key（可选）</label>
-              <input v-model="form.curseforgeApiKey" class="input mono" type="password" placeholder="不填则无法自动下载 CurseForge 整合包的 MOD" />
+              <label class="field-label">CurseForge API Key（导入 CurseForge 整合包时必填）</label>
+              <input v-model="form.curseforgeApiKey" class="input mono" type="password" placeholder="填写后保存，才能导入 CurseForge 整合包" />
               <span class="field-hint">
-                在 console.curseforge.com 免费申请。没有 Key 时：MOD 元数据仍能从 jar 里读出来，整合包会列出人工下载清单。
+                在 console.curseforge.com 申请。导入 CurseForge 整合包必须先填写并保存；新建世界和其他格式整合包不受影响。
               </span>
             </div>
             <div class="field">
