@@ -130,12 +130,7 @@ func openBrowser(url string) {
 }
 
 func confirmStopWorldsAndExit() bool {
-	message, _ := syscall.UTF16PtrFromString("这会先安全停止所有正在运行的 Minecraft 世界，然后关闭 BlockCraft。\n\n停止过程可能需要一些时间。是否继续？")
-	title, _ := syscall.UTF16PtrFromString("关闭 BlockCraft")
-	proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
-	// MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2：默认焦点放在「否」。
-	result, _, _ := proc.Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x4|0x30|0x100)
-	return result == 6 // IDYES
+	return showShutdownConfirmation()
 }
 
 func stopWorldsAndClosePanel(dataDir string) error {

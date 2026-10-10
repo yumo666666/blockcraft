@@ -1,257 +1,86 @@
 # BlockCraft
 
-**多世界 Minecraft 服务器管理面板** —— 一个世界一份独立配置，网页上点几下就能开服、装整合包、备份回退、管 MOD 和玩家。
+**多世界 Minecraft 服务端管理面板**。在一个网页里创建和管理多个独立世界，导入整合包、配置 Forge/Fabric 等加载器、管理 MOD 与玩家、备份迁移存档，并可用 FRP 提供远程访问。
 
-为「一台机器上同时跑好几个整合包世界」这个场景写的：每个世界的服务端本体、`libraries/`、MOD、存档、备份、日志**完全独立**，互不影响；删掉任何一个都不会连累其他世界。
+[项目使用手册](docs/PROJECT_GUIDE.md) · [Windows x64 下载](https://github.com/yumo666666/blockcraft/releases/latest) · [更新记录](CHANGELOG.md)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  资源监控                    │  FRP 穿透                    │
-│  主机 CPU / 内存 / 磁盘      │  面板通道 ●  世界通道 ●      │
-│  各世界进程的 CPU / 内存     │  一键数据回环自检            │
-├─────────────────────────────────────────────────────────────┤
-│  [ 家园 ] [ 温馨禅意 ] [ 主世界 ] [ ＋ 新建/导入 ]           │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ ● 运行中 · 本地 25572 · 公网 1.2.3.4:26001            │  │
-│  │ [显示端口][启动/停止][配置][控制台]                    │  │
-│  │ [备份回退][MOD管理][玩家管理][复制为新世界]            │  │
-│  └───────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
+## 界面预览
+
+总览页面支持浅色、深色和 Minecraft 绿三种主题。下方展示同一个页面在不同主题下的样式。
+
+| 浅色 | 深色 | Minecraft 绿 |
+|---|---|---|
+| ![浅色主题总览](docs/assets/screenshots/02-overview-theme-light.jpg) | ![深色主题总览](docs/assets/screenshots/03-overview-theme-dark.jpg) | ![Minecraft 绿主题总览](docs/assets/screenshots/04-overview-theme-green.jpg) |
+
+总览集中显示主机资源、FRP 通道状态、世界运行状态、端口、在线人数、MOD 数量与资源用量。每个世界独立保存服务端、加载器、MOD、配置、存档、备份和日志。
+
+![BlockCraft 总览页面](docs/assets/screenshots/01-overview-stopped.jpg)
 
 ## 功能
 
-| 模块 | 说明 |
-|---|---|
-| **总览** | 主机资源监控（每个 JVM 的真实 CPU/内存）、世界便签卡片、任务进度 |
-| **界面主题** | 白色、黑色、Minecraft 绿色三种主题，浏览器内记住选择 |
-| **世界生命周期** | 启动 / 优雅停止（保存 → 公告 → 踢人 → 关服）/ 重启；每个世界独立端口 |
-| **配置** | 名称、种子、模式、难度、PVP、白名单、正版验证、视距、内存、JVM 参数、15 项游戏规则；改完标出哪些需要重启 |
-| **控制台** | 实时日志（SSE）、命令输入、快捷命令、**定时开服/停服**，停服前 N 分钟自动公告，到点还有人在线就等最后一人下线 |
-| **备份与回退** | 按「世界名+时间」命名，支持 ZIP 下载/上传迁移；删除与回退都要二次确认；回退 = 停服 → 保底另存 → 解压 → 自动启动 |
-| **MOD 管理** | 搜索 / 分页 / 来源识别（Modrinth、CurseForge、本地）/ 批量导入 / 链接下载 / 启停 / 删除 / 缺依赖检查 |
-| **玩家管理** | 在线玩家循环走路皮肤卡片、设/取消管理员、踢出、白名单、拉黑；共用皮肤池支持多选 PNG 上传和浏览器缓存 |
-| **复制为新世界** | 带种子与新参数，把源世界的 MOD 与配置**真实复制**一份，几十秒得到一个全新独立档 |
-| **新建 / 导入整合包** | 五步向导建世界；或给一个压缩包，一条龙装加载器 + 下 MOD + 启动 |
-| **FRP 穿透** | 每个世界自动分配远端端口并挂上 frps；**面板自己走独立通道**，新建世界不会把面板踢下线 |
+- **多世界管理**：分别启动、停止和重启多个 Minecraft 服务端。
+- **创建和导入整合包**：支持原版、Paper、Forge、NeoForge、Fabric；解析 CurseForge 与 Modrinth 整合包清单并下载服务端文件。
+- **游戏设置**：管理种子、模式、难度、PVP、允许飞行、白名单、视距、内存和游戏规则。
+- **控制台和快捷命令**：查看实时日志、发送命令、使用玩家及世界管理快捷操作。
+- **MOD 管理**：检索、下载、启用、停用、删除和检查依赖。
+- **玩家与皮肤**：管理在线及已知玩家、管理员、白名单和封禁；支持共享皮肤池和可拖动的 3D 皮肤预览。
+- **备份和迁移**：导出/上传 BlockCraft 备份 ZIP，回退世界存档。
+- **FRP 穿透**：面板通道和世界通道分开运行，世界变更不会断开面板连接。
+- **Linux 与 Windows**：Linux 启动脚本和 systemd 服务；Windows x64 便携发布包。
 
-支持的加载器：**原版 / Paper / Forge / NeoForge / Fabric**，按 MC 版本自动挑选 Java（支持向上取最近的可用版本）。
-- 事件日志：所有世界的启动 / 就绪 / 关闭 / 崩溃按类型上色，崩溃原因自动从 `crash-reports/` 读出来翻译成人话
-- 发公告：选颜色 + 填内容，按 MC 聊天框的样子实时预览（`tellraw` 上色，JSON 转义已处理）
-
-## 快速开始
-
-从源码运行时用到 Node.js 原生 TypeScript 类型剥离，系统 Node.js 需 **≥ 22.6**；Linux 启动脚本会在缺少合适版本时下载项目本地运行时。
-
-### Linux（推荐 Ubuntu Server 24.04 LTS）
-
-Ubuntu Server 24.04 LTS x64 是最省事的选择；Debian 12 也可以。把源码包解压到长期保留的目录后，先前台运行一次。系统没有合适版本的 Node.js 时，脚本会在项目目录下载便携版运行时；首次运行会安装依赖并构建页面。
-
-```bash
-bash bin/ubuntu.sh
-```
-
-无桌面环境时，终端会显示面板端口；登录令牌保存在 `data/panel.json`。第一次准备完成后按 `Ctrl+C`，再安装开机服务：
-
-```bash
-sudo bash bin/install-systemd.sh
-sudo systemctl status blockcraft
-sudo journalctl -u blockcraft -f
-```
-
-服务会在开机时启动面板和看门狗，也会随面板设置自启世界。停止或重启服务时，systemd 会先等待创建/导入任务结束，再安全停止世界、关闭两条 FRP 通道和面板；若世界未能安全停止，关闭过程会保持等待并在日志中说明状态。管理命令：
-
-```bash
-sudo systemctl stop blockcraft
-sudo systemctl start blockcraft
-sudo systemctl restart blockcraft
-sudo bash bin/install-systemd.sh uninstall   # 移除服务，不删除世界和配置
-```
-
-外部设备访问时，在防火墙放行面板端口（默认 8081）和你分配的游戏端口；使用 FRP 时按 FRP 设置配置远端端口。首次打开地址可从 `data/panel.json` 读取 token：`http://服务器IP:8081/?token=你的token`。
-
-桌面 Linux 也可以直接运行 `bash bin/ubuntu.sh`，按 `Ctrl+C` 关闭面板；已启动的 Minecraft 世界不会因此被结束。
+## 快速启动
 
 ### Windows
 
-解压 Windows x64 发布包到可写文件夹后，双击 `BlockCraft.exe`。程序会启动内置 Node.js 并打开浏览器；托盘菜单可以打开面板、仅重启面板（世界继续运行），或停止所有世界后退出。设置、日志、下载和 Java 运行时保存在发布包旁的 `data` 文件夹，Minecraft 世界保存在 `instances` 文件夹。旧版 `%LOCALAPPDATA%\BlockCraft` 数据会在首次启动时复制到便携目录，旧文件会保留作备份。
+从 [GitHub Releases](https://github.com/yumo666666/blockcraft/releases/latest) 下载 `BlockCraft-Windows-x64.zip`，解压到可写目录后运行 `BlockCraft.exe`。首次打开会在浏览器访问本地面板。托盘菜单可打开面板、仅重启面板，或安全停止所有世界后退出。
 
-从源码生成发布包（需要 Node.js ≥ 22.6、pnpm、Go 与网络）：
+### Ubuntu / Debian
 
-```bash
-packaging/windows/build.sh
-```
-
-脚本生成 `dist-release/BlockCraft-Windows-x64.zip`。可在 Ubuntu 上交叉构建 Windows 启动器。
-
-### 从源码开发运行
+需要 Node.js 22.6+、Git 和联网环境。启动脚本会在项目目录准备 Node.js 运行时并构建网页。
 
 ```bash
-git clone <repo> blockcraft && cd blockcraft
-pnpm install
-pnpm build              # 构建前端
-node --experimental-strip-types server/src/index.ts   # 默认监听 0.0.0.0:8081
+git clone https://github.com/yumo666666/blockcraft.git
+cd blockcraft
+bash bin/ubuntu.sh
 ```
 
-第一次启动会生成 `data/panel.json`，里面的 `panel.token` 是登录令牌：
+桌面环境浏览器会打开面板；若没有自动打开，按终端提示访问面板地址。终端会显示首次登录令牌。需要后台开机启动时，按手册中的 systemd 步骤安装服务。
 
-```
-http://<你的机器IP>:8081/?token=<token>     # 带 token 打开会自动登录并从地址栏清掉 token
-```
-
-开发模式（前后端分离、前端热更新）：
+### Docker
 
 ```bash
-pnpm dev        # 后端 8081 + Vite 5173，Vite 会把 /api 代理到后端
-```
-
-### Docker 部署（VPS / NAS）
-
-```bash
+git clone https://github.com/yumo666666/blockcraft.git
+cd blockcraft
 docker compose up -d
-# 打开 http://<主机IP>:8081/?token=<data/panel.json 里的 token>
 ```
 
-镜像里带了 OpenJDK 17 / 21（覆盖绝大多数整合包），世界与配置通过 volume 落在宿主机的 `./data` 与 `./instances`。
-`docker-compose.yml` 里有注释说明怎么固定 token、怎么放开游戏端口、以及为什么要给 `shm_size`。
+初次启动令牌位于 `data/panel.json`。游戏端口范围与面板端口需要按网络环境开放。
 
-> 容器里跑面板时，**不要**再把 `bin/boot.sh` 挂上去：进程保活交给 `restart: unless-stopped` 就行，
-> 看门狗是给「没有 systemd、也没用 Docker」的场景准备的。
+## 从源码运行
 
-### 后台常驻与自愈
-
-没有 systemd 也能用，`bin/boot.sh` 是幂等的启动入口：
+要求 Node.js ≥ 22.6、Corepack/pnpm、Git；Windows 发布包还需要 Go 编译器和网络。
 
 ```bash
-bin/boot.sh     # 起面板 + 起看门狗（每 60 秒巡检）
-bin/start.sh    # 只起面板
-bin/stop.sh     # 只停面板（不会结束正在运行的世界）
+git clone https://github.com/yumo666666/blockcraft.git
+cd blockcraft
+corepack enable
+corepack pnpm install --frozen-lockfile
+corepack pnpm build
+node --experimental-strip-types server/src/index.ts
 ```
 
-没有 systemd 的环境可以把 `bin/boot.sh` 挂到启动钩子上（例如 crontab `@reboot`、DSH web profile 插件或 supervisor）。普通 Ubuntu/Debian 主机优先用上面的 `bin/install-systemd.sh`。
+更多安装步骤、每个页面的图文说明、整合包导入、FRP、备份迁移和玩家皮肤演示见 **[BlockCraft 使用手册](docs/PROJECT_GUIDE.md)**。
 
-### 环境变量
+## 项目结构
 
-| 变量 | 作用 | 默认 |
-|---|---|---|
-| `BC_PORT` | 面板端口（**优先于配置文件**） | 配置文件里的值，首次 8081 |
-| `BC_HOST` | 面板监听地址 | `0.0.0.0` |
-| `BC_ROOT` | 项目根目录 | 自动推断 |
-| `BC_DATA_DIR` | 数据目录（配置、缓存、日志、任务） | `<项目>/data` |
-| `BC_INSTANCE_DIR` | 世界目录 | `<项目>/instances` |
-| `BC_TOKEN` | 覆盖登录令牌 | 配置文件里的值 |
-| `CURSEFORGE_API_KEY` | CurseForge API Key（可选） | 空 |
-
-## 关于运行环境
-
-服务端与世界进程由 Node.js 直接启动，不依赖 Android 桥接、Bash 或 Linux 的 `/proc` 才能运行。主机监控使用 Node.js 系统信息；Linux 上补读 cgroup 限额，Windows 上通过系统进程接口读取 JVM 的 CPU 和内存。
-
-- Ubuntu 与 Windows x64 都能管理多个世界；项目依赖不要求 `zip`、`unzip` 或 `sqlite3`
-- 世界目录、日志、配置与皮肤文件分别保存在 BlockCraft 数据目录
-- 找不到 Minecraft 所需的兼容 Java 时，面板会自动下载 Temurin 到数据目录
-- Docker、VPS、树莓派等环境仍可用；具体 Java 版本取决于加载器与 Minecraft 版本
-
-## FRP 穿透
-
-面板用 **两个独立的 frpc 进程**：
-
-```
-frpc-panel   只承载面板自己（默认远端端口 26006），配置几乎不变
-frpc-worlds  承载所有世界（26006 起），世界启停/增删时热重载
+```text
+server/src/                 Node.js 服务端：API、世界进程、安装器与存储服务
+web/src/                    Vue 网页：总览、创建/导入、控制台、设置和管理页面
+bin/                        Linux 启动、停止与 systemd 脚本
+packaging/windows/          Windows 托盘启动器和构建脚本
+docs/                       图文使用手册与截图
+instances/                  每个 Minecraft 世界的独立目录（运行时生成）
+data/                       面板设置、日志、下载缓存和 Java（运行时生成）
 ```
 
-这样即使世界通道被写坏、重启或回滚，也不会把面板的连接顺带掐断——**面板是你唯一的入口，它不能跟着世界一起抖**。
-
-配套两个保护：
-
-- **一键自检**做的是**数据回环**（本地起一个临时 echo，映射到候选端口，再从公网连回来验证数据能原样返回）。只探「端口开不开」是不可靠的：frps 常把整段端口都发布到宿主机，没有后端照样能连上。
-- **配置回滚**：重写 `frpc-*.toml` 前留上一版，重载后自检失败就自动回滚。
-
-在设置页填入 frps 地址、端口、token、远端端口段即可；面板只操作自己名下的 `panel` / `mc-*` 代理，**不会碰同一台 frps 上别人的代理**。
-
-## 数据与目录
-
-```
-data/                      运行时数据（可整个删掉重建，不影响世界）
-├── panel.json             面板配置（含密钥，权限 600）
-├── ports.json             端口分配登记表
-├── frpc-panel.toml        面板通道
-├── frpc-worlds.toml       世界通道
-├── store/                 下载缓存（服务端 jar / 加载器安装包 / 整合包），可随时清空
-├── skins/                 玩家皮肤图片与远端缓存
-├── skin-bindings.json     离线玩家的皮肤绑定
-├── jobs/                  长任务状态
-└── logs/                  面板日志、审计日志、控制台日志
-
-instances/<世界id>/        每个世界一份，完全独立
-├── config.json            该世界的全部参数（唯一真源）
-├── state.json             运行态（进程、状态、计时）
-├── server/                服务端本体 + mods/ + config/ + world/
-├── backups/               备份 zip + index.json
-└── logs/                  控制台输出
-```
-
-**写盘规范**：所有配置文件都是「写临时文件 → `fs.rename` 原子替换」，任何时候断电都不会留下写了一半的坏文件。
-
-## 一些实现上的取舍
-
-- **「复制为新世界」用真实复制，不用硬链接。** 硬链接快 1.6 秒，但「就地改写会串味」是硬链接的语义（服务端写配置、`cp` 覆盖、`fs.writeFileSync` 都算），而且实测在某些文件系统上 `mv` 覆盖一个链接会让另一个链接整个消失。为 1.6 秒背这套纪律不值得。
-- **备份有三道防护。** 服务端是「先绑端口、再生成世界」，所以「能连上」不等于「存档完整」。备份前要求 `level.dat` ≥200 字节且存在 `.mca/.mcr`，打包后重新校验包内区域文件，回退前再验一次——半成品备份比没有备份更危险。
-- **扫目录不用 `dirent.isFile()`。** 部分文件系统（含 f2fs）会把多链接文件报成 `DT_LNK`，依赖它会让 MOD 全部「消失」；统一用 `stat`。
-- **MOD 元数据从 jar 里读**，不信整合包清单里的标签。解析 `mods.toml` / `fabric.mod.json` / Jar-in-Jar，实测 344 个 MOD 的 modId 解析率 99.7%。
-- **服务端的输出写到文件、面板 tail 文件，而不是面板持有管道。** 面板重启时管道读端会消失，
-  之后正在跑的世界所有日志都收不到（控制台空白、状态卡在"启动中"、优雅停止等一条永远等不到的 "Saved the game"）。
-  写文件之后，面板重启只是换个 offset 接着读，什么都不丢。
-- **启停接口立刻返回，进度靠轮询。** 优雅停止要等保存+踢人+关服，最长两分钟；
-  同步等响应会被链路里的 VPN / 反向代理判成超时（前端收到 502，但服务端其实还在干活）。
-- **运行中禁止改 MOD**：服务端跑着的时候删 jar，下次启动那些方块会变成未知方块。
-
-## 打包与发布
-
-源码仓库里**不包含**任何第三方可执行文件与凭据：
-
-- `bin/frpc` / `bin/frpc.exe` 随用随下，面板设置页里有「下载 frpc」按钮
-- `data/`、`instances/`、`.secrets/` 全部在 `.gitignore` 里
-- 前端产物 `web/dist/` 也不入库，由 `pnpm build` 生成
-- Windows 发布包由 `packaging/windows/build.sh` 生成，内置 Node.js 与双击启动器
-
-自己出一份源码包：
-
-```bash
-git archive --format=tar.gz --prefix=blockcraft-2.3.19/ -o blockcraft-2.3.19.tar.gz HEAD
-```
-
-## 测试
-
-有两层验证：
-
-```bash
-# 类型检查（前后端都必须 0 错误）
-pnpm typecheck
-
-# 页面渲染测试：把**真实运行中的面板**的数据喂给每个页面，断言 DOM 里确实渲染出了真实内容
-BC_TOKEN=$(node -e "console.log(require('./data/panel.json').panel.token)") pnpm test
-```
-
-渲染测试需要面板已经在 8081 上跑着（可用 `BC_TEST_BASE` 改地址），它验证的是「世界名、端口、备份文件名、MOD 名、Java 版本」这些真实值有没有出现在页面上——
-比对着手写的假 fixture 断言有意义得多：假数据永远会通过。
-
-开发过程中这套测试抓出过真 bug，例如：改 MOTD / 最大玩家数只写进了 `config.json`、没写进 `server.properties`（配置静默不生效），
-以及重活（同步扫描 GB 级目录、每次请求 spawn 4 次 `java -version`）会阻塞事件循环，让看门狗误判面板挂掉。
-
-## 开源与贡献
-
-MIT 许可。不内置任何 API Key 与第三方镜像，所有凭据由使用者自己填写。
-
-提交前建议跑：
-
-```bash
-pnpm typecheck && pnpm build && pnpm test
-```
-
-## 已知边界
-
-- **不管理 Paper 插件**（只提示 `plugins/` 路径，不解析插件兼容性）
-- **管不了光影 / 客户端资源包**：那是客户端渲染的事，服务端不加载
-- **Java 版与基岩版协议不通**：这个面板只管 Java 版服务端
-- 离线模式（`online-mode=false`）下服务端不向 Mojang 校验账号；SkinsRestorer 文件存储、BlockCraft 绑定、同名正版推测依次兜底。SkinsRestorer 使用数据库后端时，面板无法直接读取其玩家记录
+完整目录说明与操作指南：[docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md)。
