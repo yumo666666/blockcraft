@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { Readable } from 'node:stream';
@@ -317,11 +318,19 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
   fs.rmSync(vanillaTarget, { force: true });
   copyIntoTarget(vanillaCache, vanillaTarget);
   onLog(`已预下载并校验 Minecraft ${cfg.mc} 服务端，将由 ${neo ? 'NeoForge' : 'Forge'} 安装器复用`);
-  onLog('运行安装程序（首次会下载依赖，可能几分钟）…');
+  onLog('运行 Forge 官方服务端安装任务（下载依赖并校验文件，可能需要几分钟）…');
+  // Forge's SimpleInstaller.main performs an unrelated global TLS probe against
+  // files.minecraftforge.net before starting any install action. If that one
+  // host fails a handshake, the CLI returns without installing even though all
+  // actual server artifacts are reachable from its configured Maven mirrors.
+  // Invoke the same bundled SERVER action directly. Artifact downloads and
+  // checksums still use Forge's own DownloadUtils; only the over-broad preflight
+  // is skipped.
+  const forgeRunner = fileURLToPath(new URL('../java/ForgeServerInstall.java', import.meta.url));
   await new Promise<void>((resolve, reject) => {
     const child = execFile(
       java.runtime!.path,
-      [...javaProxyArgs(onLog), '-jar', fileName, '--installServer'],
+      [...javaProxyArgs(onLog), '-cp', fileName, forgeRunner, fileName],
       { cwd: serverDir, maxBuffer: 32 * 1024 * 1024 },
       (err, stdout, stderr) => {
         for (const line of (stdout + stderr).split('\n').slice(-40)) if (line.trim()) onLog(line.trim());
