@@ -59,6 +59,7 @@ let offStream: (() => void) | null = null;
 let disposed = false;
 let rosterTimer: number | null = null;
 let hasBeenDeactivated = false;
+let playersLoadRevision = 0;
 
 async function loadInstance() {
   try {
@@ -70,23 +71,26 @@ async function loadInstance() {
 }
 
 async function loadPlayers() {
+  const revision = ++playersLoadRevision;
   loading.value = true;
   try {
     const r = await api.get<{ online: boolean; onlineNames: string[]; players: PlayerInfo[]; serverOnline: boolean }>(
       `${base.value}/players`,
     );
+    if (revision !== playersLoadRevision || disposed) return;
     players.value = r.players;
     onlineNames.value = r.onlineNames;
     serverOnline.value = r.serverOnline;
     // 皮肤可能刚好补上了，让之前失败的卡片重试一次
     skinFailed.value = {};
     await nextTick();
+    if (revision !== playersLoadRevision || disposed) return;
     void restoreBrowserSkinAnimations(r.players);
     scheduleSync();
   } catch (err) {
-    toastError(err, '读取玩家列表失败');
+    if (revision === playersLoadRevision && !disposed) toastError(err, '读取玩家列表失败');
   } finally {
-    loading.value = false;
+    if (revision === playersLoadRevision) loading.value = false;
   }
 }
 
@@ -388,6 +392,11 @@ function setBrowserAnimation(name: string, source: string, blob: Blob): void {
   browserSkinAnimations[key] = objectUrl;
 }
 
+function currentAnimationSource(name: string): string | null {
+  const player = players.value.find((item) => item.name.toLowerCase() === name.toLowerCase());
+  return player?.skinAnimationUrl || player?.skinPreviewUrl || null;
+}
+
 async function restoreBrowserSkinAnimations(items: PlayerInfo[]): Promise<void> {
   if (!('caches' in window)) return;
   try {
@@ -409,7 +418,12 @@ async function restoreBrowserSkinAnimations(items: PlayerInfo[]): Promise<void> 
         if (fetched.ok) response = fetched;
         if (response) await cache.put(request, response.clone());
       }
-      if (response) setBrowserAnimation(player.name, source, await response.blob());
+      if (response) {
+        const blob = await response.blob();
+        // A newer skin may finish loading while this cache read is in flight.
+        // Do not let an older request overwrite the card's latest preview.
+        if (currentAnimationSource(player.name) === source) setBrowserAnimation(player.name, source, blob);
+      }
     }
   } catch {
     // Cache Storage is an optimization; the server image remains the fallback.

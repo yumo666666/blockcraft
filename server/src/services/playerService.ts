@@ -595,14 +595,11 @@ async function resolveMojangSkin(name: string, onlineMode: boolean, identityUuid
 async function resolvePlayerSkin(id: string, name: string, onlineMode: boolean, identityUuid?: string): Promise<SkinResolution> {
   identityUuid ??= playerUuid(id, name);
   const uuid = identityUuid ? withDashes(identityUuid) : offlineUuid(name);
-  const actual = skinsRestorerSkin(instanceServerDir(id), name, uuid);
-  if (actual) return { uuid, skinUrl: actual, source: 'server', appliedToServer: true };
-  const modActual = skinRestorerModSkin(id, name, uuid);
-  if (modActual) return { uuid, skinUrl: modActual, source: 'server', appliedToServer: true };
-
   const allBindings = loadBindings();
-  const binding = allBindings[worldBindingKey(id, offlineUuid(name))] ?? allBindings[compactUuid(offlineUuid(name))];
-  if (binding) {
+  const worldBinding = allBindings[worldBindingKey(id, offlineUuid(name))];
+  const legacyBinding = allBindings[compactUuid(offlineUuid(name))];
+  const resolveBinding = async (binding: SkinBinding | undefined): Promise<SkinResolution | null> => {
+    if (!binding) return null;
     if (binding.kind === 'upload' || binding.kind === 'url' || binding.kind === 'pool') {
       const localPath = binding.worldId ? assignmentPath(binding.worldId, binding.uuid) : boundSkinPath(binding.uuid);
       if (fs.existsSync(localPath)) return { uuid, skinUrl: binding.url ?? null, source: 'bound', localPath, appliedToServer: Boolean(binding.serverApplied) };
@@ -610,7 +607,24 @@ async function resolvePlayerSkin(id: string, name: string, onlineMode: boolean, 
       const profile = await mojangProfile(binding.mojangUuid, true);
       if (profile) return { uuid, skinUrl: profile.skinUrl, source: 'bound', appliedToServer: Boolean(binding.serverApplied) };
     }
-  }
+    return null;
+  };
+
+  // Prefer this world's explicit BlockCraft selection. Skin Restorer can take
+  // a moment to flush its player file after accepting an RCON command, so that
+  // file may still describe the previously selected skin.
+  const selected = await resolveBinding(worldBinding);
+  if (selected) return selected;
+
+  const actual = skinsRestorerSkin(instanceServerDir(id), name, uuid);
+  if (actual) return { uuid, skinUrl: actual, source: 'server', appliedToServer: true };
+  const modActual = skinRestorerModSkin(id, name, uuid);
+  if (modActual) return { uuid, skinUrl: modActual, source: 'server', appliedToServer: true };
+
+  // Keep legacy global bindings as a compatibility fallback, without allowing
+  // them to mask a current record written directly by the server.
+  const legacy = await resolveBinding(legacyBinding);
+  if (legacy) return legacy;
 
   const profile = await resolveMojangSkin(name, onlineMode, identityUuid);
   return { uuid: profile.uuid, skinUrl: profile.skinUrl, source: profile.skinUrl ? 'mojang' : 'none', appliedToServer: Boolean(profile.skinUrl && onlineMode) };
