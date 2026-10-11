@@ -59,6 +59,27 @@ export const api = {
   del: <T>(path: string) => request<T>('DELETE', path),
   uploadFile: <T>(path: string, file: File) =>
     request<T>('POST', path, file, { contentType: 'application/octet-stream', raw: true, filename: file.name }),
+  downloadFile: async (path: string, filename: string): Promise<void> => {
+    const res = await fetch(path, { method: 'HEAD', headers: { 'X-Blockcraft': '1' }, cache: 'no-store' });
+    if (res.status === 401) {
+      onUnauthorized?.();
+      throw new ApiError('UNAUTHORIZED', '登录已过期，请重新登录');
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      let data: unknown = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+      const err = (data as ApiErrorBody | null)?.error;
+      const message = err?.message ?? (res.status === 409 ? '请先完全停止世界，再下载完整目录' : `下载失败（HTTP ${res.status}）`);
+      throw new ApiError(err?.code ?? (res.status === 409 ? 'CONFLICT' : 'INTERNAL'), message, err?.detail);
+    }
+    const link = document.createElement('a');
+    link.href = path;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  },
   login: (token: string) => request<{ ok: boolean }>('POST', '/api/login', { token }),
   logout: () => request<{ ok: boolean }>('POST', '/api/logout'),
 };

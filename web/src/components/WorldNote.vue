@@ -3,7 +3,7 @@ import { computed } from 'vue';
 import type { InstanceSummary } from '../lib/types.ts';
 import { fmtBytes, fmtDuration, STATUS_TEXT, statusClass } from '../lib/format.ts';
 
-const props = defineProps<{ item: InstanceSummary; busy?: boolean }>();
+const props = defineProps<{ item: InstanceSummary; busy?: boolean; downloading?: boolean }>();
 const emit = defineEmits<{
   start: [];
   stop: [];
@@ -15,9 +15,11 @@ const emit = defineEmits<{
   copy: [];
   remove: [];
   ports: [];
+  download: [];
 }>();
 
 const running = computed(() => ['running', 'starting', 'stopping', 'stuck'].includes(props.item.status));
+const archiveAvailable = computed(() => ['stopped', 'crashed'].includes(props.item.status));
 const badgeClass = computed(() => {
   switch (props.item.status) {
     case 'running':
@@ -123,7 +125,18 @@ const loaderLabel = computed(() => {
         <button class="btn btn-sm" @click="emit('players')">玩家管理</button>
         <button class="btn btn-sm" @click="emit('copy')">复制为新世界</button>
       </div>
-      <button class="btn btn-sm btn-danger btn-block" @click="emit('remove')">删除这个世界</button>
+      <div class="world-file-actions">
+        <button
+          class="btn btn-sm btn-soft"
+          :disabled="!archiveAvailable || busy || downloading"
+          :title="archiveAvailable ? '下载 instances 中这个世界的完整目录 ZIP' : '请先完全停止世界，再下载完整目录'"
+          @click="emit('download')"
+        >
+          <span v-if="downloading" class="spinner" />
+          {{ downloading ? '正在打包…' : '下载世界' }}
+        </button>
+        <button class="btn btn-sm btn-danger" :disabled="busy || downloading" @click="emit('remove')">删除世界</button>
+      </div>
     </div>
   </div>
 </template>
@@ -148,6 +161,7 @@ const loaderLabel = computed(() => {
 .note-message { min-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note-message-error { color: var(--danger); }
 .btn-grid { margin-top: auto; }
+.world-file-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 @media (max-width: 560px) {
   .note-card { min-height: 0; }
   .note-head { min-height: 0; }

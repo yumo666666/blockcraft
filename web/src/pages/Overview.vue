@@ -56,6 +56,9 @@ const showDelete = ref(false);
 const showJob = ref(false);
 const jobId = ref<string | null>(null);
 const deleteTarget = ref<InstanceSummary | null>(null);
+const worldImportInput = ref<HTMLInputElement | null>(null);
+const importingWorld = ref(false);
+const downloadingWorldId = ref<string | null>(null);
 
 const active = computed(() => instances.value.find((i) => i.id === activeId.value) ?? instances.value[0] ?? null);
 
@@ -190,6 +193,52 @@ async function doDelete() {
   }
 }
 
+function chooseWorldImport(): void {
+  if (!importingWorld.value) worldImportInput.value?.click();
+}
+
+async function importWorld(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    toast('error', '世界导入失败', '请选择 BlockCraft 导出的完整世界 ZIP 文件');
+    input.value = '';
+    return;
+  }
+  if (file.size > 20 * 1024 * 1024 * 1024) {
+    toast('error', '世界导入失败', '单个世界 ZIP 不能超过 20 GB');
+    input.value = '';
+    return;
+  }
+  importingWorld.value = true;
+  try {
+    const result = await api.uploadFile<{ ok: boolean; instance: InstanceSummary }>('/api/instances/import', file);
+    await loadInstances();
+    activeId.value = result.instance.id;
+    toast('ok', '世界导入完成', `「${result.instance.name}」已导入并保持停止状态`);
+    await loadFrp();
+  } catch (err) {
+    toastError(err, '世界导入失败');
+  } finally {
+    importingWorld.value = false;
+    input.value = '';
+  }
+}
+
+async function downloadWorld(item: InstanceSummary): Promise<void> {
+  if (!['stopped', 'crashed'].includes(item.status) || downloadingWorldId.value) return;
+  downloadingWorldId.value = item.id;
+  try {
+    await api.downloadFile(`/api/instances/${encodeURIComponent(item.id)}/download`, `${item.id}.zip`);
+    toast('ok', '世界下载已开始', `${item.id}.zip · 包含该世界的完整实例目录`);
+  } catch (err) {
+    toastError(err, '世界下载失败');
+  } finally {
+    downloadingWorldId.value = null;
+  }
+}
+
 function openJob(id: string) {
   jobId.value = id;
   showJob.value = true;
@@ -226,6 +275,10 @@ function backgroundJob() {
           </button>
         </div>
         <div class="world-quick-actions">
+          <button class="btn btn-sm" :disabled="importingWorld" title="上传 BlockCraft 导出的完整世界 ZIP；导入后保持停止" @click="chooseWorldImport">
+            <span v-if="importingWorld" class="spinner" />
+            {{ importingWorld ? '正在导入…' : '＋ 导入世界' }}
+          </button>
           <button class="btn btn-sm" @click="router.push('/create')">＋ 新建世界</button>
           <button class="btn btn-sm" @click="router.push('/import')">＋ 导入整合包</button>
         </div>
@@ -236,6 +289,7 @@ function backgroundJob() {
           <div class="empty-icon">🌍</div>
           <div>还没有任何世界</div>
           <div class="row gap-2 wrap mt-2">
+            <button class="btn" :disabled="importingWorld" @click="chooseWorldImport">{{ importingWorld ? '正在导入…' : '导入世界' }}</button>
             <button class="btn btn-primary" @click="router.push('/create')">新建世界</button>
             <button class="btn" @click="router.push('/import')">导入整合包</button>
           </div>
@@ -245,6 +299,7 @@ function backgroundJob() {
           v-else
           :item="active"
           :busy="busyId === active.id"
+          :downloading="downloadingWorldId === active.id"
           @start="start(active)"
           @stop="stop(active)"
           @config="showConfig = true"
@@ -255,6 +310,7 @@ function backgroundJob() {
           @mods="router.push(`/w/${active.id}/mods`)"
           @players="router.push(`/w/${active.id}/players`)"
           @remove="((deleteTarget = active), (showDelete = true))"
+          @download="downloadWorld(active)"
         />
       </div>
     </div>
@@ -287,6 +343,7 @@ function backgroundJob() {
       @confirm="doDelete"
     />
     <JobProgress :open="showJob" :job-id="jobId" @close="showJob = false" @background="backgroundJob" />
+    <input ref="worldImportInput" type="file" accept=".zip,application/zip" hidden @change="importWorld" />
   </div>
 </template>
 

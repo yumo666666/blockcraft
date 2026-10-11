@@ -115,7 +115,7 @@ export function boot(): void {
   });
 
   app.get('/api/ping', (_req, res) => {
-    res.json({ ok: true, name: 'BlockCraft', version: '3.0.0' });
+    res.json({ ok: true, name: 'BlockCraft', version: '3.0.1' });
   });
 
   // ---- 鉴权中间件
@@ -145,6 +145,7 @@ export function boot(): void {
   app.use('/api', (req, res, next) => {
     const setupRequest = req.method === 'POST' && (
       req.path === '/instances' ||
+      req.path === '/instances/import' ||
       req.path === '/packs/upload' ||
       /^\/packs\/[^/]+\/import$/.test(req.path) ||
       /^\/instances\/[^/]+\/(copy|reinstall)$/.test(req.path)

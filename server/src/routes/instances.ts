@@ -15,6 +15,7 @@ import { validateInstall } from '../launcher/index.ts';
 import { loadConfig } from '../config.ts';
 import { memoryInfo } from '../services/systemService.ts';
 import { ensureSkinSupport, skinSupportInstallStageLabel } from '../services/skinSupportService.ts';
+import { importWorldArchive, MAX_WORLD_ARCHIVE_UPLOAD_BYTES, writeWorldArchive } from '../services/worldArchiveService.ts';
 
 function requireId(id: string): string {
   if (!INSTANCE_ID_RE.test(id)) throw bad('世界 id 不合法');
@@ -34,6 +35,66 @@ function memoryBudget(): number {
 export function registerInstanceRoutes(app: Express): void {
   app.get('/api/instances', async (_req, res) => {
     res.json({ instances: await summarizeAll(), limits: { maxRunning: loadConfig().limits.maxRunningInstances, memoryBudgetMb: memoryBudget() } });
+  });
+
+  app.get('/api/instances/:id/download', async (req, res) => {
+    const id = requireId(req.params.id);
+    const instance = await summarize(id);
+    if (
+      !['stopped', 'crashed'].includes(instance.status) || sup.isRunning(id) || await sup.hasActiveProcessEvidence(id) ||
+      listRunningJobs().some((job) => job.instanceId === id)
+    ) {
+      throw conflict('下载世界前必须先完全停止该世界，并等待创建、导入或安装任务结束');
+    }
+    res.status(200);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${id}.zip"`);
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    audit({ ip: req.ip, action: 'instance.download', target: id });
+    try {
+      await writeWorldArchive(id, res);
+    } catch (err) {
+      if (res.headersSent) {
+        res.destroy(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      throw err;
+    }
+  });
+
+  app.post('/api/instances/import', async (req, res) => {
+    if (sup.isPanelShutdownRequested()) throw conflict('BlockCraft 正在关闭，暂时不能导入世界');
+    if (!req.is('application/octet-stream')) {
+      req.resume();
+      throw bad('请上传 BlockCraft 导出的完整世界 ZIP 文件');
+    }
+    let originalName = '';
+    try {
+      originalName = decodeURIComponent(String(req.headers['x-blockcraft-filename'] ?? ''));
+    } catch {
+      req.resume();
+      throw bad('世界 ZIP 文件名无效');
+    }
+    if (!originalName.toLowerCase().endsWith('.zip')) {
+      req.resume();
+      throw bad('世界导入只支持 .zip 文件');
+    }
+    const contentLength = Number(req.headers['content-length'] ?? 0);
+    if (contentLength > MAX_WORLD_ARCHIVE_UPLOAD_BYTES) {
+      req.resume();
+      res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: '世界 ZIP 超过 20 GB 上传限制' } });
+      return;
+    }
+    const cfg = await importWorldArchive(originalName, req);
+    await frp.ensureRemotePort(cfg.id);
+    await frp.syncWorlds().catch(() => undefined);
+    invalidateModCount(cfg.id);
+    audit({ ip: req.ip, action: 'instance.import', target: cfg.id, detail: { file: originalName, mc: cfg.mc, loader: cfg.loader } });
+    res.json({ ok: true, instance: await summarize(cfg.id) });
   });
 
   app.post('/api/instances', async (req, res) => {
