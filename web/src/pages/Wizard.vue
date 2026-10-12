@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { api } from '../lib/api.ts';
+import { api, type UploadProgress } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import JobProgress from '../components/JobProgress.vue';
 import { setBackgroundJob } from '../lib/backgroundJob.ts';
@@ -23,6 +23,8 @@ const route = useRoute();
 const mode = ref<'new' | 'import'>(route.path === '/import' ? 'import' : 'new');
 const step = ref(1);
 const busy = ref(false);
+const uploadingPack = ref(false);
+const packUploadProgress = ref<(UploadProgress & { state: 'uploading' | 'done' | 'failed' }) | null>(null);
 const showJob = ref(false);
 const jobId = ref<string | null>(null);
 
@@ -177,21 +179,31 @@ async function uploadPack(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
-  busy.value = true;
+  uploadingPack.value = true;
+  packUploadProgress.value = { loaded: 0, total: file.size, percent: 0, state: 'uploading' };
   try {
-    await api.uploadFile('/api/packs/upload', file);
+    await api.uploadFile('/api/packs/upload', file, (progress) => {
+      packUploadProgress.value = { ...progress, state: 'uploading' };
+    });
+    packUploadProgress.value = { loaded: file.size, total: file.size, percent: 100, state: 'done' };
     toast('ok', '整合包已上传', file.name);
     await loadPacks();
   } catch (err) {
+    packUploadProgress.value = { ...(packUploadProgress.value ?? { loaded: 0, total: file.size, percent: 0 }), state: 'failed' };
     if (err instanceof TypeError) {
       toast('error', '上传失败 / Upload failed', '网络连接中断或面板暂时不可用，请检查连接后重试 / The connection was interrupted or the panel is unavailable. Check your connection and try again.', 8000);
     } else {
       toastError(err, '上传失败 / Upload failed');
     }
   } finally {
-    busy.value = false;
+    uploadingPack.value = false;
     input.value = '';
   }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(0, bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 async function inspect(packId: string) {
@@ -430,11 +442,27 @@ function backgroundJob() {
       <div class="card-head"><h3>导入整合包</h3></div>
       <div class="card-body col gap-4">
         <div class="row gap-2 wrap">
-          <label class="btn btn-soft">
+          <label class="btn btn-soft" :class="{ 'pack-upload-disabled': uploadingPack }" :aria-disabled="uploadingPack">
             + 上传压缩包（.zip / .mrpack）
-            <input type="file" accept=".zip,.mrpack" style="display: none" @change="uploadPack" />
+            <input type="file" accept=".zip,.mrpack" style="display: none" :disabled="uploadingPack" @change="uploadPack" />
           </label>
           <span class="text-3 small">也可以把包放到 <code class="mono">data/store/packs/</code> 下再刷新</span>
+        </div>
+
+        <div
+          v-if="packUploadProgress"
+          class="pack-upload-progress"
+          :class="{ 'pack-upload-failed': packUploadProgress.state === 'failed', 'pack-upload-done': packUploadProgress.state === 'done' }"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="row-between wrap gap-2">
+            <span>{{ packUploadProgress.state === 'uploading' ? '正在上传整合包' : packUploadProgress.state === 'done' ? '上传完成' : '上传失败，可重新选择文件' }}</span>
+            <span class="small text-3">{{ formatBytes(packUploadProgress.loaded) }} / {{ formatBytes(packUploadProgress.total) }} · {{ packUploadProgress.percent }}%</span>
+          </div>
+          <div class="meter" role="progressbar" :aria-valuenow="packUploadProgress.percent" aria-valuemin="0" aria-valuemax="100" :aria-label="`整合包上传进度 ${packUploadProgress.percent}%`">
+            <div class="meter-fill" :class="{ danger: packUploadProgress.state === 'failed' }" :style="{ width: `${packUploadProgress.percent}%` }" />
+          </div>
         </div>
 
         <div v-if="!packs.length" class="empty"><div class="empty-icon">📦</div><div>还没有整合包</div></div>
@@ -566,6 +594,10 @@ function backgroundJob() {
 }
 .pack-row:hover { border-color: var(--border-strong); }
 .pack-row.active { border-color: var(--accent); background: var(--accent-soft); }
+.pack-upload-progress { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
+.pack-upload-done { border-color: var(--ok); }
+.pack-upload-failed { border-color: var(--danger); }
+.pack-upload-disabled { cursor: progress; opacity: .65; }
 .import-key-warning { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: var(--r-sm); background: var(--surface-2); }
 .import-key-warning p { margin: 6px 0 0; }
 @media (max-width: 620px) { .import-key-warning { align-items: flex-start; flex-direction: column; } }

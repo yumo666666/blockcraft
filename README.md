@@ -32,7 +32,7 @@
 
 ### Windows
 
-从 [GitHub Releases](https://github.com/yumo666666/blockcraft/releases/latest) 下载 `BlockCraft-Windows-x64.zip`，解压到可写目录后运行 `BlockCraft.exe`。首次打开会在浏览器访问本地面板。托盘菜单可打开面板、仅重启面板，或安全停止所有世界后退出。
+从 [GitHub Releases](https://github.com/yumo666666/blockcraft/releases/latest) 下载 `BlockCraft-Windows-x64.zip`，解压到可写目录后运行 `BlockCraft.exe`。首次打开会在浏览器访问本地面板。托盘菜单可打开面板、仅重启面板，或安全停止所有世界后退出。Windows 热更新步骤见[使用手册](docs/PROJECT_GUIDE.md#热更新)。
 
 ### Ubuntu / Debian
 
@@ -45,6 +45,14 @@ bash bin/ubuntu.sh
 ```
 
 桌面环境浏览器会打开面板；若没有自动打开，按终端提示访问面板地址。终端会显示首次登录令牌。需要后台开机启动时，按手册中的 systemd 步骤安装服务。
+
+更新源码安装并保留正在运行的世界：
+
+```bash
+bash bin/hot-update.sh
+```
+
+脚本会等待创建、导入和安装任务结束，拉取跟踪分支的最新代码，只停止并重启管理面板。运行中的 Minecraft 世界会继续运行。
 
 ### Docker
 

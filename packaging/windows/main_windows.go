@@ -215,7 +215,45 @@ func restartPanelOnly(dataDir string) error {
 	if token == "" {
 		return fmt.Errorf("没有找到面板令牌，无法安全重启面板")
 	}
+	var status struct {
+		Jobs []struct {
+			Title string `json:"title"`
+		} `json:"jobs"`
+		PendingSetups int `json:"pendingSetups"`
+	}
+	if err := trayPanelGetJSON(port, token, "/api/panel/shutdown-status", 15*time.Second, &status); err != nil {
+		return err
+	}
+	if len(status.Jobs) > 0 || status.PendingSetups > 0 {
+		return fmt.Errorf("当前有创建、导入或安装任务正在运行，请等任务完成后再重启面板")
+	}
 	return trayPanelPost(port, token, "/api/panel/shutdown", 10*time.Second)
+}
+
+func pendingPackageUpdate(releaseDir string) bool {
+	stage := filepath.Join(releaseDir, ".blockcraft-update")
+	for _, name := range []string{
+		"update-ready.json",
+		filepath.Join("BlockCraft-Windows-x64", "app", "server-runtime", "src", "index.ts"),
+		filepath.Join("BlockCraft-Windows-x64", "BlockCraft.exe"),
+	} {
+		if _, err := os.Stat(filepath.Join(stage, name)); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func startPendingPackageUpdate(releaseDir string, waitForPID int) error {
+	script := filepath.Join(releaseDir, "hot-update-windows.ps1")
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("没有找到 Windows 热更新脚本：%w", err)
+	}
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+		"-ApplyPending", "-WaitForPid", strconv.Itoa(waitForPID))
+	cmd.Dir = releaseDir
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	return cmd.Start()
 }
 
 // After the panel confirms that worlds and FRP stopped safely, wait for its
@@ -580,6 +618,15 @@ func run() int {
 	}, func() {})
 	serverExitErr := <-serverExited
 	if restartAfterExit.Load() {
+		if pendingPackageUpdate(releaseDir) {
+			logLauncher(logFile, "面板已退出，交由热更新脚本应用暂存版本")
+			if err := startPendingPackageUpdate(releaseDir, os.Getpid()); err != nil {
+				logLauncher(logFile, "启动热更新脚本失败：%v", err)
+				showError("面板已退出，热更新脚本没有启动。请查看 data\\logs\\launcher.log，并手动运行 hot-update-windows.ps1。")
+				return 1
+			}
+			return 0
+		}
 		restart := exec.Command(executable)
 		restart.Dir = releaseDir
 		restart.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}

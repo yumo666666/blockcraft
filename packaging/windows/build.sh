@@ -40,6 +40,7 @@ pnpm --filter @blockcraft/server deploy --prod --legacy --config.node-linker=hoi
 (cd "$OUT/app/server-runtime" && node --experimental-strip-types --input-type=module -e "await import('./src/index.ts')")
 cp -R web/dist "$OUT/app/web/dist"
 cp -R bin/. "$OUT/app/bin/"
+cp packaging/windows/hot-update-windows.ps1 "$OUT/hot-update-windows.ps1"
 
 NODE_VERSION="${BC_WINDOWS_NODE_VERSION:-24.19.0}"
 ARCHIVE="node-v${NODE_VERSION}-win-x64.zip"
@@ -78,6 +79,15 @@ Everything BlockCraft creates is kept inside this extracted folder:
   instances\  Minecraft worlds and server files
 Extract the whole archive to a writable folder. Do not run it from inside the ZIP
 or from a read-only location such as Program Files.
+
+Hot update while a world is running:
+  1. Run PowerShell with:
+     powershell -NoProfile -ExecutionPolicy Bypass -File .\hot-update-windows.ps1
+  2. After it downloads and verifies the latest GitHub package, right-click the
+     BlockCraft tray icon and choose “仅重启面板”. The launcher applies the
+     staged files and starts the new panel; Minecraft worlds keep running.
+     Creating/importing/installing jobs must finish before staging an update.
+  data\ and instances\ are preserved.
 
 The bundled Node.js runtime starts the panel. If a world needs a Java version
 that is not installed, BlockCraft downloads Temurin into data\jdk automatically.

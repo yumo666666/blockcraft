@@ -13,6 +13,12 @@ export class ApiError extends Error {
   }
 }
 
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+  percent: number;
+}
+
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void): void {
   onUnauthorized = fn;
@@ -57,8 +63,42 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
   del: <T>(path: string) => request<T>('DELETE', path),
-  uploadFile: <T>(path: string, file: File) =>
-    request<T>('POST', path, file, { contentType: 'application/octet-stream', raw: true, filename: file.name }),
+  uploadFile: <T>(path: string, file: File, onProgress?: (progress: UploadProgress) => void): Promise<T> =>
+    new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', path);
+      xhr.setRequestHeader('X-Blockcraft', '1');
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.setRequestHeader('X-Blockcraft-Filename', encodeURIComponent(file.name));
+      xhr.upload.onprogress = (event) => {
+        const total = event.lengthComputable ? event.total : file.size;
+        const loaded = Math.min(event.loaded, total || event.loaded);
+        onProgress?.({ loaded, total, percent: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0 });
+      };
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          onUnauthorized?.();
+          reject(new ApiError('UNAUTHORIZED', '登录已过期，请重新登录'));
+          return;
+        }
+        let data: unknown = null;
+        try {
+          data = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+        } catch {
+          data = { raw: xhr.responseText };
+        }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const err = (data as ApiErrorBody | null)?.error;
+          const message = err?.message_en ? `${err.message} / ${err.message_en}` : err?.message;
+          reject(new ApiError(err?.code ?? 'INTERNAL', message ?? `请求失败（HTTP ${xhr.status}）`, err?.detail));
+          return;
+        }
+        resolve(data as T);
+      };
+      xhr.onerror = () => reject(new TypeError('网络连接中断或面板暂时不可用'));
+      xhr.onabort = () => reject(new ApiError('ABORTED', '上传已取消'));
+      xhr.send(file);
+    }),
   downloadFile: async (path: string, filename: string): Promise<void> => {
     const res = await fetch(path, { method: 'HEAD', headers: { 'X-Blockcraft': '1' }, cache: 'no-store' });
     if (res.status === 401) {

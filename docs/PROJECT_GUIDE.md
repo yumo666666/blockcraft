@@ -163,6 +163,35 @@ MOD 管理页按来源、状态和名称筛选；运行中的世界会限制可�
 
 ![安全关闭进度页面](assets/screenshots/24-safe-shutdown.jpg)
 
+## 热更新
+
+更新期间只重启管理面板，已运行的 Minecraft 世界进程继续运行。请先等创建、导入或安装任务完成；更新入口会在检测到这类任务时停止操作。
+
+### Windows 发布包
+
+从 3.0.3 起，Windows 包自带 GitHub 热更新脚本。第一次使用时，先安装包含此功能的完整 Windows 包；之后可按以下步骤更新：
+
+1. 在 BlockCraft 文件夹打开 PowerShell，执行：
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\hot-update-windows.ps1
+   ```
+
+2. 脚本会下载 GitHub 最新 Windows 包并校验 SHA-256，然后将文件暂存到 `.blockcraft-update`；此时现有面板和世界都还在运行。
+3. 右键系统托盘里的 BlockCraft，选择“仅重启面板”。启动器会等待旧面板退出、替换程序文件并打开新面板。Minecraft 世界不会停止。
+
+`data\` 和 `instances\` 不会被更新脚本替换。下载或校验失败时不会应用文件；切换程序文件期间失败会回滚已经替换的项目，并记录在 `data\logs\hot-update.log`。
+
+### Linux 源码安装
+
+在仓库目录执行：
+
+```bash
+bash bin/hot-update.sh
+```
+
+脚本先通过本机面板检查任务状态，再拉取当前 Git 跟踪分支、更新依赖，并重启面板。systemd 安装会由脚本重新启动 `blockcraft.service`；普通启动会重新运行 `bin/ubuntu.sh`。两种方式都不会调用会安全停止所有世界的关闭命令。
+
 ## 11. 项目目录
 
 下面分开说明 GitHub 上的源码目录和运行后产生的目录。BlockCraft 的 Node.js 后端位于根目录 `server/`；每个世界对应的 Minecraft 服务端位于 `instances/<世界ID>/server/`。
