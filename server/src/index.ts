@@ -115,7 +115,7 @@ export function boot(): void {
   });
 
   app.get('/api/ping', (_req, res) => {
-    res.json({ ok: true, name: 'BlockCraft', version: '3.0.1' });
+    res.json({ ok: true, name: 'BlockCraft', version: '3.0.2' });
   });
 
   // ---- 鉴权中间件

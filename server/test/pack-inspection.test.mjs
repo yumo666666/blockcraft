@@ -169,6 +169,24 @@ test('client-only jars bundled in overrides are moved out of the server mods dir
   }
 });
 
+test('server-directory packs preserve all bundled mod jars even when metadata says client-only', async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'blockcraft-server-pack-mods-'));
+  try {
+    const mods = path.join(temp, 'mods');
+    fs.mkdirSync(mods);
+    const clientMarkedJar = path.join(mods, 'bundled.jar');
+    fs.writeFileSync(clientMarkedJar, await makeZipBuffer({
+      'fabric.mod.json': JSON.stringify({ id: 'bundled', environment: 'client' }),
+    }));
+    const logs = [];
+    assert.equal(await filterClientOnlyMods(temp, (line) => logs.push(line), 'fabric', { preserveBundledMods: true }), 0);
+    assert.equal(fs.existsSync(clientMarkedJar), true);
+    assert.deepEqual(logs, []);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test('CurseForge ZIP files are distinguished as resource packs, datapacks, combined packs, or shaders', async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'blockcraft-pack-zip-kind-'));
   try {
@@ -281,6 +299,36 @@ test('required server dependencies override incomplete CurseForge client-only ta
   assert.deepEqual([...required], [200]);
   assert.equal(curseForgeClientSkipReason(files[1], required), null);
   assert.match(curseForgeClientSkipReason(files[2], required), /仅客户端/);
+});
+
+test('Connector globalModAliases satisfy Fabric dependencies from installed Forge mod IDs', async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'blockcraft-connector-aliases-'));
+  try {
+    const mods = path.join(temp, 'mods');
+    fs.mkdirSync(mods);
+    fs.writeFileSync(path.join(mods, 'Connector-1.0.0.jar'), '');
+    fs.writeFileSync(path.join(mods, 'cloth-config.jar'), await makeZipBuffer({
+      'META-INF/mods.toml': '[[mods]]\nmodId="cloth_config"',
+    }));
+    fs.writeFileSync(path.join(mods, 'dragonloot.jar'), await makeZipBuffer({
+      'fabric.mod.json': JSON.stringify({
+        id: 'dragonloot',
+        environment: '*',
+        depends: { 'cloth-config2': '>=11.0.99' },
+      }),
+    }));
+    const config = path.join(temp, 'config');
+    fs.mkdirSync(config);
+    fs.writeFileSync(path.join(config, 'connector.json'), JSON.stringify({
+      globalModAliases: { cloth_config: 'cloth-config2' },
+    }));
+
+    assert.deepEqual(await missingRequiredModDependencies(mods, 'forge'), []);
+    fs.rmSync(path.join(mods, 'cloth-config.jar'));
+    assert.deepEqual(await missingRequiredModDependencies(mods, 'forge'), ['cloth-config2']);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test('server dependency validation counts Jar-in-Jar libraries and reports missing required mods', async () => {

@@ -898,6 +898,24 @@ export async function missingRequiredModDependencies(modsDir: string, loader: st
     await Promise.all(jarFiles.slice(i, i + 8).map(scanJar));
   }
 
+  // Connector can expose a Forge mod ID under the Fabric ID expected by a
+  // bridged mod. Only apply aliases whose source ID is actually installed.
+  const connectorConfig = path.join(path.dirname(modsDir), 'config', 'connector.json');
+  try {
+    const config = JSON.parse(fs.readFileSync(connectorConfig, 'utf8').replace(/^\uFEFF/, '')) as {
+      globalModAliases?: Record<string, unknown>;
+    };
+    const installed = new Set([...installedIds].map(normalizeModId));
+    for (const [sourceId, aliasId] of Object.entries(config.globalModAliases ?? {})) {
+      if (typeof aliasId !== 'string' || !installed.has(normalizeModId(sourceId))) continue;
+      installed.add(normalizeModId(aliasId));
+    }
+    for (const id of installed) installedIds.add(id);
+  } catch {
+    // Connector configuration is optional; malformed or absent files should
+    // leave the normal dependency check unchanged.
+  }
+
   return [...requiredIds]
     .filter((id) => !coreIds.has(normalizeModId(id)))
     .filter((id) => {
@@ -971,7 +989,13 @@ async function clientOnlyJarReason(jarPath: string, loader?: string | null): Pro
 }
 
 /** Filter client-only jars that were bundled under CurseForge overrides/mods. */
-export async function filterClientOnlyMods(serverDir: string, onLog: (s: string) => void, loader?: string | null): Promise<number> {
+export async function filterClientOnlyMods(
+  serverDir: string,
+  onLog: (s: string) => void,
+  loader?: string | null,
+  opts: { preserveBundledMods?: boolean } = {},
+): Promise<number> {
+  if (opts.preserveBundledMods) return 0;
   const modsDir = path.join(serverDir, 'mods');
   if (!fs.existsSync(modsDir)) return 0;
   const clientModsDir = path.join(serverDir, 'client-mods', 'overrides');
@@ -1700,6 +1724,7 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
   const { signal } = opts;
   signal?.throwIfAborted();
   const info = await inspectPack(file);
+  const activeLoader = info.loader ?? I.getConfig(instanceId).loader ?? null;
   onLog(`识别为：${info.format}${info.packName ? `（${info.packName}）` : ''} — ${info.note}`);
   const serverDir = instanceServerDir(instanceId);
   const names = await listZipEntries(file);
@@ -1714,8 +1739,11 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
   let manual: string[] = [];
   let extracted = 0;
   switch (info.format) {
-    case 'raw':
     case 'serverdir':
+      onLog('完整解压服务端目录包（包含启动参数、依赖库及模组附属数据）');
+      extracted += await extractTree(file, names, serverDir, { prefixes: /.+/, stripPrefix, onLog, signal });
+      break;
+    case 'raw':
     case 'multimc':
     case 'hmcl':
       onLog('直接解压包内文件（不走网络）');
@@ -1765,9 +1793,11 @@ export async function extractPack(file: string, instanceId: string, onLog: (s: s
       extracted += await extractTree(file, names, serverDir, { prefixes: /(^|\/)(mods|config)\//i, stripPrefix, onLog, signal });
   }
   signal?.throwIfAborted();
-  const embeddedClientOnly = await filterClientOnlyMods(serverDir, onLog, info.loader);
+  const preserveBundledMods = info.format === 'serverdir';
+  if (preserveBundledMods) onLog('识别为服务端目录包，保留包内 mods/ 的所有模组');
+  const embeddedClientOnly = await filterClientOnlyMods(serverDir, onLog, activeLoader, { preserveBundledMods });
   if (embeddedClientOnly) onLog(`已从服务端目录移出 ${embeddedClientOnly} 个随包提供的客户端专用 MOD`);
-  const missingJarDependencies = await missingRequiredModDependencies(path.join(serverDir, 'mods'), info.loader);
+  const missingJarDependencies = await missingRequiredModDependencies(path.join(serverDir, 'mods'), activeLoader);
   for (const modId of missingJarDependencies) {
     if (manual.some((entry) => entry.includes(`依赖 ${modId}`))) continue;
     manual.push(`服务器必需 Mod 依赖 ${modId}（缺少对应文件或内嵌库）`);

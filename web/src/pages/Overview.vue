@@ -368,6 +368,7 @@ function backgroundJob() {
 }
 @media (max-width: 680px) {
   .world-tab-bar { align-items: stretch; flex-direction: column; gap: 0; }
-  .world-quick-actions { justify-content: flex-end; padding: 0 8px 8px; }
+  .world-quick-actions { order: 0; justify-content: flex-end; padding: 4px 8px; }
+  .world-tabs { order: 1; flex: none; width: 100%; }
 }
 </style>
