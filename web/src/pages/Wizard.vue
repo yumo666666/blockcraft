@@ -302,7 +302,7 @@ function backgroundJob() {
         <!-- 1 基本 -->
         <template v-if="step === 1">
           <div class="form-grid-2">
-            <div class="field">
+            <div class="field" style="grid-column: 1 / -1">
               <label class="field-label">世界名称</label>
               <input v-model="form.name" class="input" placeholder="例如：温馨禅意 二周目" />
               <span class="field-hint">会用它生成目录 id（字母数字下划线）</span>
@@ -582,6 +582,27 @@ function backgroundJob() {
       </div>
     </div>
 
+        <section class="card wizard-summary-card">
+          <div class="card-head">
+            <h3><span class="head-icon"><Icon name="server" :size="15" /></span>当前配置</h3>
+          </div>
+          <div class="card-body col gap-2">
+            <template v-if="mode === 'new'">
+              <div class="aside-kv"><span>名称</span><strong>{{ form.name || '未命名' }}</strong></div>
+              <div class="aside-kv"><span>版本</span><strong>Minecraft {{ form.mc }}</strong></div>
+              <div class="aside-kv"><span>加载器</span><strong>{{ currentLoader?.label ?? form.loader }} <template v-if="form.loaderVersion">{{ form.loaderVersion }}</template></strong></div>
+              <div class="aside-kv"><span>内存</span><strong>{{ form.minMemoryMb }}–{{ form.memoryMb }} MB</strong></div>
+              <div class="aside-kv"><span>最大玩家</span><strong>{{ form.maxPlayers }}</strong></div>
+            </template>
+            <template v-else>
+              <div class="aside-kv"><span>整合包</span><strong class="mono">{{ importForm.packId || '未选择' }}</strong></div>
+              <div class="aside-kv"><span>名称</span><strong>{{ importForm.name || '未命名' }}</strong></div>
+              <div class="aside-kv"><span>版本</span><strong>{{ importForm.mc || '未识别' }}</strong></div>
+              <div class="aside-kv"><span>加载器</span><strong>{{ importForm.loader }} <template v-if="importForm.loaderVersion">{{ importForm.loaderVersion }}</template></strong></div>
+              <div class="aside-kv"><span>内存</span><strong>{{ importForm.memoryMb }} MB</strong></div>
+            </template>
+          </div>
+        </section>
       </div>
 
       <aside class="wizard-aside col gap-4">
@@ -616,28 +637,6 @@ function backgroundJob() {
                 <span class="aside-step-index">3</span>
                 <span class="grow">开始导入并等待任务</span>
               </div>
-            </template>
-          </div>
-        </section>
-
-        <section class="card aside-card">
-          <div class="card-head">
-            <h3><span class="head-icon"><Icon name="server" :size="15" /></span>当前配置</h3>
-          </div>
-          <div class="card-body col gap-2">
-            <template v-if="mode === 'new'">
-              <div class="aside-kv"><span>名称</span><strong>{{ form.name || '未命名' }}</strong></div>
-              <div class="aside-kv"><span>版本</span><strong>Minecraft {{ form.mc }}</strong></div>
-              <div class="aside-kv"><span>加载器</span><strong>{{ currentLoader?.label ?? form.loader }} <template v-if="form.loaderVersion">{{ form.loaderVersion }}</template></strong></div>
-              <div class="aside-kv"><span>内存</span><strong>{{ form.minMemoryMb }}–{{ form.memoryMb }} MB</strong></div>
-              <div class="aside-kv"><span>最大玩家</span><strong>{{ form.maxPlayers }}</strong></div>
-            </template>
-            <template v-else>
-              <div class="aside-kv"><span>整合包</span><strong class="mono">{{ importForm.packId || '未选择' }}</strong></div>
-              <div class="aside-kv"><span>名称</span><strong>{{ importForm.name || '未命名' }}</strong></div>
-              <div class="aside-kv"><span>版本</span><strong>{{ importForm.mc || '未识别' }}</strong></div>
-              <div class="aside-kv"><span>加载器</span><strong>{{ importForm.loader }} <template v-if="importForm.loaderVersion">{{ importForm.loaderVersion }}</template></strong></div>
-              <div class="aside-kv"><span>内存</span><strong>{{ importForm.memoryMb }} MB</strong></div>
             </template>
           </div>
         </section>
