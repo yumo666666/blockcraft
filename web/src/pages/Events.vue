@@ -78,9 +78,9 @@ onUnmounted(() => {
 <template>
   <div class="page col gap-4">
     <div class="row-between wrap gap-3">
-      <div>
-        <h1>📜 事件日志</h1>
-        <div class="text-3 small mt-1">所有世界的启动 / 就绪 / 关闭 / 崩溃都记在这里，最多显示最近 {{ MAX_LINES }} 行</div>
+      <div class="page-heading">
+        <h1>事件日志</h1>
+        <p>所有世界的启动 / 就绪 / 关闭 / 崩溃都记在这里，最多显示最近 {{ MAX_LINES }} 行</p>
       </div>
       <div class="row gap-2">
         <label class="switch">

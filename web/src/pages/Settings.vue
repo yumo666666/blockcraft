@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import { fmtBytes } from '../lib/format.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
+import AppearanceSettings from '../components/AppearanceSettings.vue';
 
 defineOptions({ name: 'Settings' });
-
-const router = useRouter();
 const panel = ref<{
   config: Record<string, never>;
   addresses: { label: string; value: string; kind: string }[];
@@ -220,10 +218,12 @@ async function killWorld(id: string) {
 
 <template>
   <div class="page col gap-4">
-    <div class="row gap-3">
-      <button class="btn btn-ghost btn-sm" @click="router.push('/')">← 返回总览</button>
+    <div class="page-heading">
       <h1>面板设置</h1>
+      <p>访问方式、资源限额、数据源与外观。改动会写入数据目录的 panel.json。</p>
     </div>
+
+    <AppearanceSettings />
 
     <div v-if="!panel" class="row gap-2"><span class="spinner" /> 读取中…</div>
 

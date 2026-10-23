@@ -7,6 +7,7 @@ import { fmtBytes, statusClass } from '../lib/format.ts';
 import type { InstanceDetail, InstanceSummary, ModInfo } from '../lib/types.ts';
 import Modal from '../components/Modal.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
+import Icon from '../components/Icon.vue';
 
 defineOptions({ name: 'Mods' });
 
@@ -327,10 +328,12 @@ function modrinthSearch(modId: string): string {
 
 <template>
   <div class="page col gap-4">
-    <!-- 头部：返回 + 世界名 + 操作 -->
+    <!-- 头部：世界名 + 操作 -->
     <div class="row-between wrap gap-3">
       <div class="row gap-3 grow" style="min-width: 0">
-        <button class="btn btn-ghost btn-sm" @click="router.push('/')">← 返回总览</button>
+        <button class="btn btn-ghost btn-sm back-link" @click="router.push('/')">
+          <Icon name="chevron-left" :size="14" /> 返回总览
+        </button>
         <div class="grow" style="min-width: 0">
           <div class="row gap-2">
             <i class="dot" :class="statusClass(instance?.status ?? 'stopped')" />
@@ -350,7 +353,7 @@ function modrinthSearch(modId: string): string {
           :title="running ? '请先停服再改 MOD' : '选择本地的 .jar 文件导入'"
           @click="pickFiles"
         >
-          <span v-if="importing" class="spinner" style="border-top-color: #fff" />
+          <span v-if="importing" class="spinner spinner-on-accent" />
           {{ importing ? `导入中 ${importDone}/${importTotal}` : '＋ 导入 MOD' }}
         </button>
         <button class="btn" :title="running ? '请先停服再改 MOD' : '从直链或项目页链接下载'" @click="openUrlDialog">从链接下载</button>
@@ -478,7 +481,7 @@ function modrinthSearch(modId: string): string {
       <template #footer>
         <button class="btn" @click="showUrl = false">取消</button>
         <button class="btn btn-primary" :disabled="urlBusy || !urlValue.trim()" @click="submitUrl">
-          <span v-if="urlBusy" class="spinner" style="border-top-color: #fff" />
+          <span v-if="urlBusy" class="spinner spinner-on-accent" />
           下载
         </button>
       </template>

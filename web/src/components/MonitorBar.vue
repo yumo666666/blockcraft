@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import type { InstanceSummary, SystemSnapshot } from '../lib/types.ts';
 import { fmtBytes, fmtDuration, statusClass } from '../lib/format.ts';
+import Icon from './Icon.vue';
 
 const props = defineProps<{ snap: SystemSnapshot | null; instances: InstanceSummary[] }>();
 
@@ -26,7 +27,7 @@ const activeList = computed(() => props.instances.filter((i) => i.status !== 'st
 <template>
   <div class="card monitor-card">
     <div class="card-head">
-      <h3>资源监控</h3>
+      <h3><span class="head-icon"><Icon name="cpu" :size="15" /></span>资源监控</h3>
       <span class="text-3 small">{{ running.length }} 个世界在跑 / 共 {{ instances.length }} 个</span>
     </div>
     <div class="card-body col gap-4">

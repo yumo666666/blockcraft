@@ -4,13 +4,13 @@
 
 ## 1. 总览与主题
 
-总览页同时展示主机资源、面板状态、FRP 通道和所有世界。点击顶部“主题”可在浅色、深色和 Minecraft 绿主题间切换，选择会保存在浏览器。
+总览页同时展示主机资源、面板状态、FRP 通道和所有世界。左侧边栏切换页面；点击右上角的「外观」按钮可在「日光」「暮色」「跟随系统」之间切换，选择会保存在浏览器。设置页的「外观」卡片还可以上传自定义壁纸，图片压缩后只保存在本浏览器，不会上传到服务端。
 
-| 浅色主题 | 深色主题 | Minecraft 绿主题 |
-|---|---|---|
-| ![浅色主题](assets/screenshots/02-overview-theme-light.jpg) | ![深色主题](assets/screenshots/03-overview-theme-dark.jpg) | ![Minecraft 绿主题](assets/screenshots/04-overview-theme-green.jpg) |
+| 日光主题 | 暮色主题 |
+|---|---|
+| ![日光主题](assets/screenshots/02-overview-theme-light.jpg) | ![暮色主题](assets/screenshots/03-overview-theme-dark.jpg) |
 
-世界卡片上的“显示端口”可复制本地或公网连接地址；“配置”“控制台”“备份与回退”“MOD 管理”“玩家管理”分别打开对应页面。新建世界和导入整合包从页面右上方开始。
+世界卡片上的“显示端口”可复制本地或公网连接地址；“配置”“控制台”“备份与回退”“MOD 管理”“玩家管理”分别打开对应页面。新建世界和导入整合包从左侧边栏或总览顶部的快捷入口开始。
 
 ![总览中的世界卡片](assets/screenshots/01-overview-stopped.jpg)
 
@@ -232,14 +232,14 @@ BlockCraft/
 │  └─ tsconfig.json              TypeScript 配置
 ├─ tools/                        辅助工具（例如 Minecraft ping 检查）
 ├─ web/
-│  ├─ public/                    网页静态资源与图标
+│  ├─ public/                    网页静态资源、默认壁纸与图标
 │  ├─ src/
 │  │  ├─ __tests__/              前端组件与功能测试
-│  │  ├─ components/             弹窗、表单、状态标记、世界卡片等共享组件
-│  │  ├─ lib/                    API、类型、主题、格式化、公告与命令辅助代码
+│  │  ├─ components/             弹窗、表单、状态标记、图标、世界卡片等共享组件
+│  │  ├─ lib/                    API、类型、主题、壁纸、格式化、公告与命令辅助代码
 │  │  ├─ pages/                  Overview、Wizard、Console、Backups、Mods、Players、Settings、Events 等页面
-│  │  ├─ styles/                 全局样式
-│  │  ├─ App.vue                 应用外壳与导航
+│  │  ├─ styles/                 全局设计令牌与组件样式
+│  │  ├─ App.vue                 侧边栏应用外壳、登录页与导航
 │  │  └─ router.ts               页面路由
 │  ├─ dist/                      前端构建产物，运行时由构建生成
 │  ├─ index.html                 网页入口 HTML

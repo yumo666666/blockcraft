@@ -1,11 +1,30 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#f4f6f8" />
+    <meta name="theme-color" content="#a9d1fb" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="BlockCraft · 多世界 Minecraft 服务端管理面板" />
     <link rel="icon" type="image/svg+xml" href="/blockcraft.svg" />
     <title>BlockCraft · 多世界管理面板</title>
+    <script>
+      // 在首帧之前决定深浅，避免深色用户看到一瞬间的白屏。
+      (function () {
+        try {
+          var mode = localStorage.getItem('blockcraft.theme');
+          if (mode === 'white') mode = 'light';
+          if (mode === 'black') mode = 'dark';
+          if (mode === 'minecraft') mode = 'light';
+          if (mode !== 'light' && mode !== 'dark' && mode !== 'system') mode = 'system';
+          var dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (error) {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

@@ -7,6 +7,7 @@ import { fmtDuration, fmtTime, STATUS_TEXT, statusClass } from '../lib/format.ts
 import type { ConsoleLine, InstanceDetail, ScheduleInfo } from '../lib/types.ts';
 import { applySuggestion, suggest, type Suggestion } from '../lib/commands.ts';
 import { ANNOUNCE_COLORS, DEFAULT_ANNOUNCE_COLOR, buildAnnounce, previewAnnounce } from '../lib/announce.ts';
+import Icon from '../components/Icon.vue';
 
 defineOptions({ name: 'Console' });
 
@@ -558,7 +559,9 @@ watch(
     <!-- 头部：返回 + 世界名 + 状态 + 运行时长 + 在线人数 -->
     <div class="row-between wrap gap-3">
       <div class="row gap-3 console-title-group">
-        <button class="btn btn-ghost btn-sm" @click="router.push('/')">← 返回总览</button>
+        <button class="btn btn-ghost btn-sm back-link" @click="router.push('/')">
+          <Icon name="chevron-left" :size="14" /> 返回总览
+        </button>
         <div class="row gap-2">
           <i class="dot" :class="instance ? statusClass(instance.status) : 'dot-idle'" />
           <h1 class="ellipsis">{{ instance?.name ?? props.id }}</h1>
@@ -587,7 +590,7 @@ watch(
     <div class="console-grid">
       <div class="card console-card">
         <div class="card-head">
-          <h2>🖥 控制台</h2>
+          <h2><span class="head-icon"><Icon name="console" :size="15" /></span>控制台</h2>
           <div class="row gap-2 wrap">
             <span v-if="streaming" class="badge badge-warn">{{ streaming }}</span>
             <span v-if="paused" class="badge badge-info">已暂停{{ pending.length ? ` · 待显示 ${pending.length}` : '' }}</span>
@@ -641,7 +644,7 @@ watch(
                   @blur="suggestOpen = false"
                 />
                 <button class="btn btn-primary" :disabled="sending || !cmd.trim()" @click="send(cmd)">
-                  <span v-if="sending" class="spinner" style="border-top-color: #fff" />
+                  <span v-if="sending" class="spinner spinner-on-accent" />
                   发送
                 </button>
               </div>
@@ -662,14 +665,14 @@ watch(
       <div class="col gap-4 console-side">
         <div class="card">
           <div class="card-head">
-            <h3>⚡ 快捷命令</h3>
+            <h3><span class="head-icon"><Icon name="sparkle" :size="15" /></span>快捷命令</h3>
             <span class="text-3 small">{{ shortcuts.length }} 条 · 按组排</span>
           </div>
           <div class="card-body col gap-3">
             <!-- 发公告：带颜色 -->
             <div class="col gap-2 announce-box">
               <div class="row-between wrap gap-2">
-                <span class="chip-group-label">📢 发公告</span>
+                <span class="chip-group-label">发公告</span>
                 <span class="text-3 small">选颜色 → 填内容 → 下面就是游戏里的效果</span>
               </div>
 
@@ -741,7 +744,7 @@ watch(
     <!-- 定时开服 / 停服 -->
     <div class="card">
       <div class="card-head">
-        <h2>⏰ 定时开服 / 停服</h2>
+        <h2><span class="head-icon"><Icon name="clock" :size="15" /></span>定时开服 / 停服</h2>
         <span class="text-3 small ellipsis">{{ sched?.describe ?? '读取中…' }}</span>
       </div>
 
@@ -866,7 +869,7 @@ watch(
         </button>
         <div class="grow" />
         <button class="btn btn-primary" :disabled="savingSchedule" @click="saveSchedule">
-          <span v-if="savingSchedule" class="spinner" style="border-top-color: #fff" />
+          <span v-if="savingSchedule" class="spinner spinner-on-accent" />
           保存定时设置
         </button>
       </div>

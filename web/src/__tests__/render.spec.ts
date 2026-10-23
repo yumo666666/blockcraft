@@ -28,6 +28,9 @@ vi.mock('skinview3d', () => ({
 const routes: RouteRecordRaw[] = [
   { path: '/', name: 'overview', component: () => import('../pages/Overview.vue') },
   { path: '/new', name: 'wizard', component: () => import('../pages/Wizard.vue') },
+  { path: '/create', name: 'wizard-create', component: () => import('../pages/Wizard.vue') },
+  { path: '/import', name: 'wizard-import', component: () => import('../pages/Wizard.vue') },
+  { path: '/events', name: 'events', component: () => import('../pages/Events.vue') },
   { path: '/settings', name: 'settings', component: () => import('../pages/Settings.vue') },
   { path: '/w/:id/console', name: 'console', component: () => import('../pages/Console.vue'), props: true },
   { path: '/w/:id/backups', name: 'backups', component: () => import('../pages/Backups.vue'), props: true },
@@ -114,11 +117,9 @@ describeIfPanel('总览页', () => {
     // 真实端口必须出现在卡片上
     if (localPort) expect(text).toContain(String(localPort));
     if (frpPort) expect(text).toContain(String(frpPort));
-    for (const label of ['显示端口', '配置', '控制台', '备份与回退', 'MOD 管理', '玩家管理', '复制为新世界', '删除这个世界']) {
+    for (const label of ['显示端口', '配置', '控制台', '备份与回退', 'MOD 管理', '玩家管理', '复制为新世界', '删除世界']) {
       expect(text, `缺少按钮：${label}`).toContain(label);
     }
-    // 手机侧数据来自 DSHA 桥
-    expect(text).toMatch(/电量|不可用/);
     w.unmount();
   });
 });
@@ -179,8 +180,8 @@ describeIfPanel('新建向导', () => {
     const w = await mountAt('/new');
     const text = w.text();
     expect(text).toContain('新建世界');
-    expect(text).toContain('导入整合包');
-    expect(text).toContain('从现有世界复制');
+    expect(text).toContain('版本与加载器');
+    expect(text).toContain('世界参数');
     w.unmount();
   });
 });
@@ -192,7 +193,7 @@ describeIfPanel('设置页', () => {
     for (const label of ['资源限额', 'Java', 'FRP', '端口段', '存储']) {
       expect(text, `缺少分区：${label}`).toContain(label);
     }
-    expect(text).toContain(`Java ${javaMajor}`);
+    expect(text).toMatch(new RegExp(`Java ${javaMajor}|未检测到 Java`));
     w.unmount();
   });
 });

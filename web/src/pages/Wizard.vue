@@ -280,9 +280,9 @@ function backgroundJob() {
 
 <template>
   <div class="page col gap-4 wizard-page">
-    <div class="row gap-3">
-      <button class="btn btn-ghost btn-sm" @click="router.push('/')">← 返回总览</button>
+    <div class="page-heading">
       <h1>{{ mode === 'new' ? '新建世界' : '导入整合包' }}</h1>
+      <p>{{ mode === 'new' ? '选择 Minecraft 版本与加载器，面板会自动下载服务端并生成配置。' : '支持 CurseForge、Modrinth 与 BlockCraft 备份包。' }}</p>
     </div>
 
     <!-- 新建世界（分步） -->

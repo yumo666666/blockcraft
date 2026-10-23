@@ -7,6 +7,7 @@ import { fmtBytes, fmtRelative, fmtTime, STATUS_TEXT, statusClass } from '../lib
 import type { BackupEntry, InstanceDetail } from '../lib/types.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import Modal from '../components/Modal.vue';
+import Icon from '../components/Icon.vue';
 
 defineOptions({ name: 'Backups' });
 
@@ -379,7 +380,9 @@ watch(
     <!-- 头部：返回 + 世界名 + 占用 + 立即备份 -->
     <div class="row-between wrap gap-3">
       <div class="row gap-3 wrap">
-        <button class="btn btn-ghost btn-sm" @click="router.push('/')">← 返回总览</button>
+        <button class="btn btn-ghost btn-sm back-link" @click="router.push('/')">
+          <Icon name="chevron-left" :size="14" /> 返回总览
+        </button>
         <div class="row gap-2">
           <i class="dot" :class="statusClass(status)" />
           <h1 class="ellipsis">{{ name }}</h1>
@@ -389,7 +392,7 @@ watch(
         <span v-if="running" class="badge badge-warn">世界运行中，备份前要先停服</span>
       </div>
       <button class="btn btn-primary" :disabled="backing" @click="backupNow">
-        <span v-if="backing" class="spinner" style="border-top-color: #fff" />
+        <span v-if="backing" class="spinner spinner-on-accent" />
         立即备份
       </button>
     </div>
@@ -417,7 +420,7 @@ watch(
     <!-- 备份列表 -->
     <div class="card">
       <div class="card-head">
-        <h2>📦 备份列表</h2>
+        <h2><span class="head-icon"><Icon name="backups" :size="15" /></span>备份列表</h2>
         <div class="row gap-2">
           <span v-if="loading" class="spinner" />
           <button class="btn btn-sm" :disabled="uploading" @click="chooseBackupUpload">
@@ -485,7 +488,7 @@ watch(
     <!-- 自动备份设置 -->
     <div class="card">
       <div class="card-head">
-        <h2>🗂 自动备份</h2>
+        <h2><span class="head-icon"><Icon name="clock" :size="15" /></span>自动备份</h2>
         <span class="text-3 small">{{ policyText }}</span>
       </div>
 
@@ -523,7 +526,7 @@ watch(
       <div v-if="policy" class="card-foot row gap-2">
         <span class="text-3 small grow">自动备份只在世界停止时执行；运行中会先跳过，等你停服后的下一次间隔。</span>
         <button class="btn btn-primary" :disabled="savingPolicy" @click="savePolicy">
-          <span v-if="savingPolicy" class="spinner" style="border-top-color: #fff" />
+          <span v-if="savingPolicy" class="spinner spinner-on-accent" />
           保存设置
         </button>
       </div>
@@ -597,7 +600,7 @@ watch(
           :disabled="!cleanupPlan.remove.length || cleaning"
           @click="runCleanup"
         >
-          <span v-if="cleaning" class="spinner" style="border-top-color: #fff" />
+          <span v-if="cleaning" class="spinner spinner-on-accent" />
           确认删除 {{ cleanupPlan.remove.length }} 份
         </button>
       </template>

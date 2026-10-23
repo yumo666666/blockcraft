@@ -6,15 +6,21 @@
 
 ## 界面预览
 
-总览页面支持浅色、深色和 Minecraft 绿三种主题。下方展示同一个页面在不同主题下的样式。
+界面采用侧边栏 + 磨砂玻璃卡片布局，玻璃面板浮在壁纸之上，信息层级清楚又不遮挡背景。外观提供「日光 / 暮色 / 跟随系统」三种选择，也可以在设置页上传自己的壁纸（只保存在当前浏览器）。
 
-| 浅色 | 深色 | Minecraft 绿 |
-|---|---|---|
-| ![浅色主题总览](docs/assets/screenshots/02-overview-theme-light.jpg) | ![深色主题总览](docs/assets/screenshots/03-overview-theme-dark.jpg) | ![Minecraft 绿主题总览](docs/assets/screenshots/04-overview-theme-green.jpg) |
+| 日光 | 暮色 |
+|---|---|
+| ![日光主题总览](docs/assets/screenshots/02-overview-theme-light.jpg) | ![暮色主题总览](docs/assets/screenshots/03-overview-theme-dark.jpg) |
 
 总览集中显示主机资源、FRP 通道状态、世界运行状态、端口、在线人数、MOD 数量与资源用量。每个世界独立保存服务端、加载器、MOD、配置、存档、备份和日志。
 
 ![BlockCraft 总览页面](docs/assets/screenshots/01-overview-stopped.jpg)
+
+移动端会自动收起侧边栏，总览卡片改为纵向排布：
+
+![移动端总览](docs/assets/screenshots/04-overview-mobile.jpg)
+
+> 界面视觉语言致敬 [AlkaidLab · Foundation Sunshine](https://github.com/AlkaidLab/foundation-sunshine) 控制台。BlockCraft 只借鉴其「壁纸 + 磨砂玻璃」的设计思路，配色、组件、壁纸与代码均为独立实现。
 
 ## 功能
 

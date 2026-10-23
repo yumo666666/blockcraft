@@ -48,7 +48,7 @@ function canConfirm(): boolean {
         :disabled="!canConfirm() || busy"
         @click="emit('confirm')"
       >
-        <span v-if="busy" class="spinner" style="border-top-color: #fff" />
+        <span v-if="busy" class="spinner spinner-on-accent" />
         {{ confirmText ?? '确定' }}
       </button>
     </template>

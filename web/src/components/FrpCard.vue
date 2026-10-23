@@ -4,6 +4,7 @@ import type { FrpStatus } from '../lib/types.ts';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import Modal from './Modal.vue';
+import Icon from './Icon.vue';
 import { fmtBytes } from '../lib/format.ts';
 
 const props = defineProps<{ status: FrpStatus | null }>();
@@ -138,7 +139,7 @@ async function copyPublicAddress() {
 <template>
   <div class="card frp-card">
     <div class="card-head">
-      <h3>FRP 穿透</h3>
+      <h3><span class="head-icon"><Icon name="globe" :size="15" /></span>FRP 穿透</h3>
       <span class="badge" :class="connectionBadge.className" :title="connectionBadge.title">
         {{ connectionBadge.label }}
       </span>
