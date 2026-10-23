@@ -291,7 +291,7 @@ function backgroundJob() {
         <!-- 新建世界（分步） -->
         <div v-if="mode === 'new'" class="card wizard-form-card">
       <div class="card-head">
-        <h3>新建世界</h3>
+        <h3><span class="head-icon"><Icon name="plus" :size="15" /></span>新建世界</h3>
         <div class="wizard-steps">
           <span v-for="(s, i) in steps" :key="s" class="badge wizard-step" :class="step === i + 1 ? 'badge-accent' : step > i + 1 ? 'badge-ok' : 'badge-outline'">
             {{ i + 1 }}. {{ s }}
@@ -442,7 +442,7 @@ function backgroundJob() {
 
     <!-- 导入整合包 -->
     <div v-else class="card wizard-form-card">
-      <div class="card-head"><h3>导入整合包</h3></div>
+      <div class="card-head"><h3><span class="head-icon"><Icon name="package" :size="15" /></span>导入整合包</h3></div>
       <div class="card-body col gap-4">
         <div class="row gap-2 wrap">
           <label class="btn btn-soft" :class="{ 'pack-upload-disabled': uploadingPack }" :aria-disabled="uploadingPack">
@@ -687,6 +687,7 @@ function backgroundJob() {
 .wizard-summary-card { grid-column: 1; grid-row: 2; }
 .wizard-tips-card { grid-column: 2; grid-row: 2; }
 .wizard-form-card, .wizard-flow-card, .wizard-summary-card, .wizard-tips-card { min-width: 0; }
+.wizard-form-card > .card-head, .wizard-flow-card > .card-head { min-height: 53px; }
 .aside-step {
   display: flex;
   align-items: center;
