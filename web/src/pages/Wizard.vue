@@ -286,7 +286,7 @@ function backgroundJob() {
       <p>{{ mode === 'new' ? '选择 Minecraft 版本与加载器，面板会自动下载服务端并生成配置。' : '支持 CurseForge、Modrinth 与 BlockCraft 备份包。' }}</p>
     </div>
 
-    <div class="wizard-layout">
+    <div class="wizard-layout" :class="{ 'wizard-fixed': mode === 'new' }">
       <div class="wizard-main">
         <!-- 新建世界（分步） -->
         <div v-if="mode === 'new'" class="card wizard-form-card">
@@ -688,6 +688,22 @@ function backgroundJob() {
 .wizard-tips-card { grid-column: 2; grid-row: 2; }
 .wizard-form-card, .wizard-flow-card, .wizard-summary-card, .wizard-tips-card { min-width: 0; }
 .wizard-form-card > .card-head, .wizard-flow-card > .card-head { min-height: 53px; }
+/* Keep the four blocks at the step-1 dimensions for every step. Longer step
+   bodies scroll inside the card instead of resizing the whole grid. */
+.wizard-layout.wizard-fixed { grid-template-rows: 338px 219px; }
+.wizard-fixed .wizard-form-card,
+.wizard-fixed .wizard-flow-card,
+.wizard-fixed .wizard-summary-card,
+.wizard-fixed .wizard-tips-card { display: flex; min-height: 0; flex-direction: column; }
+.wizard-fixed .wizard-form-card > .card-head,
+.wizard-fixed .wizard-flow-card > .card-head,
+.wizard-fixed .wizard-summary-card > .card-head,
+.wizard-fixed .wizard-tips-card > .card-head,
+.wizard-fixed .wizard-form-card > .card-foot { flex: none; }
+.wizard-fixed .wizard-form-card > .card-body,
+.wizard-fixed .wizard-flow-card > .card-body,
+.wizard-fixed .wizard-summary-card > .card-body,
+.wizard-fixed .wizard-tips-card > .card-body { flex: 1; min-height: 0; overflow-y: auto; }
 .aside-step {
   display: flex;
   align-items: center;
@@ -801,8 +817,13 @@ function backgroundJob() {
 @media (max-width: 620px) { .import-key-warning { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 1100px) {
   .wizard-layout { grid-template-columns: minmax(0, 1fr); }
+  .wizard-layout.wizard-fixed { grid-template-rows: none; }
   .wizard-main, .wizard-aside { display: flex; flex-direction: column; gap: var(--sp-4); }
   .wizard-form-card, .wizard-flow-card, .wizard-summary-card, .wizard-tips-card { grid-column: auto; grid-row: auto; }
+  .wizard-fixed .wizard-form-card > .card-body,
+  .wizard-fixed .wizard-flow-card > .card-body,
+  .wizard-fixed .wizard-summary-card > .card-body,
+  .wizard-fixed .wizard-tips-card > .card-body { overflow-y: visible; }
 }
 @media (max-width: 720px) {
   .import-formats { grid-template-columns: minmax(0, 1fr); }

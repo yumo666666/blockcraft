@@ -67,20 +67,24 @@ const peakLabel = computed(() => {
     </div>
 
     <div class="perf-plot">
-      <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" role="img" :aria-label="`${title} 实时曲线`">
-        <defs>
-          <linearGradient :id="gradientId" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="currentColor" stop-opacity="0.3" />
-            <stop offset="100%" stop-color="currentColor" stop-opacity="0" />
-          </linearGradient>
-        </defs>
-        <line v-for="tick in ticks" :key="tick" x1="0" :x2="W" :y1="H * tick" :y2="H * tick" class="perf-grid" />
-        <path v-if="areaPath" :d="areaPath" :fill="`url(#${gradientId})`" />
-        <path v-if="linePath" :d="linePath" class="perf-line" />
-        <circle v-if="lastPoint" :cx="lastPoint[0]" :cy="lastPoint[1]" r="2.6" class="perf-dot" />
-      </svg>
-      <span class="perf-max">{{ peakLabel }}</span>
-      <span class="perf-zero">0</span>
+      <div class="perf-canvas">
+        <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" role="img" :aria-label="`${title} 实时曲线`">
+          <defs>
+            <linearGradient :id="gradientId" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="currentColor" stop-opacity="0.3" />
+              <stop offset="100%" stop-color="currentColor" stop-opacity="0" />
+            </linearGradient>
+          </defs>
+          <line v-for="tick in ticks" :key="tick" x1="0" :x2="W" :y1="H * tick" :y2="H * tick" class="perf-grid" />
+          <path v-if="areaPath" :d="areaPath" :fill="`url(#${gradientId})`" />
+          <path v-if="linePath" :d="linePath" class="perf-line" />
+          <circle v-if="lastPoint" :cx="lastPoint[0]" :cy="lastPoint[1]" r="2.6" class="perf-dot" />
+        </svg>
+      </div>
+      <div class="perf-axis" aria-hidden="true">
+        <span>{{ peakLabel }}</span>
+        <span>0</span>
+      </div>
     </div>
   </div>
 </template>
@@ -108,8 +112,22 @@ const peakLabel = computed(() => {
 .perf-now strong { color: var(--text); font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
 .perf-now span { margin-left: 2px; color: var(--text-3); font-size: 11px; }
 
-.perf-plot { position: relative; height: 76px; }
-.perf-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.perf-plot { display: flex; gap: 8px; height: 76px; }
+.perf-canvas { position: relative; flex: 1; min-width: 0; }
+.perf-canvas svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.perf-axis {
+  display: flex;
+  width: 30px;
+  flex: none;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 1px 0 0;
+  color: var(--text-3);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: left;
+}
 .perf-grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; opacity: 0.7; }
 .perf-line {
   fill: none;
@@ -125,14 +143,4 @@ const peakLabel = computed(() => {
   stroke-width: 1.4;
   vector-effect: non-scaling-stroke;
 }
-.perf-max, .perf-zero {
-  position: absolute;
-  right: 0;
-  color: var(--text-3);
-  font-size: 9px;
-  line-height: 1;
-  pointer-events: none;
-}
-.perf-max { top: -2px; }
-.perf-zero { bottom: 0; }
 </style>
