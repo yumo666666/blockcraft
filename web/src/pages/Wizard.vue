@@ -289,7 +289,7 @@ function backgroundJob() {
     <div class="wizard-layout">
       <div class="wizard-main">
         <!-- 新建世界（分步） -->
-        <div v-if="mode === 'new'" class="card">
+        <div v-if="mode === 'new'" class="card wizard-form-card">
       <div class="card-head">
         <h3>新建世界</h3>
         <div class="wizard-steps">
@@ -441,7 +441,7 @@ function backgroundJob() {
     </div>
 
     <!-- 导入整合包 -->
-    <div v-else class="card">
+    <div v-else class="card wizard-form-card">
       <div class="card-head"><h3>导入整合包</h3></div>
       <div class="card-body col gap-4">
         <div class="row gap-2 wrap">
@@ -606,7 +606,7 @@ function backgroundJob() {
       </div>
 
       <aside class="wizard-aside col gap-4">
-        <section class="card aside-card">
+        <section class="card aside-card wizard-flow-card">
           <div class="card-head">
             <h3><span class="head-icon"><Icon name="sparkle" :size="15" /></span>{{ mode === 'new' ? '创建流程' : '导入流程' }}</h3>
           </div>
@@ -641,7 +641,7 @@ function backgroundJob() {
           </div>
         </section>
 
-        <section class="card aside-card">
+        <section class="card aside-card wizard-tips-card">
           <div class="card-head">
             <h3><span class="head-icon"><Icon name="info" :size="15" /></span>提示</h3>
           </div>
@@ -676,12 +676,17 @@ function backgroundJob() {
 .wizard-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
-  align-items: start;
+  align-items: stretch;
   gap: var(--sp-4);
 }
-.wizard-main { display: flex; min-width: 0; flex-direction: column; gap: var(--sp-4); }
-.wizard-main > .card { min-width: 0; }
-.wizard-aside { position: sticky; top: calc(var(--topbar-h) + 16px); min-width: 0; }
+/* The wrappers only group the cards semantically; display:contents lets the
+   four cards share the same grid rows, so the 2x2 block edges line up. */
+.wizard-main, .wizard-aside { display: contents; }
+.wizard-form-card { grid-column: 1; grid-row: 1; }
+.wizard-flow-card { grid-column: 2; grid-row: 1; }
+.wizard-summary-card { grid-column: 1; grid-row: 2; }
+.wizard-tips-card { grid-column: 2; grid-row: 2; }
+.wizard-form-card, .wizard-flow-card, .wizard-summary-card, .wizard-tips-card { min-width: 0; }
 .aside-step {
   display: flex;
   align-items: center;
@@ -795,10 +800,10 @@ function backgroundJob() {
 @media (max-width: 620px) { .import-key-warning { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 1100px) {
   .wizard-layout { grid-template-columns: minmax(0, 1fr); }
-  .wizard-aside { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wizard-main, .wizard-aside { display: flex; flex-direction: column; gap: var(--sp-4); }
+  .wizard-form-card, .wizard-flow-card, .wizard-summary-card, .wizard-tips-card { grid-column: auto; grid-row: auto; }
 }
 @media (max-width: 720px) {
-  .wizard-aside { grid-template-columns: minmax(0, 1fr); }
   .import-formats { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
