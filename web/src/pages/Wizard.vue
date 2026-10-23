@@ -378,17 +378,18 @@ function backgroundJob() {
               </select>
             </div>
           </div>
-          <div class="row gap-4 wrap">
-            <label class="switch"><input v-model="form.pvp" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许 PVP</span></label>
-            <label class="switch"><input v-model="form.hardcore" type="checkbox" /><span class="switch-track" /><span class="switch-text">极限模式</span></label>
-            <label class="switch"><input v-model="form.allowNether" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许下界</span></label>
-            <label class="switch"><input v-model="form.allowFlight" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许飞行</span></label>
-            <label class="switch"><input v-model="form.generateStructures" type="checkbox" /><span class="switch-track" /><span class="switch-text">生成建筑</span></label>
-          </div>
-          <div class="divider" />
-          <div class="row gap-4 wrap">
-            <label class="switch"><input v-model="form.onlineMode" type="checkbox" /><span class="switch-track" /><span class="switch-text">正版验证</span></label>
-            <label class="switch"><input v-model="form.whiteList" type="checkbox" /><span class="switch-track" /><span class="switch-text">开启白名单</span></label>
+          <div class="col gap-3">
+            <div class="row gap-4 wrap">
+              <label class="switch"><input v-model="form.pvp" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许 PVP</span></label>
+              <label class="switch"><input v-model="form.hardcore" type="checkbox" /><span class="switch-track" /><span class="switch-text">极限模式</span></label>
+              <label class="switch"><input v-model="form.allowNether" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许下界</span></label>
+              <label class="switch"><input v-model="form.allowFlight" type="checkbox" /><span class="switch-track" /><span class="switch-text">允许飞行</span></label>
+              <label class="switch"><input v-model="form.generateStructures" type="checkbox" /><span class="switch-track" /><span class="switch-text">生成建筑</span></label>
+            </div>
+            <div class="row gap-4 wrap">
+              <label class="switch"><input v-model="form.onlineMode" type="checkbox" /><span class="switch-track" /><span class="switch-text">正版验证</span></label>
+              <label class="switch"><input v-model="form.whiteList" type="checkbox" /><span class="switch-track" /><span class="switch-text">开启白名单</span></label>
+            </div>
           </div>
           <p class="text-3 small">关掉正版验证后任何人都能进（名字可以随便填）；公共网络建议开白名单。</p>
         </template>
@@ -700,10 +701,11 @@ function backgroundJob() {
 .wizard-fixed .wizard-summary-card > .card-head,
 .wizard-fixed .wizard-tips-card > .card-head,
 .wizard-fixed .wizard-form-card > .card-foot { flex: none; }
-.wizard-fixed .wizard-form-card > .card-body,
+.wizard-fixed .wizard-form-card > .card-body { flex: 1; min-height: 0; overflow-y: auto; }
 .wizard-fixed .wizard-flow-card > .card-body,
 .wizard-fixed .wizard-summary-card > .card-body,
-.wizard-fixed .wizard-tips-card > .card-body { flex: 1; min-height: 0; overflow-y: auto; }
+.wizard-fixed .wizard-tips-card > .card-body { flex: 1; min-height: 0; overflow: hidden; }
+.wizard-fixed .wizard-form-card .kv { gap: 4px; }
 .aside-step {
   display: flex;
   align-items: center;
@@ -823,7 +825,7 @@ function backgroundJob() {
   .wizard-fixed .wizard-form-card > .card-body,
   .wizard-fixed .wizard-flow-card > .card-body,
   .wizard-fixed .wizard-summary-card > .card-body,
-  .wizard-fixed .wizard-tips-card > .card-body { overflow-y: visible; }
+  .wizard-fixed .wizard-tips-card > .card-body { overflow: visible; }
 }
 @media (max-width: 720px) {
   .import-formats { grid-template-columns: minmax(0, 1fr); }
