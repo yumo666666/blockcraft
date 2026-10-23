@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { api, type UploadProgress } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import JobProgress from '../components/JobProgress.vue';
+import Icon from '../components/Icon.vue';
 import { setBackgroundJob } from '../lib/backgroundJob.ts';
 
 defineOptions({ name: 'Wizard' });
@@ -285,8 +286,10 @@ function backgroundJob() {
       <p>{{ mode === 'new' ? '选择 Minecraft 版本与加载器，面板会自动下载服务端并生成配置。' : '支持 CurseForge、Modrinth 与 BlockCraft 备份包。' }}</p>
     </div>
 
-    <!-- 新建世界（分步） -->
-    <div v-if="mode === 'new'" class="card">
+    <div class="wizard-layout">
+      <div class="wizard-main">
+        <!-- 新建世界（分步） -->
+        <div v-if="mode === 'new'" class="card">
       <div class="card-head">
         <h3>新建世界</h3>
         <div class="wizard-steps">
@@ -465,7 +468,32 @@ function backgroundJob() {
           </div>
         </div>
 
-        <div v-if="!packs.length" class="empty"><div class="empty-icon">📦</div><div>还没有整合包</div></div>
+        <div v-if="!packs.length" class="import-empty">
+          <div class="import-empty-head">
+            <span class="import-empty-icon"><Icon name="package" :size="22" /></span>
+            <div>
+              <strong>还没有整合包</strong>
+              <p class="text-3 small">上传一个，或把文件放进 <code class="mono">data/store/packs/</code> 再刷新。</p>
+            </div>
+          </div>
+          <div class="import-formats">
+            <div class="import-format">
+              <Icon name="package" :size="17" />
+              <strong>CurseForge</strong>
+              <span>.zip · 需要 API Key</span>
+            </div>
+            <div class="import-format">
+              <Icon name="globe" :size="17" />
+              <strong>Modrinth</strong>
+              <span>.mrpack · 无需 Key</span>
+            </div>
+            <div class="import-format">
+              <Icon name="backups" :size="17" />
+              <strong>BlockCraft 备份</strong>
+              <span>.zip · 直接导入</span>
+            </div>
+          </div>
+        </div>
         <div v-else class="col gap-2">
           <button
             v-for="p in packs"
@@ -554,12 +582,177 @@ function backgroundJob() {
       </div>
     </div>
 
+      </div>
+
+      <aside class="wizard-aside col gap-4">
+        <section class="card aside-card">
+          <div class="card-head">
+            <h3><span class="head-icon"><Icon name="sparkle" :size="15" /></span>{{ mode === 'new' ? '创建流程' : '导入流程' }}</h3>
+          </div>
+          <div class="card-body col gap-2">
+            <template v-if="mode === 'new'">
+              <div
+                v-for="(s, i) in steps"
+                :key="s"
+                class="aside-step"
+                :class="{ active: step === i + 1, done: step > i + 1 }"
+              >
+                <span class="aside-step-index">{{ i + 1 }}</span>
+                <span class="grow">{{ s }}</span>
+                <Icon v-if="step > i + 1" name="check" :size="14" />
+              </div>
+            </template>
+            <template v-else>
+              <div class="aside-step" :class="{ active: !inspection, done: Boolean(inspection) }">
+                <span class="aside-step-index">1</span>
+                <span class="grow">上传或选择整合包</span>
+                <Icon v-if="inspection" name="check" :size="14" />
+              </div>
+              <div class="aside-step" :class="{ active: Boolean(inspection) }">
+                <span class="aside-step-index">2</span>
+                <span class="grow">确认版本、内存与名称</span>
+              </div>
+              <div class="aside-step">
+                <span class="aside-step-index">3</span>
+                <span class="grow">开始导入并等待任务</span>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <section class="card aside-card">
+          <div class="card-head">
+            <h3><span class="head-icon"><Icon name="server" :size="15" /></span>当前配置</h3>
+          </div>
+          <div class="card-body col gap-2">
+            <template v-if="mode === 'new'">
+              <div class="aside-kv"><span>名称</span><strong>{{ form.name || '未命名' }}</strong></div>
+              <div class="aside-kv"><span>版本</span><strong>Minecraft {{ form.mc }}</strong></div>
+              <div class="aside-kv"><span>加载器</span><strong>{{ currentLoader?.label ?? form.loader }} <template v-if="form.loaderVersion">{{ form.loaderVersion }}</template></strong></div>
+              <div class="aside-kv"><span>内存</span><strong>{{ form.minMemoryMb }}–{{ form.memoryMb }} MB</strong></div>
+              <div class="aside-kv"><span>最大玩家</span><strong>{{ form.maxPlayers }}</strong></div>
+            </template>
+            <template v-else>
+              <div class="aside-kv"><span>整合包</span><strong class="mono">{{ importForm.packId || '未选择' }}</strong></div>
+              <div class="aside-kv"><span>名称</span><strong>{{ importForm.name || '未命名' }}</strong></div>
+              <div class="aside-kv"><span>版本</span><strong>{{ importForm.mc || '未识别' }}</strong></div>
+              <div class="aside-kv"><span>加载器</span><strong>{{ importForm.loader }} <template v-if="importForm.loaderVersion">{{ importForm.loaderVersion }}</template></strong></div>
+              <div class="aside-kv"><span>内存</span><strong>{{ importForm.memoryMb }} MB</strong></div>
+            </template>
+          </div>
+        </section>
+
+        <section class="card aside-card">
+          <div class="card-head">
+            <h3><span class="head-icon"><Icon name="info" :size="15" /></span>提示</h3>
+          </div>
+          <div class="card-body col gap-3 aside-tips">
+            <template v-if="mode === 'new'">
+              <p>服务端与加载器依赖由面板自动下载；本机没有对应 Java 时会自动安装。</p>
+              <p>端口和 FRP 映射在创建完成后自动分配，不需要手填。</p>
+              <p>内存预算会在启动时校验，超出机器可用内存的面板会拒绝启动并说明原因。</p>
+              <button class="btn btn-soft" @click="router.push('/import')">
+                <Icon name="package" :size="15" /> 改为导入整合包
+              </button>
+            </template>
+            <template v-else>
+              <p>支持 CurseForge、Modrinth 以及 BlockCraft 导出的备份包。</p>
+              <p>CurseForge 整合包需要先在设置页保存 API Key；Modrinth 不需要。</p>
+              <p>导入是后台任务，离开本页不会中断，可从顶部的任务入口查看进度。</p>
+              <button class="btn btn-soft" @click="router.push('/create')">
+                <Icon name="plus" :size="15" /> 改为新建世界
+              </button>
+            </template>
+          </div>
+        </section>
+      </aside>
+    </div>
+
     <JobProgress :open="showJob" :job-id="jobId" @close="closeJob" @background="backgroundJob" />
   </div>
 </template>
 
 <style scoped>
 .wizard-page { min-height: calc(100vh - var(--header-h)); justify-content: flex-start; padding-top: clamp(18px, 3vh, 34px); }
+.wizard-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
+  align-items: start;
+  gap: var(--sp-4);
+}
+.wizard-main { display: flex; min-width: 0; flex-direction: column; gap: var(--sp-4); }
+.wizard-main > .card { min-width: 0; }
+.wizard-aside { position: sticky; top: calc(var(--topbar-h) + 16px); min-width: 0; }
+.aside-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  transition: background 0.16s, border-color 0.16s, color 0.16s;
+}
+.aside-step.active { border-color: var(--accent-border); background: var(--accent-soft); color: var(--text); }
+.aside-step.done { color: var(--text-2); }
+.aside-step > svg { flex: none; color: var(--ok); }
+.aside-step-index {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  font-size: 11px;
+  font-weight: 700;
+}
+.aside-step.active .aside-step-index { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
+.aside-step.done .aside-step-index { border-color: var(--ok); background: var(--ok-soft); color: var(--ok-text); }
+.aside-tips p { margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.65; }
+.aside-tips .btn { justify-content: flex-start; }
+.aside-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+.aside-kv > span { flex: none; color: var(--text-3); }
+.aside-kv > strong { overflow: hidden; font-weight: 600; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.import-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+.import-empty-head { display: flex; align-items: center; gap: 12px; }
+.import-empty-head strong { display: block; font-size: 13.5px; }
+.import-empty-head p { margin: 3px 0 0; }
+.import-empty-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--accent-border);
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.import-formats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.import-format {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-strong);
+}
+.import-format > svg { color: var(--accent); }
+.import-format strong { margin-top: 2px; font-size: 12px; font-weight: 650; }
+.import-format span { color: var(--text-3); font-size: 10.5px; }
 .skin-support-hint {
   max-width: 860px;
   margin: 0;
@@ -601,4 +794,12 @@ function backgroundJob() {
 .import-key-warning { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: var(--r-sm); background: var(--surface-2); }
 .import-key-warning p { margin: 6px 0 0; }
 @media (max-width: 620px) { .import-key-warning { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 1100px) {
+  .wizard-layout { grid-template-columns: minmax(0, 1fr); }
+  .wizard-aside { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .wizard-aside { grid-template-columns: minmax(0, 1fr); }
+  .import-formats { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

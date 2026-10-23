@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue';
 
-const props = defineProps<{ title: string; size?: 'sm' | 'md' | 'lg'; closable?: boolean }>();
+const props = withDefaults(defineProps<{ title: string; size?: 'sm' | 'md' | 'lg'; closable?: boolean }>(), {
+  closable: true,
+});
 const emit = defineEmits<{ close: [] }>();
 
 function onKey(e: KeyboardEvent) {

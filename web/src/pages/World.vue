@@ -3,8 +3,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
+import { fmtBytes, fmtDuration, fmtRelative } from '../lib/format.ts';
 import type { InstanceSummary } from '../lib/types.ts';
 import WorldNote from '../components/WorldNote.vue';
+import WorldPerformance from '../components/WorldPerformance.vue';
 import WorldConfigDialog from '../components/WorldConfigDialog.vue';
 import PortsDialog from '../components/PortsDialog.vue';
 import CopyDialog from '../components/CopyDialog.vue';
@@ -21,6 +23,23 @@ const router = useRouter();
 const { instances, worldsReady, acquireWorlds, releaseWorlds, refreshWorlds, setWorldStatus } = useWorlds();
 
 const world = computed(() => instances.value.find((item) => item.id === props.id) ?? null);
+const running = computed(() => Boolean(world.value && ['running', 'starting', 'stopping', 'stuck'].includes(world.value.status)));
+const archiveAvailable = computed(() => Boolean(world.value && ['stopped', 'crashed'].includes(world.value.status)));
+const publicPort = computed(() => {
+  if (!world.value) return '—';
+  if (world.value.frpPort) return String(world.value.frpPort);
+  return world.value.frpEnabled ? '未映射' : '未启用';
+});
+const createdLabel = computed(() => {
+  if (!world.value?.createdAt) return '—';
+  return new Date(world.value.createdAt).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+});
 
 const busyId = ref<string | null>(null);
 const downloadingWorldId = ref<string | null>(null);
@@ -96,7 +115,7 @@ async function doDelete() {
 }
 
 async function downloadWorld(item: InstanceSummary): Promise<void> {
-  if (!['stopped', 'crashed'].includes(item.status) || downloadingWorldId.value) return;
+  if (!archiveAvailable.value || downloadingWorldId.value) return;
   downloadingWorldId.value = item.id;
   try {
     await api.downloadFile(`/api/instances/${encodeURIComponent(item.id)}/download`, `${item.id}.zip`);
@@ -121,16 +140,6 @@ function backgroundJob() {
 
 <template>
   <div class="page col gap-4">
-    <div class="world-heading">
-      <button class="btn btn-ghost btn-sm back-link" @click="router.push('/')">
-        <Icon name="chevron-left" :size="14" /> 返回总览
-      </button>
-      <div class="page-heading grow">
-        <h1 class="ellipsis">{{ world?.name ?? props.id }}</h1>
-        <p>{{ world ? '世界状态、端口、MOD 与常用操作' : '正在读取世界信息…' }}</p>
-      </div>
-    </div>
-
     <div v-if="!world && !worldsReady" class="row gap-2"><span class="spinner" /> 读取世界…</div>
 
     <div v-else-if="!world" class="card empty world-missing">
@@ -140,23 +149,128 @@ function backgroundJob() {
       <button class="btn btn-primary mt-2" @click="router.push('/')">返回总览</button>
     </div>
 
-    <WorldNote
-      v-else
-      :item="world"
-      :busy="busyId === world.id"
-      :downloading="downloadingWorldId === world.id"
-      @start="start(world)"
-      @stop="stop(world)"
-      @config="showConfig = true"
-      @ports="showPorts = true"
-      @copy="showCopy = true"
-      @console="router.push(`/w/${world.id}/console`)"
-      @backups="router.push(`/w/${world.id}/backups`)"
-      @mods="router.push(`/w/${world.id}/mods`)"
-      @players="router.push(`/w/${world.id}/players`)"
-      @remove="((deleteTarget = world), (showDelete = true))"
-      @download="downloadWorld(world)"
-    />
+    <template v-else>
+      <WorldNote
+        :item="world"
+        :busy="busyId === world.id"
+        @start="start(world)"
+        @stop="stop(world)"
+        @config="showConfig = true"
+      />
+
+      <WorldPerformance :world="world" />
+
+      <div class="world-bottom-grid">
+        <section class="card world-panel">
+          <div class="card-head">
+            <h3><span class="head-icon"><Icon name="cpu" :size="15" /></span>连接与运行</h3>
+          </div>
+          <div class="card-body world-facts">
+            <div class="world-fact">
+              <span>本地端口</span>
+              <strong class="mono">{{ world.port }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>公网端口</span>
+              <strong class="mono">{{ publicPort }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>在线玩家</span>
+              <strong>{{ world.players }} / {{ world.maxPlayers }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>MOD 数量</span>
+              <strong>{{ world.modCount }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>磁盘占用</span>
+              <strong>{{ fmtBytes(world.diskUsage) }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>内存上限</span>
+              <strong>{{ world.memoryMb }} MB</strong>
+            </div>
+            <div class="world-fact">
+              <span>运行时长</span>
+              <strong>{{ running ? fmtDuration(world.uptime) : '—' }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>上次备份</span>
+              <strong>{{ world.lastBackup ? fmtRelative(world.lastBackup) : '从未' }}</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="card world-panel">
+          <div class="card-head">
+            <h3><span class="head-icon"><Icon name="server" :size="15" /></span>世界信息</h3>
+          </div>
+          <div class="card-body world-facts">
+            <div class="world-fact">
+              <span>世界 ID</span>
+              <strong class="mono ellipsis">{{ world.id }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>Minecraft</span>
+              <strong>{{ world.mc }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>加载器</span>
+              <strong>
+                {{ world.loader }}
+                <template v-if="world.loaderVersion"> {{ world.loaderVersion }}</template>
+              </strong>
+            </div>
+            <div class="world-fact">
+              <span>Java</span>
+              <strong>{{ world.javaMajor ? `Java ${world.javaMajor}` : '自动选择' }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>自动启动</span>
+              <strong>{{ world.autostart ? '开启' : '关闭' }}</strong>
+            </div>
+            <div class="world-fact">
+              <span>创建时间</span>
+              <strong>{{ createdLabel }}</strong>
+            </div>
+            <div class="world-fact world-fact-wide">
+              <span>备注</span>
+              <strong :class="{ 'text-3': !world.note }">{{ world.note || '—' }}</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="card world-panel world-actions-card">
+          <div class="card-head">
+            <h3><span class="head-icon"><Icon name="settings" :size="15" /></span>操作</h3>
+          </div>
+          <div class="card-body col gap-2">
+            <button class="world-action" @click="showPorts = true">
+              <Icon name="globe" :size="17" />
+              <span><strong>显示端口</strong><small>本地与公网连接地址</small></span>
+            </button>
+            <button class="world-action" @click="showCopy = true">
+              <Icon name="backups" :size="17" />
+              <span><strong>复制为新世界</strong><small>保留存档、配置与 MOD</small></span>
+            </button>
+            <button
+              class="world-action"
+              :disabled="!archiveAvailable || Boolean(downloadingWorldId)"
+              :title="archiveAvailable ? '下载这个世界的完整目录 ZIP' : '请先完全停止世界，再下载完整目录'"
+              @click="downloadWorld(world)"
+            >
+              <span v-if="downloadingWorldId === world.id" class="spinner" />
+              <Icon v-else name="download" :size="17" />
+              <span><strong>{{ downloadingWorldId === world.id ? '正在打包…' : '下载世界' }}</strong><small>{{ archiveAvailable ? '打包完整实例目录' : '停止世界后可下载' }}</small></span>
+            </button>
+            <button class="world-action world-action-danger" :disabled="busyId === world.id" @click="((deleteTarget = world), (showDelete = true))">
+              <Icon name="trash" :size="17" />
+              <span><strong>删除世界</strong><small>移入回收站保留 7 天</small></span>
+            </button>
+          </div>
+        </section>
+      </div>
+    </template>
 
     <WorldConfigDialog
       :open="showConfig"
@@ -190,9 +304,54 @@ function backgroundJob() {
 </template>
 
 <style scoped>
-.world-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.world-heading .page-heading { min-width: 0; }
-.world-heading .page-heading h1 { font-size: 24px; }
+.world-bottom-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.05fr) minmax(260px, 0.8fr);
+  gap: var(--sp-4);
+  align-items: stretch;
+}
+.world-panel { display: flex; min-width: 0; flex-direction: column; }
+.world-panel > .card-body { flex: 1; }
+.world-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 14px 20px;
+}
+.world-fact { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.world-fact > span { color: var(--text-3); font-size: 11.5px; }
+.world-fact > strong { overflow: hidden; font-size: 13.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.world-fact-wide { grid-column: 1 / -1; }
+.world-fact-wide > strong { white-space: normal; line-height: 1.5; }
+
+.world-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s, transform 0.16s;
+}
+.world-action > svg { flex: none; color: var(--accent); }
+.world-action > span { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.world-action strong { font-size: 12.5px; font-weight: 650; }
+.world-action small { color: var(--text-3); font-size: 10.5px; }
+.world-action:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+  transform: translateY(-1px);
+}
+.world-action:disabled { opacity: 0.55; cursor: not-allowed; }
+.world-action-danger > svg { color: var(--danger); }
+.world-action-danger:hover:not(:disabled) { border-color: var(--danger-border); background: var(--danger-soft); }
+
 .world-missing { gap: 10px; padding: 44px 20px 50px; }
 .world-missing-icon {
   display: grid;
@@ -207,7 +366,17 @@ function backgroundJob() {
 }
 .world-missing-title { font-size: 15px; font-weight: 650; color: var(--text); }
 .world-missing p { max-width: 30rem; }
-@media (max-width: 620px) {
-  .world-heading { align-items: flex-start; flex-wrap: wrap; }
+
+@media (max-width: 1180px) {
+  .world-bottom-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .world-actions-card { grid-column: 1 / -1; }
+  .world-actions-card .card-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .world-bottom-grid { grid-template-columns: minmax(0, 1fr); }
+  .world-actions-card { grid-column: auto; }
+  .world-actions-card .card-body { display: flex; }
+  .world-facts { grid-template-columns: minmax(0, 1fr); }
+  .world-fact-wide { grid-column: auto; }
 }
 </style>

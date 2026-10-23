@@ -8,7 +8,6 @@ import { toast, toastError } from '../lib/toast.ts';
 import { fmtDuration, statusClass } from '../lib/format.ts';
 import type { InstanceDetail, InstanceSummary, PlayerInfo, SkinPoolEntry } from '../lib/types.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import Icon from '../components/Icon.vue';
 import Modal from '../components/Modal.vue';
 
 defineOptions({ name: 'Players' });
@@ -782,9 +781,6 @@ function skinLabel(p: PlayerInfo): string {
     <!-- 头部：返回 + 世界名 + 在线数 -->
     <div class="row-between wrap gap-3">
       <div class="row gap-3 grow" style="min-width: 0">
-        <button class="btn btn-ghost btn-sm back-link" @click="router.push('/')">
-          <Icon name="chevron-left" :size="14" /> 返回总览
-        </button>
         <div class="grow" style="min-width: 0">
           <div class="row gap-2">
             <i class="dot" :class="statusClass(instance?.status ?? 'stopped')" />

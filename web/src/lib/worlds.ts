@@ -1,4 +1,4 @@
-import { ref } from 'vue';
+import { computed, ref, type Ref } from 'vue';
 import { api, subscribe } from './api.ts';
 import type { InstanceSummary, SystemSnapshot } from './types.ts';
 
@@ -8,7 +8,7 @@ import type { InstanceSummary, SystemSnapshot } from './types.ts';
  * 侧边栏和总览页都需要同一份数据：如果各自开一条 SSE，会重复请求、还会出现
  * 侧边栏与页面状态不一致。这里用引用计数管理唯一的订阅：
  *   - App 在登录后 acquire，退出登录后 release；
- *   - Overview 在挂载时 acquire，卸载时 release；
+ *   - Overview / World 在挂载时 acquire，卸载时 release；
  * 最后一个使用者离开时才关闭 EventSource。
  */
 interface SystemStreamPayload {
@@ -16,6 +16,16 @@ interface SystemStreamPayload {
   snap: SystemSnapshot;
   instances: InstanceSummary[];
 }
+
+/** 世界性能采样（用于世界页的实时曲线）。 */
+export interface WorldSample {
+  t: number;
+  cpu: number;
+  rss: number;
+  players: number;
+}
+
+const HISTORY_LIMIT = 120;
 
 export const snapshot = ref<SystemSnapshot | null>(null);
 export const instances = ref<InstanceSummary[]>([]);
@@ -26,6 +36,8 @@ let stopStream: (() => void) | null = null;
 let revision = 0;
 let refreshRequest = 0;
 const pendingStatuses = new Map<string, { status: string; phase: string; at: number }>();
+const history = new Map<string, WorldSample[]>();
+const historyTick = ref(0);
 
 /** 合并服务端快照与刚点下的启停状态，避免按钮反馈被稍旧的快照覆盖。 */
 function applyInstances(next: InstanceSummary[], sampledAt = Date.now()): void {
@@ -37,7 +49,42 @@ function applyInstances(next: InstanceSummary[], sampledAt = Date.now()): void {
     pendingStatuses.delete(item.id);
     return item;
   });
+  recordHistory(instances.value, sampledAt);
 }
+
+/**
+ * 记录每个世界的 CPU / RSS / 在线人数。
+ * 只保留最近 120 个采样点（面板约每秒推一次，约两分钟）。
+ */
+function recordHistory(list: InstanceSummary[], sampledAt: number): void {
+  let changed = false;
+  for (const item of list) {
+    const samples = history.get(item.id) ?? [];
+    const last = samples[samples.length - 1];
+    if (last && sampledAt <= last.t) continue;
+    samples.push({
+      t: sampledAt,
+      cpu: Number.isFinite(item.cpu) ? item.cpu : 0,
+      rss: Number.isFinite(item.rss) ? item.rss : 0,
+      players: item.players || 0,
+    });
+    if (samples.length > HISTORY_LIMIT) samples.splice(0, samples.length - HISTORY_LIMIT);
+    history.set(item.id, samples);
+    changed = true;
+  }
+  if (changed) historyTick.value += 1;
+}
+
+/** 世界页用：随 SSE 更新自动刷新的历史采样。 */
+export function useWorldHistory(id: Ref<string>) {
+  return computed(() => {
+    // 读一下 tick，让 computed 随着每次录制重新计算。
+    historyTick.value;
+    // 返回副本：数组是原地 push 的，返回同一引用时下游 computed 不会更新。
+    return [...(history.get(id.value) ?? [])];
+  });
+}
+
 
 function applyStream(data: SystemStreamPayload): void {
   snapshot.value = data.snap;
@@ -88,6 +135,8 @@ export function resetWorlds(): void {
   revision += 1;
   refreshRequest += 1;
   pendingStatuses.clear();
+  history.clear();
+  historyTick.value += 1;
   instances.value = [];
   snapshot.value = null;
   worldsReady.value = false;

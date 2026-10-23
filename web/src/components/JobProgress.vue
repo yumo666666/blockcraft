@@ -60,7 +60,7 @@ async function cancelImport(): Promise<void> {
   try {
     const result = await api.post<{ job: Job }>(`/api/jobs/${encodeURIComponent(job.value.id)}/cancel`);
     job.value = result.job;
-    toast('ok', '已请求取消导入', '正在停止当前下载或安装。已建世界和已下载文件会保留，可以之后在总览中删除。');
+    toast('ok', '已请求取消导入', '正在停止当前下载或安装。已建世界和已下载文件会保留，可以之后在世界页删除。');
   } catch (err) {
     cancelPending.value = false;
     toastError(err, '取消导入失败');

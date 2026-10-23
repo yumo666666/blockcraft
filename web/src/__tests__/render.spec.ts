@@ -1,6 +1,6 @@
 /**
  * 页面渲染测试：用**真实面板的数据**挂载每个页面，断言关键内容出现在 DOM 里。
- * 覆盖：总览（资源监控 + FRP + 世界卡片）、控制台、备份、MOD、玩家、新建向导、设置。
+ * 覆盖：总览（资源监控 + FRP）、世界页（概览 + 实时性能 + 操作）、控制台、备份、MOD、玩家、新建向导、设置。
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -122,16 +122,20 @@ describeIfPanel('总览页', () => {
 });
 
 describeIfPanel('世界页', () => {
-  it('渲染世界卡片、端口与操作按钮', async () => {
+  it('渲染世界概览、实时性能与操作按钮，但不重复侧边栏导航', async () => {
     const w = await mountAt(`/w/${instanceId}`);
     const text = await waitFor(w, (t) => t.includes('显示端口'));
     expect(text).toContain(instanceName);
+    expect(text).toContain('实时性能');
     // 真实端口必须出现在卡片上
     if (localPort) expect(text).toContain(String(localPort));
     if (frpPort) expect(text).toContain(String(frpPort));
-    for (const label of ['显示端口', '配置', '控制台', '备份与回退', 'MOD 管理', '玩家管理', '复制为新世界', '删除世界']) {
+    for (const label of ['显示端口', '配置', '复制为新世界', '下载世界', '删除世界', '实时性能']) {
       expect(text, `缺少按钮：${label}`).toContain(label);
     }
+    // 这些入口在左侧边栏，世界页不再重复
+    expect(text).not.toContain('备份与回退');
+    expect(text).not.toContain('玩家管理');
     w.unmount();
   });
 });
@@ -141,7 +145,6 @@ describeIfPanel('控制台页', () => {
     const w = await mountAt(`/w/${instanceId}/console`);
     const text = await waitFor(w, (t) => t.includes(instanceName));
     expect(text).toContain(instanceName);
-    expect(text.toLowerCase()).toContain('返回');
     expect(text).toMatch(/日志|控制台/);
     expect(text).toMatch(/定时|开服/);
     expect(text).toMatch(/停服/);

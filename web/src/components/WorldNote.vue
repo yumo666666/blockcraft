@@ -1,25 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { InstanceSummary } from '../lib/types.ts';
-import { fmtBytes, fmtDuration, STATUS_TEXT, statusClass } from '../lib/format.ts';
+import { STATUS_TEXT, statusClass } from '../lib/format.ts';
+import Icon from './Icon.vue';
 
-const props = defineProps<{ item: InstanceSummary; busy?: boolean; downloading?: boolean }>();
+const props = defineProps<{ item: InstanceSummary; busy?: boolean }>();
 const emit = defineEmits<{
   start: [];
   stop: [];
   config: [];
-  console: [];
-  backups: [];
-  mods: [];
-  players: [];
-  copy: [];
-  remove: [];
-  ports: [];
-  download: [];
 }>();
 
 const running = computed(() => ['running', 'starting', 'stopping', 'stuck'].includes(props.item.status));
-const archiveAvailable = computed(() => ['stopped', 'crashed'].includes(props.item.status));
 const badgeClass = computed(() => {
   switch (props.item.status) {
     case 'running':
@@ -39,131 +31,113 @@ const loaderLabel = computed(() => {
   const base = map[props.item.loader] ?? props.item.loader;
   return props.item.loaderVersion ? `${base} ${props.item.loaderVersion}` : base;
 });
+const createdLabel = computed(() => {
+  if (!props.item.createdAt) return '';
+  const date = new Date(props.item.createdAt);
+  return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+});
+const phaseText = computed(() => {
+  if (props.item.status === 'stopped') return '';
+  if (props.item.lastError) return '';
+  return props.item.phase || '';
+});
 </script>
 
 <template>
-  <div class="note-card">
-    <div class="note-strip" :style="{ background: item.color }" />
-    <div class="note-head">
-      <div class="row-between">
-        <div class="grow" style="min-width: 0">
-          <div class="row gap-2">
-            <i class="dot" :class="statusClass(item.status)" />
-            <h2 class="ellipsis">{{ item.name }}</h2>
-          </div>
-          <div class="row gap-2 mt-2 note-meta">
-            <span v-if="item.autostart" class="badge badge-accent" title="随面板自动启动">自启</span>
-            <span class="text-3 small ellipsis">{{ item.note || `${loaderLabel} · Minecraft ${item.mc}` }}</span>
-          </div>
+  <section class="card world-hero">
+    <div class="world-hero-top">
+      <div class="world-hero-copy">
+        <div class="world-title-row">
+          <i class="dot" :class="statusClass(item.status)" aria-hidden="true" />
+          <h1 class="world-title ellipsis">{{ item.name }}</h1>
+          <span class="badge" :class="badgeClass">{{ STATUS_TEXT[item.status] ?? item.status }}</span>
+          <span v-if="item.autostart" class="badge badge-accent">自启</span>
         </div>
-        <span class="badge" :class="badgeClass">{{ STATUS_TEXT[item.status] ?? item.status }}</span>
-      </div>
-    </div>
-
-    <div class="note-body col gap-3">
-      <!-- 连接信息：本地端口 + 公网端口，一眼能看到 -->
-      <div class="conn-row">
-        <div class="conn-item">
-          <span class="text-3 small">本地</span>
-          <span class="mono conn-value">{{ item.port }}</span>
+        <p class="world-sub">{{ item.note || '还没有填写备注，可以在「配置」里补充这个世界的说明。' }}</p>
+        <div class="world-tags">
+          <span class="world-tag">{{ loaderLabel }}</span>
+          <span class="world-tag">Minecraft {{ item.mc }}</span>
+          <span v-if="item.javaMajor" class="world-tag">Java {{ item.javaMajor }}</span>
+          <span v-if="createdLabel" class="world-tag">创建于 {{ createdLabel }}</span>
         </div>
-        <div class="conn-item">
-          <span class="text-3 small">公网</span>
-          <span class="mono conn-value">{{ item.frpPort ?? '未映射' }}</span>
-        </div>
-        <div class="conn-item">
-          <span class="text-3 small">在线</span>
-          <span class="mono conn-value">{{ item.players }}/{{ item.maxPlayers }}</span>
-        </div>
-        <div class="conn-item">
-          <span class="text-3 small">MOD</span>
-          <span class="mono conn-value">{{ item.modCount }}</span>
-        </div>
+        <p v-if="phaseText" class="world-phase text-3 small">{{ phaseText }}</p>
       </div>
 
-      <div class="note-stats">
-        <div class="stat">
-          <span class="stat-label">CPU</span>
-          <span class="stat-value">{{ item.status === 'stopped' ? '—' : item.cpu.toFixed(0) + '%' }}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">内存</span>
-          <span class="stat-value">{{ item.status === 'stopped' ? `Xmx ${item.memoryMb}M` : fmtBytes(item.rss) }}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">运行时长</span>
-          <span class="stat-value">{{ item.status === 'stopped' ? '—' : fmtDuration(item.uptime) }}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">占用</span>
-          <span class="stat-value">{{ fmtBytes(item.diskUsage) }}</span>
-        </div>
-      </div>
-
-      <div class="note-message text-3 small" :class="{ 'note-message-error': item.lastError }" :title="item.lastError || item.phase || ''">
-        <template v-if="item.lastError">上次崩溃 · {{ item.lastError }}</template>
-        <template v-else-if="item.phase && item.status !== 'stopped'">{{ item.phase }}</template>
-        <span v-else aria-hidden="true">&nbsp;</span>
-      </div>
-
-      <!-- 操作区：等宽网格，永远对齐 -->
-      <div class="btn-grid">
-        <button class="btn btn-sm" @click="emit('ports')">显示端口</button>
-        <button
-          v-if="!running"
-          class="btn btn-sm btn-primary"
-          :disabled="busy"
-          @click="emit('start')"
-        >
+      <div class="world-hero-actions">
+        <button class="btn" @click="emit('config')">
+          <Icon name="settings" :size="15" /> 配置
+        </button>
+        <button v-if="!running" class="btn btn-primary" :disabled="busy" @click="emit('start')">
+          <span v-if="busy" class="spinner spinner-on-accent" />
+          <Icon v-else name="play" :size="15" />
           启动
         </button>
-        <button v-else class="btn btn-sm btn-danger" :disabled="busy" @click="emit('stop')">停止</button>
-        <button class="btn btn-sm" @click="emit('config')">配置</button>
-        <button class="btn btn-sm" @click="emit('console')">控制台</button>
-        <button class="btn btn-sm" @click="emit('backups')">备份与回退</button>
-        <button class="btn btn-sm" @click="emit('mods')">MOD 管理</button>
-        <button class="btn btn-sm" @click="emit('players')">玩家管理</button>
-        <button class="btn btn-sm" @click="emit('copy')">复制为新世界</button>
-      </div>
-      <div class="world-file-actions">
-        <button
-          class="btn btn-sm btn-soft"
-          :disabled="!archiveAvailable || busy || downloading"
-          :title="archiveAvailable ? '下载 instances 中这个世界的完整目录 ZIP' : '请先完全停止世界，再下载完整目录'"
-          @click="emit('download')"
-        >
-          <span v-if="downloading" class="spinner" />
-          {{ downloading ? '正在打包…' : '下载世界' }}
+        <button v-else class="btn btn-danger" :disabled="busy" @click="emit('stop')">
+          <span v-if="busy" class="spinner" />
+          <Icon v-else name="stop" :size="15" />
+          停止
         </button>
-        <button class="btn btn-sm btn-danger" :disabled="busy || downloading" @click="emit('remove')">删除世界</button>
       </div>
     </div>
-  </div>
+
+    <div v-if="item.lastError" class="note-message-error">
+      <Icon name="info" :size="14" />
+      <span>上次崩溃 · {{ item.lastError }}</span>
+    </div>
+  </section>
 </template>
 
 <style scoped>
-.conn-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  padding: 9px 11px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
+.world-hero {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px 22px;
 }
-.conn-item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.conn-value { font-size: 13.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; }
-.note-card { display: flex; flex-direction: column; min-height: 400px; }
-.note-head { min-height: 80px; }
-.note-meta { min-width: 0; flex-wrap: nowrap; }
-.note-meta > .ellipsis { flex: 1; min-width: 0; }
-.note-body { flex: 1; }
-.note-message { min-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.note-message-error { color: var(--danger); }
-.btn-grid { margin-top: auto; }
-.world-file-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-@media (max-width: 560px) {
-  .note-card { min-height: 0; }
-  .note-head { min-height: 0; }
+.world-hero-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.world-hero-copy { min-width: 0; }
+.world-title-row { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.world-title { margin: 0; font-size: clamp(22px, 2.2vw, 28px); font-weight: 650; letter-spacing: -0.03em; }
+.world-sub { margin: 7px 0 0; color: var(--text-2); font-size: 13px; }
+.world-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.world-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 23px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+.world-phase { margin: 8px 0 0; }
+.world-hero-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.note-message-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.note-message-error svg { flex: none; margin-top: 1px; }
+@media (max-width: 720px) {
+  .world-hero { padding: 16px; }
+  .world-hero-top { flex-direction: column; gap: 14px; }
+  .world-hero-actions { width: 100%; }
+  .world-hero-actions .btn { flex: 1; }
 }
 </style>

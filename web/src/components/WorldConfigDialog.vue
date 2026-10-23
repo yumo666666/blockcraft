@@ -156,7 +156,7 @@ async function reinstall() {
   busy.value = true;
   try {
     const result = await api.post<{ jobId: string }>(`/api/instances/${props.instanceId}/reinstall`);
-    toast('ok', '已开始重新安装服务端', '可以在总览页的任务里看进度');
+    toast('ok', '已开始重新安装服务端', '可以在顶部的任务入口看进度');
     emit('job', result.jobId);
     emit('close');
   } catch (err) {

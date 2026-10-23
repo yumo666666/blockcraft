@@ -802,9 +802,6 @@ a.nav-item:hover { text-decoration: none; }
 .btn-lg { height: 40px; padding: 0 18px; font-size: 14.5px; border-radius: 11px; }
 .btn-block { width: 100%; }
 
-.back-link { flex: none; color: var(--text-3); padding-inline: 8px; }
-.back-link:hover { color: var(--text); }
-
 /* 世界卡片上那排操作按钮：等宽网格，永远对齐 */
 .btn-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
 .btn-grid .btn { width: 100%; padding: 0 6px; font-size: 12.5px; }

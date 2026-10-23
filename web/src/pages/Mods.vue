@@ -7,7 +7,6 @@ import { fmtBytes, statusClass } from '../lib/format.ts';
 import type { InstanceDetail, InstanceSummary, ModInfo } from '../lib/types.ts';
 import Modal from '../components/Modal.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import Icon from '../components/Icon.vue';
 
 defineOptions({ name: 'Mods' });
 
@@ -127,7 +126,7 @@ function searchNow() {
 
 function guardRunning(): boolean {
   if (!running.value) return true;
-  toast('warn', '请先停服再改 MOD', '服务器运行中，改文件会让正在加载的 MOD 出错；请先在总览页停止这个世界');
+  toast('warn', '请先停服再改 MOD', '服务器运行中，改文件会让正在加载的 MOD 出错；请先在世界页停止这个世界');
   return false;
 }
 
@@ -331,9 +330,6 @@ function modrinthSearch(modId: string): string {
     <!-- 头部：世界名 + 操作 -->
     <div class="row-between wrap gap-3">
       <div class="row gap-3 grow" style="min-width: 0">
-        <button class="btn btn-ghost btn-sm back-link" @click="router.push('/')">
-          <Icon name="chevron-left" :size="14" /> 返回总览
-        </button>
         <div class="grow" style="min-width: 0">
           <div class="row gap-2">
             <i class="dot" :class="statusClass(instance?.status ?? 'stopped')" />

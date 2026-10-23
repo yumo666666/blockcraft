@@ -22,6 +22,7 @@ const ICONS: Record<string, string> = {
   server: '<rect x="3.4" y="4.2" width="17.2" height="6.2" rx="2"/><rect x="3.4" y="13.6" width="17.2" height="6.2" rx="2"/><path d="M7 7.3h.01M7 16.7h.01M11 7.3h6M11 16.7h6"/>',
   cpu: '<rect x="6.4" y="6.4" width="11.2" height="11.2" rx="2.2"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M9.4 3.2v3.2M14.6 3.2v3.2M9.4 17.6v3.2M14.6 17.6v3.2M3.2 9.4h3.2M3.2 14.6h3.2M17.6 9.4h3.2M17.6 14.6h3.2"/>',
   play: '<path d="M8.4 5.5 18.6 12 8.4 18.5Z"/>',
+  stop: '<rect x="6.4" y="6.4" width="11.2" height="11.2" rx="2.4"/>',
   download: '<path d="M12 4v10.4M7.6 10.4 12 14.8l4.4-4.4M4.4 19.6h15.2"/>',
   upload: '<path d="M12 19.6V9.2M7.6 13.6 12 9.2l4.4 4.4M4.4 19.6h15.2"/>',
   image: '<rect x="3.4" y="4.4" width="17.2" height="15.2" rx="2.6"/><circle cx="8.6" cy="9.4" r="1.6"/><path d="m5.6 17.2 4.4-4.6 3.2 3.2 2.4-2.4 3.2 3.8"/>',
