@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { JDK_DIR } from '../core/paths.ts';
 import { createLogger } from '../core/logger.ts';
+import { loadConfig } from '../config.ts';
 import { compareVersion, versionTuple } from '../launcher/index.ts';
 import type { Loader } from '../types.ts';
 
@@ -176,27 +177,147 @@ export function javaByMajor(major: number): JavaRuntime | null {
   return all.find((j) => j.major === major) ?? resolveJava(major);
 }
 
-/** Adoptium 下载（本机没有兼容版本时由安装/启动流程按需调用） */
-export async function downloadJava(major: number, onProgress?: (message: string) => void, opts: { signal?: AbortSignal } = {}): Promise<JavaRuntime> {
-  const archMap: Record<string, string> = { arm64: 'aarch64', x64: 'x64', arm: 'arm' };
+// ------------------------------------------------------------------ Java 下载源
+//
+// 官方 Adoptium API 会重定向到 GitHub，国内经常很慢。清华 TUNA 和南京大学
+// 都镜像了 Adoptium 的发布目录，结构为：
+//   <base>/<major>/jdk/<arch>/<os>/OpenJDK<major>U-jdk_..._(zip|tar.gz)
+// 这里优先从镜像目录里挑最新的安装包；镜像目录解析失败时自动回退官方 API。
+
+interface JavaMirrorSource {
+  base: string;
+  label: string;
+}
+
+interface JavaDownloadSource {
+  url: string;
+  label: string;
+}
+
+const ADOPTIUM_PRESETS: Record<'tuna' | 'nju', JavaMirrorSource> = {
+  tuna: { base: 'https://mirrors.tuna.tsinghua.edu.cn/Adoptium', label: '清华 TUNA 镜像' },
+  nju: { base: 'https://mirrors.nju.edu.cn/adoptium', label: '南京大学镜像' },
+};
+
+/** 把设置里的 Java 下载源解析成镜像根地址；custom 为空/非法时返回 null（走官方）。 */
+export function javaMirrorSource(
+  mirrors: { javaSource?: string; javaMirror?: string } | null | undefined,
+): JavaMirrorSource | null {
+  if (!mirrors) return null;
+  if (mirrors.javaSource === 'tuna' || mirrors.javaSource === 'nju') return ADOPTIUM_PRESETS[mirrors.javaSource];
+  if (mirrors.javaSource !== 'custom') return null;
+  const raw = String(mirrors.javaMirror ?? '').trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return { base: `${url.origin}${url.pathname}`.replace(/\/+$/, ''), label: '自定义镜像' };
+  } catch {
+    return null;
+  }
+}
+
+function javaPlatformPath(): { arch: string; os: string; ext: string } {
+  const archMap: Record<string, string> = { arm64: 'aarch64', x64: 'x64', arm: 'arm', ia32: 'x32' };
   const osMap: Record<string, string> = { linux: 'linux', darwin: 'mac', win32: 'windows' };
-  const arch = archMap[process.arch] ?? 'x64';
-  const osName = osMap[process.platform] ?? 'linux';
-  const url = `https://api.adoptium.net/v3/binary/latest/${major}/ga/${osName}/${arch}/jdk/hotspot/normal/eclipse`;
+  return {
+    arch: archMap[process.arch] ?? 'x64',
+    os: osMap[process.platform] ?? 'linux',
+    ext: process.platform === 'win32' ? '.zip' : '.tar.gz',
+  };
+}
+
+function officialJavaUrl(major: number): string {
+  const { arch, os } = javaPlatformPath();
+  return `https://api.adoptium.net/v3/binary/latest/${major}/ga/${os}/${arch}/jdk/hotspot/normal/eclipse`;
+}
+
+/**
+ * 从 Adoptium 镜像目录 HTML 里选最新安装包。
+ * 按文件名做数字排序，避免 17.0.9 被排到 17.0.10 后面。
+ */
+export function pickJavaArchive(html: string, major: number, ext: string): string | null {
+  const prefix = `OpenJDK${major}U-jdk_`;
+  const names: string[] = [];
+  for (const match of html.matchAll(/href="([^"]+)"/g)) {
+    const pathname = match[1].replaceAll('&amp;', '&').split(/[?#]/)[0];
+    let name = pathname.split('/').pop() ?? '';
+    try {
+      name = decodeURIComponent(name);
+    } catch {
+      /* keep the raw name */
+    }
+    if (name.startsWith(prefix) && name.endsWith(ext)) names.push(name);
+  }
+  names.sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+  return names.at(-1) ?? null;
+}
+
+export async function resolveJavaMirrorUrl(base: string, major: number, signal?: AbortSignal): Promise<string | null> {
+  const { arch, os, ext } = javaPlatformPath();
+  const dir = `${base.replace(/\/+$/, '')}/${major}/jdk/${arch}/${os}/`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('镜像目录请求超时')), 20_000);
+  const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  try {
+    const res = await fetch(dir, {
+      redirect: 'follow',
+      signal: combined,
+      headers: { 'user-agent': 'BlockCraft/2.0' },
+    });
+    if (!res.ok) throw new Error(`镜像目录 HTTP ${res.status}`);
+    const html = await res.text();
+    const file = pickJavaArchive(html, major, ext);
+    return file ? new URL(file, dir).toString() : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function resolveJavaDownloadSource(
+  major: number,
+  onProgress?: (message: string) => void,
+  signal?: AbortSignal,
+  officialOnly = false,
+): Promise<JavaDownloadSource> {
+  const mirror = officialOnly ? null : javaMirrorSource(loadConfig().mirrors);
+  if (mirror) {
+    try {
+      onProgress?.(`正在从${mirror.label}查找 Java ${major}…`);
+      const url = await resolveJavaMirrorUrl(mirror.base, major, signal);
+      if (url) return { url, label: mirror.label };
+      onProgress?.(`${mirror.label}没有找到 Java ${major}，回退 Adoptium 官方源`);
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
+      logger.warn('Java 镜像解析失败，回退官方源', { mirror: mirror.base, error: String(err) });
+      onProgress?.(`${mirror.label}不可用，回退 Adoptium 官方源`);
+    }
+  }
+  return { url: officialJavaUrl(major), label: 'Adoptium 官方' };
+}
+
+/** Adoptium 下载（本机没有兼容版本时由安装/启动流程按需调用） */
+export async function downloadJava(
+  major: number,
+  onProgress?: (message: string) => void,
+  opts: { signal?: AbortSignal; officialOnly?: boolean } = {},
+): Promise<JavaRuntime> {
+  const source = await resolveJavaDownloadSource(major, onProgress, opts.signal, opts.officialOnly);
+  const url = source.url;
   fs.mkdirSync(JDK_DIR, { recursive: true });
   const windows = process.platform === 'win32';
   const target = path.join(JDK_DIR, `temurin-${major}.${windows ? 'zip' : 'tar.gz'}`);
   const partial = `${target}.part`;
   const maxAttempts = 4;
   const retryDelaysMs = [1000, 2500, 5000];
-  logger.info(`下载 JDK ${major}`, { url });
+  logger.info(`下载 JDK ${major}`, { url, source: source.label });
   try {
     let downloaded = false;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       opts.signal?.throwIfAborted();
       const resumeAt = fs.existsSync(partial) ? fs.statSync(partial).size : 0;
       try {
-        onProgress?.(`正在下载 Temurin Java ${major}（第 ${attempt}/${maxAttempts} 次）…`);
+        onProgress?.(`正在下载 ${source.label} Java ${major}（第 ${attempt}/${maxAttempts} 次）…`);
         const headers = resumeAt > 0 ? { range: `bytes=${resumeAt}-` } : undefined;
         const res = await fetch(url, { redirect: 'follow', headers, signal: opts.signal });
         if (!res.ok || !res.body) {
@@ -235,7 +356,7 @@ export async function downloadJava(major: number, onProgress?: (message: string)
               const percent = Math.min(100, Math.floor((received / expectedTotal) * 100));
               if (percent >= lastPercent + 10 || percent === 100) {
                 lastPercent = percent;
-                onProgress?.(`正在下载 Temurin Java ${major}：${percent}%`);
+                onProgress?.(`正在下载 ${source.label} Java ${major}：${percent}%`);
               }
             }
             callback(null, chunk);
@@ -270,7 +391,7 @@ export async function downloadJava(major: number, onProgress?: (message: string)
     opts.signal?.throwIfAborted();
     fs.renameSync(partial, target);
 
-    onProgress?.(`Java ${major} 下载完成，正在解压…`);
+    onProgress?.(`${source.label} Java ${major} 下载完成，正在解压…`);
     if (windows) {
       const quote = (value: string) => value.replaceAll("'", "''");
       execFileSync(
@@ -284,8 +405,13 @@ export async function downloadJava(major: number, onProgress?: (message: string)
 
     const extracted = fs
       .readdirSync(JDK_DIR, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith('jdk-'))
-      .map((entry) => inspectJava(path.join(JDK_DIR, entry.name, 'bin', javaFileName())))
+      .filter((entry) => entry.isDirectory())
+      .flatMap((entry) => [
+        path.join(JDK_DIR, entry.name, 'bin', javaFileName()),
+        // macOS 的 Adoptium 包把 bin 放在 Contents/Home 下。
+        path.join(JDK_DIR, entry.name, 'Contents', 'Home', 'bin', javaFileName()),
+      ])
+      .map((bin) => inspectJava(bin))
       .find((runtime) => runtime?.major === major);
     if (!extracted) throw new Error(`Java ${major} 解压后未找到可运行的对应版本`);
     fs.unlinkSync(target);
@@ -300,6 +426,10 @@ export async function downloadJava(major: number, onProgress?: (message: string)
       fs.rmSync(target, { force: true });
     } catch {
       /* ignore cleanup errors */
+    }
+    if (!opts.officialOnly && source.label !== 'Adoptium 官方' && !opts.signal?.aborted) {
+      onProgress?.(`${source.label}下载失败，改用 Adoptium 官方源重试…`);
+      return downloadJava(major, onProgress, { signal: opts.signal, officialOnly: true });
     }
     throw err;
   }

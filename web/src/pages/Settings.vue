@@ -38,6 +38,9 @@ const form = ref({
   mineskinApiKeyConfigured: false,
   clearMineSkinApiKey: false,
   githubMirror: 'https://gh-proxy.com/',
+  javaSource: 'official',
+  javaMirror: '',
+  minecraftSource: 'official',
   exposePanel: false,
   panelRemotePort: 26006,
   configRollback: true,
@@ -68,7 +71,14 @@ async function load() {
     limits: { maxRunningInstances: number; memoryBudgetMb: number | 'auto' };
     panel: { sessionHours: number };
     ui: { trashRetentionDays: number };
-    mirrors: { curseforgeApiKey: string; curseforgeApi: string; githubMirror: string };
+    mirrors: {
+      curseforgeApiKey: string;
+      curseforgeApi: string;
+      githubMirror: string;
+      javaSource?: string;
+      javaMirror?: string;
+      minecraftSource?: string;
+    };
     skins: { mineskinApiKey: string };
     frp: { exposePanel: boolean; panelRemotePort: number; configRollback: boolean };
     portRanges: { game: [number, number]; frpRemote: [number, number] };
@@ -84,6 +94,9 @@ async function load() {
     form.value.mineskinApiKey = '';
     form.value.clearMineSkinApiKey = false;
     form.value.githubMirror = cfg.mirrors.githubMirror;
+    form.value.javaSource = cfg.mirrors.javaSource ?? 'official';
+    form.value.javaMirror = cfg.mirrors.javaMirror ?? '';
+    form.value.minecraftSource = cfg.mirrors.minecraftSource ?? 'official';
     form.value.exposePanel = cfg.frp.exposePanel;
     form.value.panelRemotePort = cfg.frp.panelRemotePort;
     form.value.configRollback = cfg.frp.configRollback;
@@ -146,6 +159,9 @@ async function saveAll() {
       mirrors: {
         curseforgeApi: form.value.curseforgeApiUrl,
         githubMirror: form.value.githubMirror,
+        javaSource: form.value.javaSource,
+        javaMirror: form.value.javaMirror.trim(),
+        minecraftSource: form.value.minecraftSource,
         ...(form.value.curseforgeApiKey ? { curseforgeApiKey: form.value.curseforgeApiKey } : {}),
       },
       skins: form.value.mineskinApiKey
@@ -341,6 +357,35 @@ async function killWorld(id: string) {
         <div class="card settings-source">
           <div class="card-head"><h3>数据源</h3></div>
           <div class="card-body col gap-3">
+            <div class="field">
+              <label class="field-label">Java 下载源</label>
+              <select v-model="form.javaSource" class="select">
+                <option value="official">Adoptium 官方源（直连）</option>
+                <option value="tuna">清华 TUNA 镜像</option>
+                <option value="nju">南京大学镜像</option>
+                <option value="custom">自定义 Adoptium 镜像</option>
+              </select>
+              <span class="field-hint">
+                只影响面板自动下载 Java 运行时；已经安装的 Java 不会被替换。国内建议选清华 TUNA 或南京大学。
+              </span>
+            </div>
+            <div v-if="form.javaSource === 'custom'" class="field">
+              <label class="field-label">自定义 Java 镜像根地址</label>
+              <input v-model="form.javaMirror" class="input mono" placeholder="https://mirror.example.com/Adoptium/" />
+              <span class="field-hint">
+                需要与 Adoptium 镜像相同的目录结构：&lt;根地址&gt;/&lt;版本&gt;/jdk/&lt;架构&gt;/&lt;系统&gt;/。留空或不可用时自动回退官方源。
+              </span>
+            </div>
+            <div class="field">
+              <label class="field-label">Minecraft 下载源</label>
+              <select v-model="form.minecraftSource" class="select">
+                <option value="official">Mojang 官方源</option>
+                <option value="bmclapi">BMCLAPI 国内镜像</option>
+              </select>
+              <span class="field-hint">
+                影响版本清单和原版服务端下载；Forge / NeoForge 使用各自的 Maven 源，已经默认带 BMCLAPI 回退。
+              </span>
+            </div>
             <div class="field">
               <label class="field-label">CurseForge API Key（导入 CurseForge 整合包时必填）</label>
               <input v-model="form.curseforgeApiKey" class="input mono" type="password" placeholder="填写后保存，才能导入 CurseForge 整合包" />

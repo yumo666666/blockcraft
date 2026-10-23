@@ -210,6 +210,12 @@ export interface PanelConfig {
     curseforgeMirrorEnabled: boolean;
     forgeMaven: string[];
     githubMirror: string;
+    /** Where automatic Java runtime downloads come from. */
+    javaSource: 'official' | 'tuna' | 'nju' | 'custom';
+    /** Root of an Adoptium-compatible mirror when javaSource === 'custom'. */
+    javaMirror: string;
+    /** Where the Minecraft version manifest / vanilla server jar come from. */
+    minecraftSource: 'official' | 'bmclapi';
   };
   skins: {
     /** MineSkin API key. Optional for the public service, but improves limits/latency. */

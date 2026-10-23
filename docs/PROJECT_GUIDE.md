@@ -151,7 +151,7 @@ MOD 管理页按来源、状态和名称筛选；运行中的世界会限制可�
 
 ![事件日志](assets/screenshots/20-events-log.jpg)
 
-设置页可配置 CurseForge API Key、FRP、端口范围、并行世界数、内存预算和存储清理策略。API Key 保存在服务端数据目录，不要截图或分享包含密钥的配置文件。
+设置页可配置 Java 下载源（Adoptium 官方 / [清华 TUNA](https://mirrors.tuna.tsinghua.edu.cn/Adoptium/) / [南京大学](https://mirrors.nju.edu.cn/adoptium/) / 自定义 Adoptium 镜像）、Minecraft 下载源（Mojang 官方 / [BMCLAPI](https://bmclapi2.bangbang93.com/)）、CurseForge API Key、GitHub 加速前缀、FRP、端口范围、并行世界数、内存预算和存储清理策略。Java 与 Minecraft 的下载源只影响之后的新下载，已经安装的 Java 和已缓存的服务端不会重复下载；镜像不可用时会自动回退官方源。API Key 保存在服务端数据目录，不要截图或分享包含密钥的配置文件。
 
 ![面板设置](assets/screenshots/21-panel-settings.jpg)
 

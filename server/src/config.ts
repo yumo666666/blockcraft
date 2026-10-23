@@ -73,6 +73,9 @@ export function defaultConfig(): PanelConfig {
       curseforgeMirrorEnabled: false,
       forgeMaven: ['https://maven.minecraftforge.net', 'https://bmclapi2.bangbang93.com/maven'],
       githubMirror: 'https://gh-proxy.com/',
+      javaSource: 'official',
+      javaMirror: '',
+      minecraftSource: 'official',
     },
     skins: {
       mineskinApiKey: process.env.BC_MINESKIN_API_KEY || '',

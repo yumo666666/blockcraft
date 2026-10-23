@@ -18,6 +18,31 @@ import type { InstanceConfig, Loader } from '../types.ts';
 
 const logger = createLogger('install');
 const MANIFEST_TTL = 6 * 3600 * 1000;
+const MOJANG_MANIFEST = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json';
+const BMCLAPI_BASE = 'https://bmclapi2.bangbang93.com';
+
+type MinecraftSource = 'official' | 'bmclapi';
+
+function minecraftSource(): MinecraftSource {
+  return loadConfig().mirrors.minecraftSource === 'bmclapi' ? 'bmclapi' : 'official';
+}
+
+/** 版本清单地址；BMCLAPI 镜像国内访问更稳定。 */
+export function minecraftManifestUrl(source: MinecraftSource = minecraftSource()): string {
+  return source === 'bmclapi' ? `${BMCLAPI_BASE}/mc/game/version_manifest_v2.json` : MOJANG_MANIFEST;
+}
+
+/**
+ * 原版服务端候选地址：BMCLAPI 优先，失败后回退到 JSON 里的官方地址。
+ * 服务端 jar 的 SHA-1 在两种源下相同，因此缓存仍然通用。
+ */
+export function minecraftServerUrls(source: MinecraftSource, mc: string, officialUrl: string): string[] {
+  if (source === 'bmclapi') {
+    const mirror = `${BMCLAPI_BASE}/version/${encodeURIComponent(mc)}/server`;
+    return officialUrl && officialUrl !== mirror ? [mirror, officialUrl] : [mirror];
+  }
+  return officialUrl ? [officialUrl] : [];
+}
 
 async function fetchJson<T>(url: string, init: RequestInit = {}, timeoutMs = 20000): Promise<T> {
   const ctrl = new AbortController();
@@ -98,10 +123,24 @@ interface VersionManifest {
 }
 
 export async function versionManifest(force = false, signal?: AbortSignal): Promise<VersionManifest> {
-  const file = path.join(STORE_DIR, 'versions', 'manifest.json');
+  const source = minecraftSource();
+  const file = path.join(STORE_DIR, 'versions', `manifest-${source}.json`);
   const cached = readJsonSync<(VersionManifest & { fetchedAt?: number }) | null>(file, null);
   if (!force && cached && cached.fetchedAt && Date.now() - cached.fetchedAt < MANIFEST_TTL) return cached;
-  const data = await fetchJson<VersionManifest>('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json', { signal });
+  const urls = source === 'bmclapi' ? [minecraftManifestUrl('bmclapi'), MOJANG_MANIFEST] : [MOJANG_MANIFEST];
+  let data: VersionManifest | null = null;
+  let lastError: unknown = null;
+  for (const url of urls) {
+    try {
+      data = await fetchJson<VersionManifest>(url, { signal });
+      break;
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
+      lastError = err;
+      logger.warn('版本清单下载失败，尝试下一个源', { url, error: String(err) });
+    }
+  }
+  if (!data) throw lastError instanceof Error ? lastError : new Error('无法获取 Minecraft 版本清单');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   atomicWriteFileSync(file, JSON.stringify({ ...data, fetchedAt: Date.now() }, null, 2));
   return data;
@@ -112,17 +151,38 @@ export async function listVersions(): Promise<{ id: string; type: string }[]> {
   return m.versions.map((v) => ({ id: v.id, type: v.type }));
 }
 
-async function vanillaServerUrl(mc: string, signal?: AbortSignal): Promise<{ url: string; sha1?: string; javaMajor: number }> {
+interface VanillaServerSource {
+  urls: string[];
+  sha1?: string;
+  javaMajor: number;
+}
+
+async function vanillaServerUrl(mc: string, signal?: AbortSignal): Promise<VanillaServerSource> {
+  const source = minecraftSource();
   const m = await versionManifest(false, signal);
   const v = m.versions.find((x) => x.id === mc);
   if (!v) throw bad(`找不到 Minecraft 版本 ${mc}`);
-  const detail = await fetchJson<{ downloads: { server?: { url: string; sha1?: string } }; javaVersion?: { majorVersion: number } }>(v.url, { signal });
+
+  const detailUrl = source === 'bmclapi' ? `${BMCLAPI_BASE}/version/${encodeURIComponent(mc)}/json` : v.url;
+  let detail: { downloads: { server?: { url: string; sha1?: string } }; javaVersion?: { majorVersion: number } };
+  try {
+    detail = await fetchJson(detailUrl, { signal });
+  } catch (err) {
+    if (source !== 'bmclapi') throw err;
+    if (signal?.aborted) throw signal.reason ?? err;
+    logger.warn('BMCLAPI 版本详情获取失败，回退 Mojang 版本详情', { mc, error: String(err) });
+    detail = await fetchJson(v.url, { signal });
+  }
   if (!detail.downloads.server) throw bad(`Minecraft ${mc} 没有服务端下载`);
-  return { url: detail.downloads.server.url, sha1: detail.downloads.server.sha1, javaMajor: detail.javaVersion?.majorVersion ?? 17 };
+  return {
+    urls: minecraftServerUrls(source, mc, detail.downloads.server.url),
+    sha1: detail.downloads.server.sha1,
+    javaMajor: detail.javaVersion?.majorVersion ?? 17,
+  };
 }
 
 async function ensureVanillaServerJar(mc: string, onLog: (s: string) => void, signal?: AbortSignal): Promise<string> {
-  const { url, sha1 } = await vanillaServerUrl(mc, signal);
+  const { urls, sha1 } = await vanillaServerUrl(mc, signal);
   const cache = path.join(STORE_DIR, 'vanilla', mc, 'minecraft_server.jar');
   if (fs.existsSync(cache)) {
     let cacheValid = !sha1;
@@ -140,7 +200,20 @@ async function ensureVanillaServerJar(mc: string, onLog: (s: string) => void, si
     onLog(`缓存的 Minecraft ${mc} 服务端校验失败，删除后重新下载`);
     fs.rmSync(cache, { force: true });
   }
-  await downloadTo(url, cache, onLog, { retries: 4, timeoutMs: 180_000, sha1, signal });
+  let lastError: unknown = null;
+  for (const [index, url] of urls.entries()) {
+    signal?.throwIfAborted();
+    try {
+      await downloadTo(url, cache, onLog, { retries: index === 0 ? 4 : 2, timeoutMs: 180_000, sha1, signal });
+      lastError = null;
+      break;
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
+      lastError = err;
+      onLog(`该下载源失败，换下一个：${url}`);
+    }
+  }
+  if (lastError) throw lastError;
   return cache;
 }
 

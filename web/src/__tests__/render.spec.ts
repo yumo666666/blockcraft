@@ -205,7 +205,7 @@ describeIfPanel('设置页', () => {
   it('渲染限额、Java、FRP、端口段与存储', async () => {
     const w = await mountAt('/settings');
     const text = await waitFor(w, (t) => !t.includes('读取中…'));
-    for (const label of ['资源限额', 'Java', 'FRP', '端口段', '存储']) {
+    for (const label of ['资源限额', 'Java', 'FRP', '端口段', '存储', 'Java 下载源', 'Minecraft 下载源']) {
       expect(text, `缺少分区：${label}`).toContain(label);
     }
     expect(text).toMatch(new RegExp(`Java ${javaMajor}|未检测到 Java`));

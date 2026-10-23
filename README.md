@@ -34,6 +34,7 @@
 
 - **多世界管理**：分别启动、停止和重启多个 Minecraft 服务端。
 - **实时性能**：世界页每秒绘制 CPU、进程内存和在线人数曲线，保留最近两分钟采样。
+- **国内下载源**：设置里可切换 Java（[清华 TUNA](https://mirrors.tuna.tsinghua.edu.cn/Adoptium/) / [南京大学](https://mirrors.nju.edu.cn/adoptium/) Adoptium 镜像）和 Minecraft（[BMCLAPI](https://bmclapi2.bangbang93.com/)）下载源；镜像不可用时会回退官方。
 - **创建和导入整合包**：支持原版、Paper、Forge、NeoForge、Fabric；解析 CurseForge 与 Modrinth 整合包清单并下载服务端文件。
 - **游戏设置**：管理种子、模式、难度、PVP、允许飞行、白名单、视距、内存和游戏规则。
 - **控制台和快捷命令**：查看实时日志、发送命令、使用玩家及世界管理快捷操作。
