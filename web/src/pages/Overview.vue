@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
-import { api, subscribe } from '../lib/api.ts';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
+import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
-import type { FrpStatus, InstanceSummary, SystemSnapshot } from '../lib/types.ts';
+import type { FrpStatus, InstanceSummary } from '../lib/types.ts';
 import MonitorBar from '../components/MonitorBar.vue';
 import FrpCard from '../components/FrpCard.vue';
 import WorldNote from '../components/WorldNote.vue';
@@ -14,24 +14,32 @@ import ConfirmDialog from '../components/ConfirmDialog.vue';
 import JobProgress from '../components/JobProgress.vue';
 import Icon from '../components/Icon.vue';
 import { setBackgroundJob } from '../lib/backgroundJob.ts';
-import { STATUS_TEXT, statusClass } from '../lib/format.ts';
+import { useWorlds } from '../lib/worlds.ts';
 
 defineOptions({ name: 'Overview' });
 
+const route = useRoute();
 const router = useRouter();
-const snap = ref<SystemSnapshot | null>(null);
-const instances = ref<InstanceSummary[]>([]);
+const {
+  snapshot,
+  instances,
+  worldsReady,
+  acquireWorlds,
+  releaseWorlds,
+  refreshWorlds,
+  setWorldStatus,
+} = useWorlds();
 const frp = ref<FrpStatus | null>(null);
 const version = ref('');
 
-const hostLabel = computed(() => snap.value?.hostname || 'Minecraft');
+const hostLabel = computed(() => snapshot.value?.hostname || 'Minecraft');
 const runningCount = computed(
   () => instances.value.filter((i) => ['running', 'starting', 'stopping', 'stuck'].includes(i.status)).length,
 );
 const totalPlayers = computed(() => instances.value.reduce((sum, i) => sum + (i.players || 0), 0));
 const totalMaxPlayers = computed(() => instances.value.reduce((sum, i) => sum + (i.maxPlayers || 0), 0));
 const heroStatus = computed(() => {
-  if (!snap.value) return { tone: 'loading', label: '正在读取面板状态…' };
+  if (!snapshot.value) return { tone: 'loading', label: '正在读取面板状态…' };
   if (runningCount.value) return { tone: 'ready', label: `${runningCount.value} 个世界正在运行` };
   return { tone: 'ready', label: '面板运行正常 · 所有世界已停止' };
 });
@@ -41,35 +49,50 @@ const quickActions = [
   { label: '面板设置', desc: '端口、资源与外观', to: '/settings', icon: 'settings' },
 ];
 
-const ACTIVE_WORLD_KEY = 'blockcraft.overview.activeWorld';
-function readActiveWorld(): string | null {
-  try {
-    return sessionStorage.getItem(ACTIVE_WORLD_KEY);
-  } catch {
-    return null;
-  }
-}
-const activeId = ref<string | null>(readActiveWorld());
-const busyId = ref<string | null>(null);
-
-watch(activeId, (id) => {
-  try {
-    if (id) sessionStorage.setItem(ACTIVE_WORLD_KEY, id);
-    else sessionStorage.removeItem(ACTIVE_WORLD_KEY);
-  } catch {
-    /* session storage may be disabled; the in-memory selection still works */
-  }
+/** 当前世界由 URL 的 ?world= 决定：刷新、分享、从侧边栏切换都能回到同一个世界。 */
+const queryWorldId = computed(() => (typeof route.query.world === 'string' ? route.query.world : null));
+const activeId = computed(() => {
+  const list = instances.value;
+  const fromQuery = queryWorldId.value;
+  if (fromQuery && list.some((item) => item.id === fromQuery)) return fromQuery;
+  return list[0]?.id ?? null;
 });
+const active = computed(() => instances.value.find((item) => item.id === activeId.value) ?? null);
 
-/** 选中的世界标签滚进视野（只横向滚动标签条，不能把整页带着往下跳） */
-const tabsEl = ref<HTMLElement | null>(null);
-watch(activeId, async () => {
+/** 世界列表就绪后把选择落进 URL；世界被删掉或首次进入时自动选第一个。 */
+watch(
+  () => [instances.value, worldsReady.value, queryWorldId.value] as const,
+  ([list, ready, queryWorld]) => {
+    if (!ready || route.name !== 'overview') return;
+    const ids = new Set(list.map((item) => item.id));
+    if (list.length && (!queryWorld || !ids.has(queryWorld))) {
+      void router.replace({ query: { ...route.query, world: list[0].id } });
+      return;
+    }
+    if (!list.length && queryWorld) {
+      const next = { ...route.query };
+      delete next.world;
+      void router.replace({ query: next });
+    }
+  },
+  { immediate: true },
+);
+
+/** 从侧边栏切换世界时，把下方世界详情滚进视野；首次进入页面不跳。 */
+const worldSection = ref<HTMLElement | null>(null);
+let knownActiveId = activeId.value;
+watch(activeId, async (id) => {
+  const hadSelection = Boolean(knownActiveId);
+  const changed = id !== knownActiveId;
+  knownActiveId = id;
+  if (!changed || !hadSelection || !id || route.name !== 'overview') return;
   await nextTick();
-  const strip = tabsEl.value;
-  const el = strip?.querySelector<HTMLElement>('.tab.active');
-  if (!strip || !el) return;
-  const left = el.offsetLeft - strip.clientWidth / 2 + el.clientWidth / 2;
-  strip.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+  const el = worldSection.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  if (rect.top < 0 || rect.top > window.innerHeight * 0.6) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 });
 
 const showConfig = ref(false);
@@ -82,37 +105,9 @@ const deleteTarget = ref<InstanceSummary | null>(null);
 const worldImportInput = ref<HTMLInputElement | null>(null);
 const importingWorld = ref(false);
 const downloadingWorldId = ref<string | null>(null);
+const busyId = ref<string | null>(null);
 
-const active = computed(() => instances.value.find((i) => i.id === activeId.value) ?? instances.value[0] ?? null);
-
-let offSystem: (() => void) | null = null;
 let frpTimer: number | null = null;
-let instanceRevision = 0;
-let instanceLoadRequest = 0;
-const pendingStatuses = new Map<string, { status: string; phase: string; at: number }>();
-
-function applyInstances(next: InstanceSummary[], sampledAt = Date.now()) {
-  instanceRevision += 1;
-  const fresh = next.map((item) => {
-    const pending = pendingStatuses.get(item.id);
-    if (!pending) return item;
-    // A snapshot that started before the button press may finish after it. Keep
-    // the accepted local state until the next fresh server snapshot arrives.
-    if (sampledAt <= pending.at) return { ...item, status: pending.status, phase: pending.phase };
-    pendingStatuses.delete(item.id);
-    return item;
-  });
-  instances.value = fresh;
-  if (!activeId.value && fresh.length) activeId.value = fresh[0].id;
-  if (activeId.value && !fresh.some((item) => item.id === activeId.value)) activeId.value = fresh[0]?.id ?? null;
-}
-
-function setInstanceStatus(id: string, status: string, phase: string) {
-  const at = Date.now();
-  pendingStatuses.set(id, { status, phase, at });
-  instanceRevision += 1;
-  instances.value = instances.value.map((item) => item.id === id ? { ...item, status, phase } : item);
-}
 
 async function loadFrp() {
   try {
@@ -122,40 +117,8 @@ async function loadFrp() {
   }
 }
 
-async function loadInstances() {
-  const requestId = ++instanceLoadRequest;
-  const revisionAtRequest = instanceRevision;
-  try {
-    const r = await api.get<{ instances: InstanceSummary[] }>('/api/instances');
-    // SSE 或更新的列表请求已经返回时，丢弃这份较旧的 GET 结果。
-    if (requestId !== instanceLoadRequest || revisionAtRequest !== instanceRevision) return;
-    applyInstances(r.instances);
-  } catch (err) {
-    if (requestId !== instanceLoadRequest || revisionAtRequest !== instanceRevision) return;
-    toastError(err, '读取世界列表失败');
-  }
-}
-
 onMounted(() => {
-  offSystem = subscribe<{ sampledAt: number; snap: SystemSnapshot; instances: InstanceSummary[] }>(
-    '/api/system/stream',
-    (data) => {
-      snap.value = data.snap;
-      applyInstances(data.instances, data.sampledAt);
-    },
-    {
-      onError: () => {
-        // SSE 断了就退回轮询，保证界面不会停在旧数据上
-        api
-          .get<SystemSnapshot & { sampledAt: number; instances: InstanceSummary[] }>('/api/system')
-          .then((d) => {
-            snap.value = d;
-            applyInstances(d.instances, d.sampledAt);
-          })
-          .catch(() => undefined);
-      },
-    },
-  );
+  acquireWorlds();
   loadFrp();
   frpTimer = window.setInterval(loadFrp, 8000);
   void api
@@ -171,7 +134,7 @@ onActivated(() => {
 });
 
 onUnmounted(() => {
-  offSystem?.();
+  releaseWorlds();
   if (frpTimer) window.clearInterval(frpTimer);
 });
 
@@ -182,7 +145,7 @@ async function start(item: InstanceSummary) {
     // The start endpoint deliberately acknowledges long starts with HTTP 202.
     // Show the accepted state immediately; the SSE snapshot will replace it with
     // the authoritative starting/running state (or stopped if startup fails).
-    setInstanceStatus(item.id, 'starting', '正在启动');
+    setWorldStatus(item.id, 'starting', '正在启动');
     toast('ok', `${item.name} 正在启动`, '状态会自己刷新，进度看卡片上的说明');
   } catch (err) {
     toastError(err, '启动失败');
@@ -195,7 +158,7 @@ async function stop(item: InstanceSummary) {
   busyId.value = item.id;
   try {
     const r = await api.post<{ message?: string }>(`/api/instances/${item.id}/stop`, { message: '服务器正在关闭，感谢游玩' });
-    setInstanceStatus(item.id, 'stopping', '正在保存并关闭');
+    setWorldStatus(item.id, 'stopping', '正在保存并关闭');
     toast('ok', `${item.name} 正在关闭`, r?.message ?? '保存完成后会自动停止，状态会自己刷新');
   } catch (err) {
     toastError(err, '停止失败');
@@ -212,8 +175,7 @@ async function doDelete() {
     toast('ok', '世界已移入回收站', '默认保留 7 天，可在设置里清理');
     showDelete.value = false;
     deleteTarget.value = null;
-    activeId.value = null;
-    loadInstances();
+    await refreshWorlds();
     loadFrp();
   } catch (err) {
     toastError(err, '删除失败');
@@ -243,8 +205,8 @@ async function importWorld(event: Event): Promise<void> {
   importingWorld.value = true;
   try {
     const result = await api.uploadFile<{ ok: boolean; instance: InstanceSummary }>('/api/instances/import', file);
-    await loadInstances();
-    activeId.value = result.instance.id;
+    await refreshWorlds();
+    void router.replace({ query: { ...route.query, world: result.instance.id } });
     toast('ok', '世界导入完成', `「${result.instance.name}」已导入并保持停止状态`);
     await loadFrp();
   } catch (err) {
@@ -301,7 +263,7 @@ function backgroundJob() {
           <div class="hero-host-copy">
             <h2 class="hero-host-name">{{ hostLabel }}</h2>
             <p class="hero-host-meta">
-              <span>{{ snap ? `${snap.platform} / ${snap.arch}` : '正在读取主机信息' }}</span>
+              <span>{{ snapshot ? `${snapshot.platform} / ${snapshot.arch}` : '正在读取主机信息' }}</span>
               <span aria-hidden="true"> · </span>
               <span>{{ instances.length }} 个世界</span>
             </p>
@@ -336,25 +298,19 @@ function backgroundJob() {
 
     <!-- 上半：资源监控 + FRP -->
     <div class="top-grid">
-      <MonitorBar :snap="snap" :instances="instances" />
+      <MonitorBar :snap="snapshot" :instances="instances" />
       <FrpCard :status="frp" @refresh="loadFrp" />
     </div>
 
-    <!-- 下半：世界便签页 -->
-    <div class="card">
-      <div class="world-tab-bar">
-        <div ref="tabsEl" class="tabs world-tabs">
-          <button
-            v-for="i in instances"
-            :key="i.id"
-            class="tab"
-            :class="{ active: active?.id === i.id }"
-            @click="activeId = i.id"
-          >
-            <i class="dot" :class="statusClass(i.status)" aria-hidden="true" />
-            {{ i.name }}
-            <span class="tab-state" :class="`tab-state-${i.status}`">{{ STATUS_TEXT[i.status] ?? i.status }}</span>
-          </button>
+    <!-- 下半：当前世界详情。世界列表在左侧边栏，一个世界一行 -->
+    <section ref="worldSection" class="world-section" aria-labelledby="world-section-title">
+      <div class="world-section-head">
+        <div class="world-section-copy">
+          <span class="head-icon" aria-hidden="true"><Icon name="server" :size="15" /></span>
+          <div class="world-section-text">
+            <h2 id="world-section-title">世界详情</h2>
+            <p class="text-3 small">{{ active ? `当前：${active.name}` : '从左侧选择世界，或先创建一个' }}</p>
+          </div>
         </div>
         <div class="world-quick-actions">
           <button class="btn btn-sm" :disabled="importingWorld" title="上传 BlockCraft 导出的完整世界 ZIP；导入后保持停止" @click="chooseWorldImport">
@@ -366,46 +322,44 @@ function backgroundJob() {
         </div>
       </div>
 
-      <div class="card-body">
-        <div v-if="!active" class="empty world-empty">
-          <span class="world-empty-icon"><Icon name="globe" :size="26" /></span>
-          <div class="world-empty-title">还没有任何世界</div>
-          <p class="text-3 small">从一个轻量的原版世界开始，或者导入已有的整合包或世界备份。</p>
-          <div class="row gap-2 wrap mt-2">
-            <button class="btn" :disabled="importingWorld" @click="chooseWorldImport">{{ importingWorld ? '正在导入…' : '导入世界' }}</button>
-            <button class="btn btn-primary" @click="router.push('/create')">新建世界</button>
-            <button class="btn" @click="router.push('/import')">导入整合包</button>
-          </div>
+      <div v-if="!active" class="card empty world-empty">
+        <span class="world-empty-icon"><Icon name="globe" :size="26" /></span>
+        <div class="world-empty-title">还没有任何世界</div>
+        <p class="text-3 small">从一个轻量的原版世界开始，或者导入已有的整合包或世界备份。</p>
+        <div class="row gap-2 wrap mt-2">
+          <button class="btn" :disabled="importingWorld" @click="chooseWorldImport">{{ importingWorld ? '正在导入…' : '导入世界' }}</button>
+          <button class="btn btn-primary" @click="router.push('/create')">新建世界</button>
+          <button class="btn" @click="router.push('/import')">导入整合包</button>
         </div>
-
-        <WorldNote
-          v-else
-          :item="active"
-          :busy="busyId === active.id"
-          :downloading="downloadingWorldId === active.id"
-          @start="start(active)"
-          @stop="stop(active)"
-          @config="showConfig = true"
-          @ports="showPorts = true"
-          @copy="showCopy = true"
-          @console="router.push(`/w/${active.id}/console`)"
-          @backups="router.push(`/w/${active.id}/backups`)"
-          @mods="router.push(`/w/${active.id}/mods`)"
-          @players="router.push(`/w/${active.id}/players`)"
-          @remove="((deleteTarget = active), (showDelete = true))"
-          @download="downloadWorld(active)"
-        />
       </div>
-    </div>
+
+      <WorldNote
+        v-else
+        :item="active"
+        :busy="busyId === active.id"
+        :downloading="downloadingWorldId === active.id"
+        @start="start(active)"
+        @stop="stop(active)"
+        @config="showConfig = true"
+        @ports="showPorts = true"
+        @copy="showCopy = true"
+        @console="router.push(`/w/${active.id}/console`)"
+        @backups="router.push(`/w/${active.id}/backups`)"
+        @mods="router.push(`/w/${active.id}/mods`)"
+        @players="router.push(`/w/${active.id}/players`)"
+        @remove="((deleteTarget = active), (showDelete = true))"
+        @download="downloadWorld(active)"
+      />
+    </section>
 
     <WorldConfigDialog
       :open="showConfig"
       :instance-id="active?.id ?? null"
       @close="showConfig = false"
-      @saved="loadInstances"
+      @saved="refreshWorlds"
       @job="openJob"
     />
-    <PortsDialog :open="showPorts" :instance-id="active?.id ?? ''" :name="active?.name ?? ''" @close="showPorts = false" @changed="loadInstances" />
+    <PortsDialog :open="showPorts" :instance-id="active?.id ?? ''" :name="active?.name ?? ''" @close="showPorts = false" @changed="refreshWorlds" />
     <CopyDialog
       :open="showCopy"
       :source="active ? { id: active.id, name: active.name } : null"
@@ -645,7 +599,39 @@ function backgroundJob() {
 .hero-action-arrow { color: var(--text-3); transition: transform 0.18s var(--ease), color 0.18s; }
 .hero-action:hover .hero-action-arrow { color: var(--accent); transform: translateX(2px); }
 
-.world-tab-bar { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); min-width: 0; }
+.world-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  scroll-margin-top: calc(var(--topbar-h) + 10px);
+}
+.world-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: linear-gradient(150deg, var(--surface-strong), var(--surface-2));
+  box-shadow: var(--sh-1);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+.world-section-copy { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.world-section-text { min-width: 0; }
+.world-section-text h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.world-section-text p {
+  max-width: 34rem;
+  margin: 1px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.world-quick-actions { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.world-quick-actions .btn { white-space: nowrap; }
+
 .world-empty { gap: 10px; padding: 46px 20px 54px; }
 .world-empty-icon {
   display: grid;
@@ -660,9 +646,7 @@ function backgroundJob() {
 }
 .world-empty-title { font-size: 15px; font-weight: 650; color: var(--text); }
 .world-empty p { max-width: 30rem; }
-.world-tabs { flex: 1 1 0; min-width: 0; border-bottom: 0; }
-.world-quick-actions { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 0; flex: none; }
-.world-quick-actions .btn { white-space: nowrap; }
+
 .top-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
@@ -675,10 +659,9 @@ function backgroundJob() {
 @media (max-width: 940px) {
   .top-grid { grid-template-columns: minmax(0, 1fr); align-items: start; }
 }
-@media (max-width: 680px) {
-  .world-tab-bar { align-items: stretch; flex-direction: column; gap: 0; }
-  .world-quick-actions { order: 0; justify-content: flex-end; padding: 4px 8px; }
-  .world-tabs { order: 1; flex: none; width: 100%; }
+@media (max-width: 760px) {
+  .world-section-head { align-items: flex-start; flex-direction: column; }
+  .world-quick-actions { width: 100%; justify-content: flex-start; }
 }
 
 /* 顶部概览的响应式：先收窄快捷入口，再整体纵向排布 */

@@ -10,7 +10,9 @@ import JobProgress from './components/JobProgress.vue';
 import Icon from './components/Icon.vue';
 import Modal from './components/Modal.vue';
 import { backgroundJobId, setBackgroundJob } from './lib/backgroundJob.ts';
-import type { Job } from './lib/types.ts';
+import { useWorlds } from './lib/worlds.ts';
+import { STATUS_TEXT, statusClass } from './lib/format.ts';
+import type { InstanceSummary, Job } from './lib/types.ts';
 
 const router = useRouter();
 const route = useRoute();
@@ -53,27 +55,77 @@ const worldId = computed(() => {
   return typeof id === 'string' && id ? id : null;
 });
 
+const {
+  instances: worlds,
+  worldsReady,
+  acquireWorlds,
+  releaseWorlds,
+  resetWorlds,
+} = useWorlds();
+
+/**
+ * 侧边栏与总览页共用同一个 ?world= 选择：
+ * 只认 URL 里的合法 id，刷新/分享后也能回到同一个世界。
+ */
+const currentWorldId = computed(() => {
+  if (route.name === 'overview') {
+    const query = route.query.world;
+    if (typeof query === 'string' && worlds.value.some((world) => world.id === query)) return query;
+    return worlds.value[0]?.id ?? null;
+  }
+  return worldId.value;
+});
+
+/** 离开总览去日志 / 设置时也记住上一次选中的世界，侧边栏上下文不丢。 */
+const lastWorldId = ref<string | null>(null);
+watch(
+  currentWorldId,
+  (id) => {
+    if (id) lastWorldId.value = id;
+  },
+  { immediate: true },
+);
+watch(
+  worlds,
+  (list) => {
+    if (!list.length) {
+      lastWorldId.value = null;
+      return;
+    }
+    if (!lastWorldId.value || !list.some((world) => world.id === lastWorldId.value)) {
+      lastWorldId.value = list[0].id;
+    }
+  },
+  { immediate: true },
+);
+
+const selectedWorldId = computed(() => currentWorldId.value ?? lastWorldId.value);
+const currentWorld = computed(() => worlds.value.find((world) => world.id === selectedWorldId.value) ?? null);
+const isWorldActive = (id: string): boolean => selectedWorldId.value === id;
+const worldStatusTitle = (world: InstanceSummary): string =>
+  `${world.name} · ${STATUS_TEXT[world.status] ?? world.status}`;
+
+/** 「总览」和左上角 Logo 都带着当前世界，避免点一下就把选择重置成第一个世界。 */
+const overviewTarget = computed(() => {
+  const id = selectedWorldId.value;
+  if (!id || !worlds.value.some((world) => world.id === id)) return '/';
+  return { path: '/', query: { world: id } };
+});
+
 const navGroups = computed(() => [
   {
     label: '工作台',
     items: [
-      { label: '总览', to: '/', icon: 'overview', active: route.name === 'overview' },
+      { label: '总览', to: overviewTarget.value, icon: 'overview', active: route.name === 'overview' },
       { label: '事件日志', to: '/events', icon: 'events', active: route.name === 'events' },
       { label: '相关网站', to: '/new', icon: 'globe', active: route.name === 'websites' },
-    ],
-  },
-  {
-    label: '世界',
-    items: [
-      { label: '新建世界', to: '/create', icon: 'plus', active: route.name === 'wizard-create' },
-      { label: '导入整合包', to: '/import', icon: 'package', active: route.name === 'wizard-import' },
     ],
   },
 ]);
 
 const worldNav = computed(() => {
-  if (!worldId.value) return [];
-  const id = worldId.value;
+  if (!selectedWorldId.value) return [];
+  const id = selectedWorldId.value;
   return [
     { label: '控制台', to: `/w/${id}/console`, icon: 'console', active: route.name === 'console' },
     { label: '备份与回退', to: `/w/${id}/backups`, icon: 'backups', active: route.name === 'backups' },
@@ -109,7 +161,11 @@ const crumbTitle = computed(() => {
   }
 });
 
-const crumbSection = computed(() => (worldId.value ? '世界' : '控制台'));
+const crumbSection = computed(() => {
+  if (route.name === 'overview') return '工作台';
+  return currentWorldId.value ? '世界' : '控制台';
+});
+const showWorldCrumb = computed(() => route.name !== 'overview' && Boolean(currentWorldId.value));
 
 const backgroundJobLabel = computed(() => {
   if (!backgroundJobId.value) return '';
@@ -117,9 +173,28 @@ const backgroundJobLabel = computed(() => {
   return backgroundJob.value.status === 'running' ? '任务进行中' : '查看任务结果';
 });
 
-watch(() => route.fullPath, () => {
+let worldsHeld = false;
+watch(
+  authed,
+  (loggedIn) => {
+    if (loggedIn && !worldsHeld) {
+      acquireWorlds();
+      worldsHeld = true;
+    } else if (!loggedIn && worldsHeld) {
+      worldsHeld = false;
+      releaseWorlds();
+      resetWorlds();
+    }
+  },
+  { immediate: true },
+);
+
+watch(() => route.path, () => {
   mobileNavOpen.value = false;
   if (mainEl.value) mainEl.value.scrollTop = 0;
+});
+watch(() => route.query, () => {
+  mobileNavOpen.value = false;
 });
 
 watch(() => [authed.value, backgroundJobId.value] as const, ([loggedIn, id], _old, onCleanup) => {
@@ -258,7 +333,7 @@ onMounted(refreshPublic);
 
     <aside class="sidebar" :class="{ open: mobileNavOpen }" aria-label="主导航">
       <div class="sidebar-head">
-        <RouterLink to="/" class="brand-mark" aria-label="返回总览">
+        <RouterLink :to="overviewTarget" class="brand-mark" aria-label="返回总览">
           <span class="brand-mark-inner" v-html="BLOCK_ICON_SVG" />
         </RouterLink>
         <div class="brand-copy">
@@ -284,7 +359,7 @@ onMounted(refreshPublic);
           <p class="nav-label">{{ group.label }}</p>
           <RouterLink
             v-for="item in group.items"
-            :key="item.to"
+            :key="item.label"
             :to="item.to"
             class="nav-item"
             :class="{ active: item.active }"
@@ -296,11 +371,66 @@ onMounted(refreshPublic);
           </RouterLink>
         </nav>
 
-        <nav v-if="worldId" class="nav-group" aria-label="当前世界">
+        <nav class="nav-group world-list-group" aria-label="我的世界">
+          <p class="nav-label">
+            <span>我的世界</span>
+            <span v-if="worlds.length" class="nav-label-count">{{ worlds.length }}</span>
+          </p>
+
+          <RouterLink
+            v-for="world in worlds"
+            :key="world.id"
+            :to="{ path: '/', query: { world: world.id } }"
+            class="nav-item world-item"
+            :class="{ active: isWorldActive(world.id) }"
+            :aria-current="isWorldActive(world.id) ? 'page' : undefined"
+            :title="worldStatusTitle(world)"
+            @click="mobileNavOpen = false"
+          >
+            <i class="dot world-dot" :class="statusClass(world.status)" aria-hidden="true" />
+            <span class="ellipsis">{{ world.name }}</span>
+          </RouterLink>
+
+          <RouterLink
+            v-if="worldsReady && !worlds.length"
+            to="/create"
+            class="nav-item world-empty-row"
+            title="新建世界"
+            @click="mobileNavOpen = false"
+          >
+            <Icon name="plus" :size="18" />
+            <span>还没有世界，先新建一个</span>
+          </RouterLink>
+
+          <div class="world-actions">
+            <RouterLink
+              to="/create"
+              class="nav-item nav-subtle"
+              :class="{ active: route.name === 'wizard-create' }"
+              title="新建世界"
+              @click="mobileNavOpen = false"
+            >
+              <Icon name="plus" :size="17" />
+              <span>新建世界</span>
+            </RouterLink>
+            <RouterLink
+              to="/import"
+              class="nav-item nav-subtle"
+              :class="{ active: route.name === 'wizard-import' }"
+              title="导入整合包"
+              @click="mobileNavOpen = false"
+            >
+              <Icon name="package" :size="17" />
+              <span>导入整合包</span>
+            </RouterLink>
+          </div>
+        </nav>
+
+        <nav v-if="selectedWorldId" class="nav-group" aria-label="当前世界">
           <p class="nav-label">当前世界</p>
-          <div class="world-current" :title="worldId">
+          <div class="world-current" :title="selectedWorldId">
             <Icon name="folder" :size="14" />
-            <span class="mono ellipsis">{{ worldId }}</span>
+            <span class="ellipsis">{{ currentWorld?.name ?? selectedWorldId }}</span>
           </div>
           <RouterLink
             v-for="item in worldNav"
@@ -310,6 +440,7 @@ onMounted(refreshPublic);
             :class="{ active: item.active }"
             :aria-current="item.active ? 'page' : undefined"
             :title="item.label"
+            @click="mobileNavOpen = false"
           >
             <Icon :name="item.icon" :size="18" />
             <span>{{ item.label }}</span>
@@ -348,8 +479,8 @@ onMounted(refreshPublic);
           <div class="crumbs">
             <span class="crumb-parent">{{ crumbSection }}</span>
             <span class="sep">/</span>
-            <template v-if="worldId">
-              <span class="mono ellipsis" style="max-width: 180px">{{ worldId }}</span>
+            <template v-if="showWorldCrumb">
+              <span class="mono ellipsis" style="max-width: 180px">{{ currentWorldId }}</span>
               <span class="sep">/</span>
             </template>
             <b>{{ crumbTitle }}</b>

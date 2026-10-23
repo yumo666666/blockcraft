@@ -559,7 +559,7 @@ watch(
     <!-- 头部：返回 + 世界名 + 状态 + 运行时长 + 在线人数 -->
     <div class="row-between wrap gap-3">
       <div class="row gap-3 console-title-group">
-        <button class="btn btn-ghost btn-sm back-link" @click="router.push('/')">
+        <button class="btn btn-ghost btn-sm back-link" @click="router.push({ path: '/', query: { world: props.id } })">
           <Icon name="chevron-left" :size="14" /> 返回总览
         </button>
         <div class="row gap-2">

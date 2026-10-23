@@ -6,7 +6,7 @@
 
 ## 界面预览
 
-界面采用侧边栏 + 磨砂玻璃卡片布局，玻璃面板浮在壁纸之上，信息层级清楚又不遮挡背景。外观提供「日光 / 暮色 / 跟随系统」三种选择，也可以在设置页上传自己的壁纸（只保存在当前浏览器）。
+界面采用侧边栏 + 磨砂玻璃卡片布局，玻璃面板浮在壁纸之上，信息层级清楚又不遮挡背景。所有世界收在左侧「我的世界」下，一个世界占一行；点一下即切换右侧总览里的世界详情，并把选择同步到地址栏。外观提供「日光 / 暮色 / 跟随系统」三种选择，也可以在设置页上传自己的壁纸（只保存在当前浏览器）。
 
 | 日光 | 暮色 |
 |---|---|
@@ -16,9 +16,9 @@
 
 ![BlockCraft 总览页面](docs/assets/screenshots/01-overview-stopped.jpg)
 
-移动端会自动收起侧边栏，总览卡片改为纵向排布：
+移动端把侧边栏收进抽屉，世界列表和当前世界操作都能随手点开：
 
-![移动端总览](docs/assets/screenshots/04-overview-mobile.jpg)
+![移动端侧边栏世界列表](docs/assets/screenshots/04-overview-mobile.jpg)
 
 > 界面视觉语言致敬 [AlkaidLab · Foundation Sunshine](https://github.com/AlkaidLab/foundation-sunshine) 控制台。BlockCraft 只借鉴其「壁纸 + 磨砂玻璃」的设计思路，配色、组件、壁纸与代码均为独立实现。
 
