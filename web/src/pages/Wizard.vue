@@ -436,7 +436,7 @@ function backgroundJob() {
         <button class="btn" :disabled="step === 1" @click="step--">上一步</button>
         <div class="row gap-2">
           <button v-if="step < 5" class="btn btn-primary" :disabled="step === 1 && !form.name" @click="step++">下一步</button>
-          <button v-else class="btn btn-primary btn-lg" :disabled="busy" @click="submitNew">创建世界</button>
+          <button v-else class="btn btn-primary" :disabled="busy" @click="submitNew">创建世界</button>
         </div>
       </div>
     </div>
