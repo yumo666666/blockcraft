@@ -331,7 +331,7 @@ function modrinthSearch(modId: string): string {
     <!-- 头部：世界名 + 操作 -->
     <div class="row-between wrap gap-3">
       <div class="row gap-3 grow" style="min-width: 0">
-        <button class="btn btn-ghost btn-sm back-link" @click="router.push({ path: '/', query: { world: props.id } })">
+        <button class="btn btn-ghost btn-sm back-link" @click="router.push('/')">
           <Icon name="chevron-left" :size="14" /> 返回总览
         </button>
         <div class="grow" style="min-width: 0">

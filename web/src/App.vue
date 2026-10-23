@@ -61,62 +61,21 @@ const {
   acquireWorlds,
   releaseWorlds,
   resetWorlds,
+  refreshWorlds,
 } = useWorlds();
 
-/**
- * 侧边栏与总览页共用同一个 ?world= 选择：
- * 只认 URL 里的合法 id，刷新/分享后也能回到同一个世界。
- */
-const currentWorldId = computed(() => {
-  if (route.name === 'overview') {
-    const query = route.query.world;
-    if (typeof query === 'string' && worlds.value.some((world) => world.id === query)) return query;
-    return worlds.value[0]?.id ?? null;
-  }
-  return worldId.value;
-});
-
-/** 离开总览去日志 / 设置时也记住上一次选中的世界，侧边栏上下文不丢。 */
-const lastWorldId = ref<string | null>(null);
-watch(
-  currentWorldId,
-  (id) => {
-    if (id) lastWorldId.value = id;
-  },
-  { immediate: true },
-);
-watch(
-  worlds,
-  (list) => {
-    if (!list.length) {
-      lastWorldId.value = null;
-      return;
-    }
-    if (!lastWorldId.value || !list.some((world) => world.id === lastWorldId.value)) {
-      lastWorldId.value = list[0].id;
-    }
-  },
-  { immediate: true },
-);
-
-const selectedWorldId = computed(() => currentWorldId.value ?? lastWorldId.value);
-const currentWorld = computed(() => worlds.value.find((world) => world.id === selectedWorldId.value) ?? null);
-const isWorldActive = (id: string): boolean => selectedWorldId.value === id;
+/** 当前世界只由 /w/:id 决定；总览本身不再承载世界详情。 */
+const currentWorldId = worldId;
+const currentWorld = computed(() => worlds.value.find((world) => world.id === currentWorldId.value) ?? null);
+const isWorldActive = (id: string): boolean => currentWorldId.value === id;
 const worldStatusTitle = (world: InstanceSummary): string =>
   `${world.name} · ${STATUS_TEXT[world.status] ?? world.status}`;
-
-/** 「总览」和左上角 Logo 都带着当前世界，避免点一下就把选择重置成第一个世界。 */
-const overviewTarget = computed(() => {
-  const id = selectedWorldId.value;
-  if (!id || !worlds.value.some((world) => world.id === id)) return '/';
-  return { path: '/', query: { world: id } };
-});
 
 const navGroups = computed(() => [
   {
     label: '工作台',
     items: [
-      { label: '总览', to: overviewTarget.value, icon: 'overview', active: route.name === 'overview' },
+      { label: '总览', to: '/', icon: 'overview', active: route.name === 'overview' },
       { label: '事件日志', to: '/events', icon: 'events', active: route.name === 'events' },
       { label: '相关网站', to: '/new', icon: 'globe', active: route.name === 'websites' },
     ],
@@ -124,15 +83,51 @@ const navGroups = computed(() => [
 ]);
 
 const worldNav = computed(() => {
-  if (!selectedWorldId.value) return [];
-  const id = selectedWorldId.value;
+  if (!currentWorldId.value) return [];
+  const id = currentWorldId.value;
   return [
+    { label: '世界详情', to: `/w/${id}`, icon: 'server', active: route.name === 'world' },
     { label: '控制台', to: `/w/${id}/console`, icon: 'console', active: route.name === 'console' },
     { label: '备份与回退', to: `/w/${id}/backups`, icon: 'backups', active: route.name === 'backups' },
     { label: 'MOD 管理', to: `/w/${id}/mods`, icon: 'mods', active: route.name === 'mods' },
     { label: '玩家管理', to: `/w/${id}/players`, icon: 'players', active: route.name === 'players' },
   ];
 });
+
+const worldImportInput = ref<HTMLInputElement | null>(null);
+const importingWorld = ref(false);
+
+function chooseWorldImport(): void {
+  if (!importingWorld.value) worldImportInput.value?.click();
+}
+
+async function importWorld(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    toast('error', '世界导入失败', '请选择 BlockCraft 导出的完整世界 ZIP 文件');
+    input.value = '';
+    return;
+  }
+  if (file.size > 20 * 1024 * 1024 * 1024) {
+    toast('error', '世界导入失败', '单个世界 ZIP 不能超过 20 GB');
+    input.value = '';
+    return;
+  }
+  importingWorld.value = true;
+  try {
+    const result = await api.uploadFile<{ ok: boolean; instance: InstanceSummary }>('/api/instances/import', file);
+    await refreshWorlds();
+    toast('ok', '世界导入完成', `「${result.instance.name}」已导入并保持停止状态`);
+    void router.push(`/w/${result.instance.id}`);
+  } catch (err) {
+    toastError(err, '世界导入失败');
+  } finally {
+    importingWorld.value = false;
+    input.value = '';
+  }
+}
 
 const crumbTitle = computed(() => {
   switch (route.name) {
@@ -148,6 +143,8 @@ const crumbTitle = computed(() => {
       return '导入整合包';
     case 'settings':
       return '面板设置';
+    case 'world':
+      return '世界详情';
     case 'console':
       return '控制台';
     case 'backups':
@@ -333,7 +330,7 @@ onMounted(refreshPublic);
 
     <aside class="sidebar" :class="{ open: mobileNavOpen }" aria-label="主导航">
       <div class="sidebar-head">
-        <RouterLink :to="overviewTarget" class="brand-mark" aria-label="返回总览">
+        <RouterLink to="/" class="brand-mark" aria-label="返回总览">
           <span class="brand-mark-inner" v-html="BLOCK_ICON_SVG" />
         </RouterLink>
         <div class="brand-copy">
@@ -380,7 +377,7 @@ onMounted(refreshPublic);
           <RouterLink
             v-for="world in worlds"
             :key="world.id"
-            :to="{ path: '/', query: { world: world.id } }"
+            :to="`/w/${world.id}`"
             class="nav-item world-item"
             :class="{ active: isWorldActive(world.id) }"
             :aria-current="isWorldActive(world.id) ? 'page' : undefined"
@@ -423,14 +420,26 @@ onMounted(refreshPublic);
               <Icon name="package" :size="17" />
               <span>导入整合包</span>
             </RouterLink>
+            <button
+              type="button"
+              class="nav-item nav-subtle"
+              title="导入 BlockCraft 导出的世界 ZIP"
+              :disabled="importingWorld"
+              @click="chooseWorldImport"
+            >
+              <i v-if="importingWorld" class="spinner" style="width: 15px; height: 15px" />
+              <Icon v-else name="upload" :size="17" />
+              <span>{{ importingWorld ? '正在导入…' : '导入世界' }}</span>
+            </button>
           </div>
+          <input ref="worldImportInput" type="file" accept=".zip,application/zip" hidden @change="importWorld" />
         </nav>
 
-        <nav v-if="selectedWorldId" class="nav-group" aria-label="当前世界">
+        <nav v-if="currentWorldId" class="nav-group" aria-label="当前世界">
           <p class="nav-label">当前世界</p>
-          <div class="world-current" :title="selectedWorldId">
+          <div class="world-current" :title="currentWorldId">
             <Icon name="folder" :size="14" />
-            <span class="ellipsis">{{ currentWorld?.name ?? selectedWorldId }}</span>
+            <span class="ellipsis">{{ currentWorld?.name ?? currentWorldId }}</span>
           </div>
           <RouterLink
             v-for="item in worldNav"

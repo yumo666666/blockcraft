@@ -465,6 +465,7 @@ a.brand-mark { transition: transform 0.16s var(--ease), border-color 0.16s; }
 .nav-subtle { color: var(--text-3); }
 .nav-subtle:hover { color: var(--text); }
 .nav-subtle.active { color: var(--text); }
+.nav-item:disabled { opacity: 0.55; cursor: not-allowed; }
 .world-empty-row { color: var(--text-3); font-size: 12.5px; }
 .world-empty-row:hover { color: var(--text); }
 

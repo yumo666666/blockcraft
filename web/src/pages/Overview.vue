@@ -1,34 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue';
-import { RouterLink, useRoute, useRouter } from 'vue-router';
+import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue';
+import { RouterLink } from 'vue-router';
 import { api } from '../lib/api.ts';
-import { toast, toastError } from '../lib/toast.ts';
-import type { FrpStatus, InstanceSummary } from '../lib/types.ts';
+import type { FrpStatus } from '../lib/types.ts';
 import MonitorBar from '../components/MonitorBar.vue';
 import FrpCard from '../components/FrpCard.vue';
-import WorldNote from '../components/WorldNote.vue';
-import WorldConfigDialog from '../components/WorldConfigDialog.vue';
-import PortsDialog from '../components/PortsDialog.vue';
-import CopyDialog from '../components/CopyDialog.vue';
-import ConfirmDialog from '../components/ConfirmDialog.vue';
-import JobProgress from '../components/JobProgress.vue';
 import Icon from '../components/Icon.vue';
-import { setBackgroundJob } from '../lib/backgroundJob.ts';
 import { useWorlds } from '../lib/worlds.ts';
 
 defineOptions({ name: 'Overview' });
 
-const route = useRoute();
-const router = useRouter();
-const {
-  snapshot,
-  instances,
-  worldsReady,
-  acquireWorlds,
-  releaseWorlds,
-  refreshWorlds,
-  setWorldStatus,
-} = useWorlds();
+const { snapshot, instances, acquireWorlds, releaseWorlds } = useWorlds();
 const frp = ref<FrpStatus | null>(null);
 const version = ref('');
 
@@ -48,64 +30,6 @@ const quickActions = [
   { label: '导入整合包', desc: 'CurseForge / Modrinth', to: '/import', icon: 'package' },
   { label: '面板设置', desc: '端口、资源与外观', to: '/settings', icon: 'settings' },
 ];
-
-/** 当前世界由 URL 的 ?world= 决定：刷新、分享、从侧边栏切换都能回到同一个世界。 */
-const queryWorldId = computed(() => (typeof route.query.world === 'string' ? route.query.world : null));
-const activeId = computed(() => {
-  const list = instances.value;
-  const fromQuery = queryWorldId.value;
-  if (fromQuery && list.some((item) => item.id === fromQuery)) return fromQuery;
-  return list[0]?.id ?? null;
-});
-const active = computed(() => instances.value.find((item) => item.id === activeId.value) ?? null);
-
-/** 世界列表就绪后把选择落进 URL；世界被删掉或首次进入时自动选第一个。 */
-watch(
-  () => [instances.value, worldsReady.value, queryWorldId.value] as const,
-  ([list, ready, queryWorld]) => {
-    if (!ready || route.name !== 'overview') return;
-    const ids = new Set(list.map((item) => item.id));
-    if (list.length && (!queryWorld || !ids.has(queryWorld))) {
-      void router.replace({ query: { ...route.query, world: list[0].id } });
-      return;
-    }
-    if (!list.length && queryWorld) {
-      const next = { ...route.query };
-      delete next.world;
-      void router.replace({ query: next });
-    }
-  },
-  { immediate: true },
-);
-
-/** 从侧边栏切换世界时，把下方世界详情滚进视野；首次进入页面不跳。 */
-const worldSection = ref<HTMLElement | null>(null);
-let knownActiveId = activeId.value;
-watch(activeId, async (id) => {
-  const hadSelection = Boolean(knownActiveId);
-  const changed = id !== knownActiveId;
-  knownActiveId = id;
-  if (!changed || !hadSelection || !id || route.name !== 'overview') return;
-  await nextTick();
-  const el = worldSection.value;
-  if (!el) return;
-  const rect = el.getBoundingClientRect();
-  if (rect.top < 0 || rect.top > window.innerHeight * 0.6) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-});
-
-const showConfig = ref(false);
-const showPorts = ref(false);
-const showCopy = ref(false);
-const showDelete = ref(false);
-const showJob = ref(false);
-const jobId = ref<string | null>(null);
-const deleteTarget = ref<InstanceSummary | null>(null);
-const worldImportInput = ref<HTMLInputElement | null>(null);
-const importingWorld = ref(false);
-const downloadingWorldId = ref<string | null>(null);
-const busyId = ref<string | null>(null);
 
 let frpTimer: number | null = null;
 
@@ -137,108 +61,6 @@ onUnmounted(() => {
   releaseWorlds();
   if (frpTimer) window.clearInterval(frpTimer);
 });
-
-async function start(item: InstanceSummary) {
-  busyId.value = item.id;
-  try {
-    await api.post(`/api/instances/${item.id}/start`);
-    // The start endpoint deliberately acknowledges long starts with HTTP 202.
-    // Show the accepted state immediately; the SSE snapshot will replace it with
-    // the authoritative starting/running state (or stopped if startup fails).
-    setWorldStatus(item.id, 'starting', '正在启动');
-    toast('ok', `${item.name} 正在启动`, '状态会自己刷新，进度看卡片上的说明');
-  } catch (err) {
-    toastError(err, '启动失败');
-  } finally {
-    busyId.value = null;
-  }
-}
-
-async function stop(item: InstanceSummary) {
-  busyId.value = item.id;
-  try {
-    const r = await api.post<{ message?: string }>(`/api/instances/${item.id}/stop`, { message: '服务器正在关闭，感谢游玩' });
-    setWorldStatus(item.id, 'stopping', '正在保存并关闭');
-    toast('ok', `${item.name} 正在关闭`, r?.message ?? '保存完成后会自动停止，状态会自己刷新');
-  } catch (err) {
-    toastError(err, '停止失败');
-  } finally {
-    busyId.value = null;
-  }
-}
-
-async function doDelete() {
-  if (!deleteTarget.value) return;
-  busyId.value = deleteTarget.value.id;
-  try {
-    await api.del(`/api/instances/${deleteTarget.value.id}?confirm=${encodeURIComponent(deleteTarget.value.id)}&purge=0`);
-    toast('ok', '世界已移入回收站', '默认保留 7 天，可在设置里清理');
-    showDelete.value = false;
-    deleteTarget.value = null;
-    await refreshWorlds();
-    loadFrp();
-  } catch (err) {
-    toastError(err, '删除失败');
-  } finally {
-    busyId.value = null;
-  }
-}
-
-function chooseWorldImport(): void {
-  if (!importingWorld.value) worldImportInput.value?.click();
-}
-
-async function importWorld(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
-  if (!file.name.toLowerCase().endsWith('.zip')) {
-    toast('error', '世界导入失败', '请选择 BlockCraft 导出的完整世界 ZIP 文件');
-    input.value = '';
-    return;
-  }
-  if (file.size > 20 * 1024 * 1024 * 1024) {
-    toast('error', '世界导入失败', '单个世界 ZIP 不能超过 20 GB');
-    input.value = '';
-    return;
-  }
-  importingWorld.value = true;
-  try {
-    const result = await api.uploadFile<{ ok: boolean; instance: InstanceSummary }>('/api/instances/import', file);
-    await refreshWorlds();
-    void router.replace({ query: { ...route.query, world: result.instance.id } });
-    toast('ok', '世界导入完成', `「${result.instance.name}」已导入并保持停止状态`);
-    await loadFrp();
-  } catch (err) {
-    toastError(err, '世界导入失败');
-  } finally {
-    importingWorld.value = false;
-    input.value = '';
-  }
-}
-
-async function downloadWorld(item: InstanceSummary): Promise<void> {
-  if (!['stopped', 'crashed'].includes(item.status) || downloadingWorldId.value) return;
-  downloadingWorldId.value = item.id;
-  try {
-    await api.downloadFile(`/api/instances/${encodeURIComponent(item.id)}/download`, `${item.id}.zip`);
-    toast('ok', '世界下载已开始', `${item.id}.zip · 包含该世界的完整实例目录`);
-  } catch (err) {
-    toastError(err, '世界下载失败');
-  } finally {
-    downloadingWorldId.value = null;
-  }
-}
-
-function openJob(id: string) {
-  jobId.value = id;
-  showJob.value = true;
-}
-
-function backgroundJob() {
-  if (jobId.value) setBackgroundJob(jobId.value);
-  showJob.value = false;
-}
 </script>
 
 <template>
@@ -302,85 +124,6 @@ function backgroundJob() {
       <FrpCard :status="frp" @refresh="loadFrp" />
     </div>
 
-    <!-- 下半：当前世界详情。世界列表在左侧边栏，一个世界一行 -->
-    <section ref="worldSection" class="world-section" aria-labelledby="world-section-title">
-      <div class="world-section-head">
-        <div class="world-section-copy">
-          <span class="head-icon" aria-hidden="true"><Icon name="server" :size="15" /></span>
-          <div class="world-section-text">
-            <h2 id="world-section-title">世界详情</h2>
-            <p class="text-3 small">{{ active ? `当前：${active.name}` : '从左侧选择世界，或先创建一个' }}</p>
-          </div>
-        </div>
-        <div class="world-quick-actions">
-          <button class="btn btn-sm" :disabled="importingWorld" title="上传 BlockCraft 导出的完整世界 ZIP；导入后保持停止" @click="chooseWorldImport">
-            <span v-if="importingWorld" class="spinner" />
-            {{ importingWorld ? '正在导入…' : '＋ 导入世界' }}
-          </button>
-          <button class="btn btn-sm" @click="router.push('/create')">＋ 新建世界</button>
-          <button class="btn btn-sm" @click="router.push('/import')">＋ 导入整合包</button>
-        </div>
-      </div>
-
-      <div v-if="!active" class="card empty world-empty">
-        <span class="world-empty-icon"><Icon name="globe" :size="26" /></span>
-        <div class="world-empty-title">还没有任何世界</div>
-        <p class="text-3 small">从一个轻量的原版世界开始，或者导入已有的整合包或世界备份。</p>
-        <div class="row gap-2 wrap mt-2">
-          <button class="btn" :disabled="importingWorld" @click="chooseWorldImport">{{ importingWorld ? '正在导入…' : '导入世界' }}</button>
-          <button class="btn btn-primary" @click="router.push('/create')">新建世界</button>
-          <button class="btn" @click="router.push('/import')">导入整合包</button>
-        </div>
-      </div>
-
-      <WorldNote
-        v-else
-        :item="active"
-        :busy="busyId === active.id"
-        :downloading="downloadingWorldId === active.id"
-        @start="start(active)"
-        @stop="stop(active)"
-        @config="showConfig = true"
-        @ports="showPorts = true"
-        @copy="showCopy = true"
-        @console="router.push(`/w/${active.id}/console`)"
-        @backups="router.push(`/w/${active.id}/backups`)"
-        @mods="router.push(`/w/${active.id}/mods`)"
-        @players="router.push(`/w/${active.id}/players`)"
-        @remove="((deleteTarget = active), (showDelete = true))"
-        @download="downloadWorld(active)"
-      />
-    </section>
-
-    <WorldConfigDialog
-      :open="showConfig"
-      :instance-id="active?.id ?? null"
-      @close="showConfig = false"
-      @saved="refreshWorlds"
-      @job="openJob"
-    />
-    <PortsDialog :open="showPorts" :instance-id="active?.id ?? ''" :name="active?.name ?? ''" @close="showPorts = false" @changed="refreshWorlds" />
-    <CopyDialog
-      :open="showCopy"
-      :source="active ? { id: active.id, name: active.name } : null"
-      @close="showCopy = false"
-      @created="openJob"
-    />
-    <ConfirmDialog
-      :open="showDelete"
-      title="删除世界"
-      :message="`将要删除「${deleteTarget?.name ?? ''}」的全部内容：\n· 存档与配置\n· ${deleteTarget?.modCount ?? 0} 个 MOD\n· 该世界的所有备份\n· 占用的端口与 FRP 映射\n\n删除后默认进入回收站保留 7 天。`"
-      :detail="`磁盘占用：${deleteTarget ? (deleteTarget.diskUsage / 1024 / 1024).toFixed(0) : 0} MB`"
-      :require-text="deleteTarget?.id ?? ''"
-      require-label="输入世界 id 以确认删除"
-      confirm-text="删除"
-      danger
-      :busy="busyId === deleteTarget?.id"
-      @close="showDelete = false"
-      @confirm="doDelete"
-    />
-    <JobProgress :open="showJob" :job-id="jobId" @close="showJob = false" @background="backgroundJob" />
-    <input ref="worldImportInput" type="file" accept=".zip,application/zip" hidden @change="importWorld" />
   </div>
 </template>
 
@@ -599,53 +342,6 @@ function backgroundJob() {
 .hero-action-arrow { color: var(--text-3); transition: transform 0.18s var(--ease), color 0.18s; }
 .hero-action:hover .hero-action-arrow { color: var(--accent); transform: translateX(2px); }
 
-.world-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  scroll-margin-top: calc(var(--topbar-h) + 10px);
-}
-.world-section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  background: linear-gradient(150deg, var(--surface-strong), var(--surface-2));
-  box-shadow: var(--sh-1);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
-}
-.world-section-copy { display: flex; min-width: 0; align-items: center; gap: 10px; }
-.world-section-text { min-width: 0; }
-.world-section-text h2 { margin: 0; font-size: 14px; font-weight: 650; }
-.world-section-text p {
-  max-width: 34rem;
-  margin: 1px 0 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.world-quick-actions { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
-.world-quick-actions .btn { white-space: nowrap; }
-
-.world-empty { gap: 10px; padding: 46px 20px 54px; }
-.world-empty-icon {
-  display: grid;
-  width: 58px;
-  height: 58px;
-  place-items: center;
-  border: 1px solid var(--accent-border);
-  border-radius: 18px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  box-shadow: var(--sh-1);
-}
-.world-empty-title { font-size: 15px; font-weight: 650; color: var(--text); }
-.world-empty p { max-width: 30rem; }
 
 .top-grid {
   display: grid;
@@ -658,10 +354,6 @@ function backgroundJob() {
 .top-grid > * { min-width: 0; }
 @media (max-width: 940px) {
   .top-grid { grid-template-columns: minmax(0, 1fr); align-items: start; }
-}
-@media (max-width: 760px) {
-  .world-section-head { align-items: flex-start; flex-direction: column; }
-  .world-quick-actions { width: 100%; justify-content: flex-start; }
 }
 
 /* 顶部概览的响应式：先收窄快捷入口，再整体纵向排布 */

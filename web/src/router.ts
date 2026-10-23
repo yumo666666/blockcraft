@@ -9,6 +9,7 @@ export const router = createRouter({
     { path: '/import', name: 'wizard-import', component: () => import('./pages/Wizard.vue') },
     { path: '/events', name: 'events', component: () => import('./pages/Events.vue') },
     { path: '/settings', name: 'settings', component: () => import('./pages/Settings.vue') },
+    { path: '/w/:id', name: 'world', component: () => import('./pages/World.vue'), props: true },
     { path: '/w/:id/console', name: 'console', component: () => import('./pages/Console.vue'), props: true },
     { path: '/w/:id/backups', name: 'backups', component: () => import('./pages/Backups.vue'), props: true },
     { path: '/w/:id/mods', name: 'mods', component: () => import('./pages/Mods.vue'), props: true },

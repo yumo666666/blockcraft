@@ -32,6 +32,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/import', name: 'wizard-import', component: () => import('../pages/Wizard.vue') },
   { path: '/events', name: 'events', component: () => import('../pages/Events.vue') },
   { path: '/settings', name: 'settings', component: () => import('../pages/Settings.vue') },
+  { path: '/w/:id', name: 'world', component: () => import('../pages/World.vue'), props: true },
   { path: '/w/:id/console', name: 'console', component: () => import('../pages/Console.vue'), props: true },
   { path: '/w/:id/backups', name: 'backups', component: () => import('../pages/Backups.vue'), props: true },
   { path: '/w/:id/mods', name: 'mods', component: () => import('../pages/Mods.vue'), props: true },
@@ -104,16 +105,27 @@ const setup = async () => {
 if (RUN) beforeAll(setup, 60000);
 
 describeIfPanel('总览页', () => {
-  it('渲染资源监控、FRP 双通道与世界便签卡片', async () => {
+  it('只渲染主机概览、资源监控与 FRP 双通道', async () => {
     const w = await mountAt('/');
-    const text = w.text();
+    const text = await waitFor(w, (t) => t.includes('资源监控'));
+    expect(text).toContain('BlockCraft Control Center');
     expect(text).toContain('资源监控');
     expect(text).toContain('FRP 穿透');
     // 两条通道必须分开显示
     expect(text).toContain('面板通道');
     expect(text).toContain('世界通道');
-    // 真实世界里存在的名字与按钮
-    if (instanceName) expect(text).toContain(instanceName);
+    // 总览不再承载世界卡片：世界详情在侧边栏对应的世界页里
+    expect(text).not.toContain('显示端口');
+    expect(text).not.toContain('复制为新世界');
+    w.unmount();
+  });
+});
+
+describeIfPanel('世界页', () => {
+  it('渲染世界卡片、端口与操作按钮', async () => {
+    const w = await mountAt(`/w/${instanceId}`);
+    const text = await waitFor(w, (t) => t.includes('显示端口'));
+    expect(text).toContain(instanceName);
     // 真实端口必须出现在卡片上
     if (localPort) expect(text).toContain(String(localPort));
     if (frpPort) expect(text).toContain(String(frpPort));
@@ -266,7 +278,7 @@ describeIfPanel('控制台命令提示', () => {
 
 describeIfPanel('世界配置弹窗', () => {
   it('「随面板自动启动」在弹窗顶部一眼可见（不能藏在滚动区里）', async () => {
-    const w = await mountAt('/');
+    const w = await mountAt(`/w/${instanceId}`);
     await waitFor(w, (t) => t.includes('显示端口'));
     // 点世界卡片上的「配置」
     const cfgBtn = w.findAll('button').find((b) => b.text().trim() === '配置');
