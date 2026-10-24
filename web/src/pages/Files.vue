@@ -26,6 +26,8 @@ type FileEntry = {
 type FileListPayload = { path: string; entries: FileEntry[]; readOnly: boolean | null; worldId?: string | null; maxUploadBytes: number; rootName: string; projectRoot: string };
 type TreeRow = { path: string; name: string; depth: number; root?: boolean };
 type ArchiveContext = { archivePath: string; path: string; signed: boolean };
+type UploadLocation = { path: string; archive: Pick<ArchiveContext, 'archivePath' | 'path'> | null };
+type PendingOverwrite = { files: File[]; location: UploadLocation; names: string[] };
 type Breadcrumb = { label: string; projectPath?: string; archive?: boolean; entryPath?: string };
 type PreviewInfo = {
   kind: 'image' | 'audio' | 'video' | 'pdf' | 'html' | 'text' | 'binary' | 'large';
@@ -85,6 +87,7 @@ const treeLoading = reactive(new Set<string>());
 const uploadInput = ref<HTMLInputElement | null>(null);
 const uploading = ref(false);
 const uploadProgress = ref({ done: 0, total: 0, percent: 0, name: '' });
+const pendingOverwrite = ref<PendingOverwrite | null>(null);
 const folderModalOpen = ref(false);
 const folderName = ref('');
 const creatingFolder = ref(false);
@@ -680,49 +683,90 @@ function chooseUpload(): void {
 async function uploadSelected(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
+  input.value = '';
   if (!files.length) return;
   const tooLarge = files.find((file) => file.size > maxUploadBytes.value);
   if (tooLarge) {
     toast('error', '文件超过大小限制', `单个文件上限为 ${fmtBytes(maxUploadBytes.value)}：${tooLarge.name}`);
-    input.value = '';
     return;
   }
+
+  const location: UploadLocation = {
+    path: currentPath.value,
+    archive: archiveContext.value ? { archivePath: archiveContext.value.archivePath, path: archiveContext.value.path } : null,
+  };
+  const existingByName = new Map(currentEntries.value.map((entry) => [entry.name, entry]));
+  const blocked = files.find((file) => {
+    const entry = existingByName.get(file.name);
+    return entry && entry.type !== 'file';
+  });
+  if (blocked) {
+    toast('error', '无法覆盖此项目', `“${blocked.name}”同名路径不是普通文件。`);
+    return;
+  }
+
+  const counts = new Map<string, number>();
+  for (const file of files) counts.set(file.name, (counts.get(file.name) ?? 0) + 1);
+  const overwriteNames = [...new Set(files
+    .filter((file) => existingByName.get(file.name)?.type === 'file' || (counts.get(file.name) ?? 0) > 1)
+    .map((file) => file.name))];
+  if (overwriteNames.length) {
+    pendingOverwrite.value = { files, location, names: overwriteNames };
+    return;
+  }
+  await uploadFiles(files, location, new Set());
+}
+
+function cancelOverwriteUpload(): void {
+  pendingOverwrite.value = null;
+}
+
+async function confirmOverwriteUpload(): Promise<void> {
+  const pending = pendingOverwrite.value;
+  if (!pending) return;
+  pendingOverwrite.value = null;
+  await uploadFiles(pending.files, pending.location, new Set(pending.names));
+}
+
+async function uploadFiles(files: File[], location: UploadLocation, overwriteNames: ReadonlySet<string>): Promise<void> {
   uploading.value = true;
   uploadProgress.value = { done: 0, total: files.length, percent: 0, name: '' };
   try {
     for (const [index, file] of files.entries()) {
       uploadProgress.value = { done: index, total: files.length, percent: 0, name: file.name };
-      if (archiveContext.value) {
-        const context = archiveContext.value;
+      const query: Record<string, string> = location.archive
+        ? { archive: location.archive.archivePath, path: location.archive.path }
+        : { path: location.path };
+      if (overwriteNames.has(file.name)) query.overwrite = '1';
+      if (location.archive) {
         const result = await api.uploadFile<{ ok: boolean; entry: FileEntry; signatureInvalidated: boolean }>(
-          `/api/project-files/jar/upload?${new URLSearchParams({ archive: context.archivePath, path: context.path })}`,
+          `/api/project-files/jar/upload?${new URLSearchParams(query)}`,
           file,
           (progress) => { uploadProgress.value.percent = progress.percent; },
         );
         notifySignatureChange(result.signatureInvalidated);
       } else {
         await api.uploadFile<{ ok: boolean; entry: FileEntry }>(
-          `/api/project-files/upload?${new URLSearchParams({ path: currentPath.value })}`,
+          `/api/project-files/upload?${new URLSearchParams(query)}`,
           file,
           (progress) => { uploadProgress.value.percent = progress.percent; },
         );
       }
     }
     toast('ok', '上传完成', `${files.length} 个文件已放入当前文件夹`);
-    if (archiveContext.value) {
+    if (location.archive) {
       await refresh();
       return;
     }
-    treeChildren.delete(currentPath.value);
-    await loadDirectory(currentPath.value);
-    await ensureTreeParents(currentPath.value);
+    treeChildren.delete(location.path);
+    await loadDirectory(location.path);
+    await ensureTreeParents(location.path);
   } catch (err) {
     toastError(err, '上传文件失败');
     await refresh();
   } finally {
     uploading.value = false;
     uploadProgress.value = { done: 0, total: 0, percent: 0, name: '' };
-    input.value = '';
   }
 }
 
@@ -897,8 +941,9 @@ onUnmounted(() => {
         <p>浏览和管理当前项目目录：<code class="mono">{{ projectRoot || '正在读取项目路径…' }}</code></p>
       </div>
       <div class="row wrap gap-2 files-heading-actions">
-        <span class="badge" :class="accessChecking || accessUnavailable ? 'badge-outline' : readOnly ? 'files-permission-warn' : 'badge-outline'" :title="accessUnavailable ? '无法确认当前目录权限。为保护文件，暂时禁用修改操作。' : readOnly && !accessChecking ? '当前目录属于正在运行的世界，只能浏览、预览和下载；停止该世界后可编辑、上传、创建和删除文件。' : undefined" role="status" aria-live="polite" aria-atomic="true">
-          <span class="status-dot" :class="accessChecking || accessUnavailable ? '' : readOnly ? 'status-running' : 'status-stopped'" />
+        <span class="files-upload-limit text-3 small">单文件上限 {{ fmtBytes(maxUploadBytes) }}</span>
+        <span class="badge" :class="accessChecking ? 'badge-outline' : accessUnavailable || readOnly ? 'badge-warn' : 'badge-ok'" :title="accessUnavailable ? '无法确认当前目录权限。为保护文件，暂时禁用修改操作。' : readOnly && !accessChecking ? '当前目录属于正在运行的世界，只能浏览、预览和下载；停止该世界后可编辑、上传、创建和删除文件。' : undefined" role="status" aria-live="polite" aria-atomic="true">
+          <span class="status-dot" :class="accessChecking ? '' : accessUnavailable || readOnly ? 'status-warn' : 'status-running'" />
           {{ accessLabel }}
         </span>
         <button class="btn" type="button" :disabled="loading || uploading" @click="refresh(true)">
@@ -949,7 +994,6 @@ onUnmounted(() => {
           </button>
           <div v-if="!treeRows.length" class="empty small">无法读取目录</div>
         </nav>
-        <div class="files-tree-foot text-3 small">树根对应项目文件夹。符号链接会显示，但不会跟随进入。</div>
       </aside>
 
       <div class="files-content-pane" @dragover.prevent @drop.prevent="onDrop">
@@ -1045,12 +1089,19 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
-        <div class="files-drop-hint text-3 small">
-          <template v-if="archiveContext">当前位置：{{ currentLocationLabel }}。支持单个最大 {{ fmtBytes(maxUploadBytes) }}；修改 JAR 会重新打包。</template>
-          <template v-else>支持单个最大 {{ fmtBytes(maxUploadBytes) }}；上传同名文件前请先删除旧文件。</template>
-        </div>
       </div>
     </section>
+
+    <Modal v-if="pendingOverwrite" title="发现同名文件" size="sm" @close="cancelOverwriteUpload">
+      <div class="col gap-3">
+        <p>当前目录已存在同名文件。选择覆盖上传会替换原文件：</p>
+        <div class="files-overwrite-list mono-block small">{{ pendingOverwrite.names.join('\n') }}</div>
+      </div>
+      <template #footer>
+        <button class="btn" type="button" @click="cancelOverwriteUpload">取消上传</button>
+        <button class="btn btn-danger-solid" type="button" @click="confirmOverwriteUpload">覆盖上传</button>
+      </template>
+    </Modal>
 
     <Modal v-if="folderModalOpen" title="新建文件夹" size="sm" @close="folderModalOpen = false">
       <div class="field">
@@ -1149,10 +1200,11 @@ onUnmounted(() => {
 .files-heading .page-heading p { max-width: min(72vw, 920px); overflow-wrap: anywhere; }
 .files-heading .page-heading code { color: var(--text-2); font-size: 11px; }
 .files-heading-actions { align-items: center; }
-.files-permission-warn { border-color: var(--warn); background: var(--warn-soft); color: var(--warn-text); }
+.files-upload-limit { white-space: nowrap; }
+.files-overwrite-list { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .files-archive-note { display: flex; flex-direction: column; gap: 4px; padding: 10px 13px; border: 1px solid var(--accent-border); border-radius: var(--r-sm); background: var(--accent-soft); color: var(--text-2); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .files-archive-note strong { color: var(--warn-text); font-weight: 620; }
-.files-shell { display: grid; grid-template-columns: minmax(210px, 250px) minmax(0, 1fr); min-height: min(700px, calc(100vh - 240px)); overflow: hidden; }
+.files-shell { display: grid; grid-template-columns: minmax(210px, 250px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: min(700px, calc(100vh - 240px)); min-height: min(700px, calc(100vh - 240px)); overflow: hidden; }
 .files-tree-pane { display: flex; min-height: 0; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface-2); }
 .files-pane-head { display: flex; min-height: 51px; align-items: center; justify-content: space-between; gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--border); }
 .files-pane-head > div { display: flex; align-items: center; gap: 8px; color: var(--accent-text); }
@@ -1166,11 +1218,11 @@ onUnmounted(() => {
 .files-tree-caret > .spinner { width: 12px; height: 12px; border-width: 1.5px; }
 .tree-caret-spacer { width: 12px; }
 .files-tree-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.files-tree-foot { padding: 10px 12px; border-top: 1px solid var(--border); line-height: 1.5; }
-.files-content-pane { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+.files-content-pane { --files-check-col: 28px; --files-cell-gap: 10px; --files-row-padding: 13px; display: flex; min-width: 0; min-height: 0; flex-direction: column; }
 .files-content-head { display: flex; min-height: 51px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--border); }
-.files-selection-bar { display: flex; min-height: 43px; align-items: center; gap: 12px; padding: 6px 15px; border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 11.5px; }
-.files-select-all { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; cursor: pointer; }
+.files-selection-bar { display: flex; min-height: 43px; align-items: center; gap: 12px; padding: 6px var(--files-row-padding); border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 11.5px; }
+.files-select-all { display: inline-grid; grid-template-columns: var(--files-check-col) auto; align-items: center; column-gap: var(--files-cell-gap); white-space: nowrap; cursor: pointer; }
+.files-select-all input { justify-self: center; }
 .files-selection-count { color: var(--text-3); white-space: nowrap; }
 .files-bulk-actions { display: flex; gap: 6px; margin-left: auto; }
 .files-bulk-actions .btn { white-space: nowrap; }
@@ -1178,8 +1230,8 @@ onUnmounted(() => {
 .files-breadcrumbs::-webkit-scrollbar { display: none; }
 .files-breadcrumbs button { max-width: 180px; overflow: hidden; border: 0; background: transparent; color: var(--text-2); text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .files-breadcrumbs button:disabled { color: var(--text); font-weight: 650; cursor: default; }
-.files-table-wrap { min-width: 0; overflow: auto; scrollbar-width: none; }
-.files-table-header, .files-row { display: grid; grid-template-columns: 28px minmax(155px, 1fr) minmax(78px, 105px) minmax(115px, 145px) minmax(188px, 230px); align-items: center; gap: 10px; padding: 0 13px; }
+.files-table-wrap { min-width: 0; min-height: 0; flex: 1; overflow: auto; scrollbar-width: none; }
+.files-table-header, .files-row { display: grid; grid-template-columns: var(--files-check-col) minmax(155px, 1fr) minmax(78px, 105px) minmax(115px, 145px) minmax(188px, 230px); align-items: center; gap: var(--files-cell-gap); padding: 0 var(--files-row-padding); }
 .files-table-header { position: sticky; top: 0; z-index: 1; min-height: 38px; border-bottom: 1px solid var(--border); background: var(--surface-solid); color: var(--text-3); font-size: 11.5px; font-weight: 650; }
 .files-check-cell { display: flex; align-items: center; justify-content: center; }
 .files-check-cell input, .files-select-all input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent-strong); cursor: pointer; }
@@ -1201,7 +1253,6 @@ onUnmounted(() => {
 .btn-danger { border-color: var(--danger-border); color: var(--danger-text); }
 .btn-danger:hover { border-color: var(--danger-border-hover); background: var(--danger-soft); }
 .files-actions-heading { text-align: right; }
-.files-drop-hint { margin-top: auto; padding: 10px 15px; border-top: 1px solid var(--border); }
 .files-empty { min-height: 310px; }
 .files-empty > svg { color: var(--accent-text); }
 .files-skeleton-row { display: grid; min-height: 61px; grid-template-columns: 28px minmax(155px, 1fr) minmax(78px, 105px) minmax(115px, 145px) minmax(188px, 230px); align-items: center; gap: 10px; padding: 0 13px; border-bottom: 1px solid var(--border); }
@@ -1228,12 +1279,14 @@ onUnmounted(() => {
 .files-preview-hex { color: var(--text-2); }
 .status-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: var(--idle-dot); vertical-align: middle; }
 .status-running { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.status-warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .status-stopped { background: var(--idle-dot); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
 
 @media (max-width: 1050px) {
   .files-shell { grid-template-columns: 210px minmax(0, 1fr); }
-  .files-table-header, .files-row, .files-skeleton-row { grid-template-columns: 26px minmax(135px, 1fr) 72px 105px minmax(175px, 205px); gap: 7px; padding-inline: 10px; }
+  .files-content-pane { --files-check-col: 26px; --files-cell-gap: 7px; --files-row-padding: 10px; }
+  .files-table-header, .files-row, .files-skeleton-row { grid-template-columns: var(--files-check-col) minmax(135px, 1fr) 72px 105px minmax(175px, 205px); gap: var(--files-cell-gap); padding-inline: var(--files-row-padding); }
   .files-row-actions { gap: 4px; }
   .files-row-actions .btn { padding-inline: 7px; }
 }
@@ -1243,13 +1296,13 @@ onUnmounted(() => {
   .files-heading-actions { align-items: center; }
   .files-heading .page-heading { min-width: 0; }
   .files-heading .page-heading p { max-width: 100%; }
-  .files-shell { grid-template-columns: minmax(0, 1fr); min-height: auto; }
+  .files-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; height: auto; min-height: auto; }
   .files-tree-pane { max-height: 220px; border-right: 0; border-bottom: 1px solid var(--border); }
   .files-tree { min-height: 90px; max-height: 150px; }
-  .files-tree-foot { display: none; }
   .files-content-pane { min-height: 400px; }
   .files-table-header { display: none; }
-  .files-row, .files-skeleton-row { grid-template-columns: 25px minmax(0, 1fr) minmax(148px, auto); gap: 4px 7px; padding: 8px 10px; }
+  .files-content-pane { --files-check-col: 25px; --files-cell-gap: 7px; --files-row-padding: 10px; }
+  .files-row, .files-skeleton-row { grid-template-columns: var(--files-check-col) minmax(0, 1fr) minmax(148px, auto); gap: 4px var(--files-cell-gap); padding: 8px var(--files-row-padding); }
   .files-row .files-check-cell { grid-column: 1; grid-row: 1 / span 2; align-self: start; padding-top: 10px; }
   .files-name-cell { grid-column: 2; grid-row: 1; gap: 7px; }
   .files-name-copy small { max-width: 100%; }
@@ -1261,13 +1314,14 @@ onUnmounted(() => {
   .files-skeleton-row .skeleton:nth-child(2), .files-skeleton-row .skeleton:nth-child(3) { display: none; }
   .files-skeleton-row .skeleton:first-child { width: 42vw; }
   .files-content-head { padding-inline: 11px; }
-  .files-selection-bar { flex-wrap: wrap; gap: 8px 12px; padding-inline: 11px; }
+  .files-selection-bar { flex-wrap: wrap; gap: 8px 12px; }
   .files-bulk-actions { width: 100%; margin-left: 0; }
   .files-bulk-actions .btn { flex: 1; }
   .files-breadcrumbs button { max-width: 135px; }
 }
 @media (max-width: 420px) {
-  .files-row, .files-skeleton-row { grid-template-columns: 22px minmax(64px, 1fr) minmax(130px, auto); gap: 4px; padding-inline: 7px; }
+  .files-content-pane { --files-check-col: 22px; --files-cell-gap: 4px; --files-row-padding: 7px; }
+  .files-row, .files-skeleton-row { grid-template-columns: var(--files-check-col) minmax(64px, 1fr) minmax(130px, auto); gap: var(--files-cell-gap); padding-inline: var(--files-row-padding); }
   .files-row-actions { gap: 3px; }
   .files-row-actions .btn { padding-inline: 5px; font-size: 10.5px; }
   .files-row-actions .files-download-btn { gap: 3px; }

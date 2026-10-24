@@ -259,14 +259,19 @@ export async function createProjectDirectory(rawParent: unknown, rawName: unknow
   return entryAtPath(path.join(parent.fullPath, name), joinVirtual(parent.virtualPath, name), name);
 }
 
-export async function uploadProjectFile(rawParent: unknown, rawName: unknown, input: NodeJS.ReadableStream, contentLength: number): Promise<FileEntry> {
+export async function uploadProjectFile(rawParent: unknown, rawName: unknown, input: NodeJS.ReadableStream, contentLength: number, overwrite = false): Promise<FileEntry> {
   const parent = await resolveProject(rawParent);
   if (!parent.lstat.isDirectory()) throw bad('目标位置不是文件夹');
   const name = validateNewName(rawName);
   if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) throw payloadTooLarge('单个文件不能超过 10 GB', 'A single file is limited to 10 GB.');
   const destination = path.join(parent.fullPath, name);
-  try { await fsp.lstat(destination); throw conflict('同名文件已经存在，请先删除或重命名现有文件'); }
+  let existing: fs.Stats | null = null;
+  try { existing = await fsp.lstat(destination); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  if (existing) {
+    if (!overwrite) throw conflict('同名文件已经存在');
+    if (existing.isSymbolicLink() || !existing.isFile()) throw conflict('同名路径不是普通文件，无法覆盖上传');
+  }
   const temp = path.join(parent.fullPath, `.blockcraft-upload-${crypto.randomUUID()}.tmp`);
   let bytes = 0;
   let limitExceeded = false;
@@ -282,11 +287,24 @@ export async function uploadProjectFile(rawParent: unknown, rawName: unknown, in
   try {
     await pipeline(input, limiter, fs.createWriteStream(temp, { flags: 'wx' }));
     if (limitExceeded) throw payloadTooLarge('单个文件不能超过 10 GB', 'A single file is limited to 10 GB.');
-    try { await fsp.link(temp, destination); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw conflict('同名文件已经存在，请先删除或重命名现有文件');
-      if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-      await fsp.copyFile(temp, destination, fs.constants.COPYFILE_EXCL);
+    if (overwrite && existing) {
+      let latest: fs.Stats;
+      try { latest = await fsp.lstat(destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw conflict('目标文件已变化，请刷新后重试');
+        throw error;
+      }
+      if (latest.isSymbolicLink() || !latest.isFile() || latest.dev !== existing.dev || latest.ino !== existing.ino || latest.size !== existing.size || latest.mtimeMs !== existing.mtimeMs) {
+        throw conflict('目标文件已变化，请刷新后重试');
+      }
+      await fsp.rename(temp, destination);
+    } else {
+      try { await fsp.link(temp, destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw conflict('同名文件已经存在');
+        if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        await fsp.copyFile(temp, destination, fs.constants.COPYFILE_EXCL);
+      }
     }
   } finally { await fsp.rm(temp, { force: true }).catch(() => undefined); }
   return entryAtPath(destination, joinVirtual(parent.virtualPath, name), name);

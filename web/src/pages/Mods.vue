@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import UiSelect from '../components/UiSelect.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, subscribe } from '../lib/api.ts';
@@ -461,25 +462,25 @@ function modrinthSearch(modId: string): string {
         </div>
         <div class="field" style="width: 148px">
           <label class="field-label">来源</label>
-          <select v-model="source" class="select">
+          <UiSelect v-model="source" class="select">
             <option v-for="o in SOURCE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-          </select>
+          </UiSelect>
         </div>
         <div class="field" style="width: 132px">
           <label class="field-label">状态</label>
-          <select v-model="status" class="select">
+          <UiSelect v-model="status" class="select">
             <option value="all">全部</option>
             <option value="enabled">已启用</option>
             <option value="disabled">已停用</option>
-          </select>
+          </UiSelect>
         </div>
         <div class="field" style="width: 106px">
           <label class="field-label">每页</label>
-          <select v-model.number="pageSize" class="select">
+          <UiSelect v-model.number="pageSize" class="select">
             <option :value="12">12</option>
             <option :value="24">24</option>
             <option :value="48">48</option>
-          </select>
+          </UiSelect>
         </div>
         <button class="btn filter-refresh" :disabled="loading" @click="load(1)">
           <span v-if="loading" class="spinner" />

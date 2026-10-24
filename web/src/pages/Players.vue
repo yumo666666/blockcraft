@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import UiSelect from '../components/UiSelect.vue';
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { WalkingAnimation, SkinViewer } from 'skinview3d';
@@ -1045,10 +1046,10 @@ function skinLabel(p: PlayerInfo): string {
           <span class="text-3 small">公开 HTTPS PNG。支持的服务端皮肤组件会保存并发给联机客户端。</span>
         </div>
         <div class="row gap-2 wrap">
-          <select v-model="skinUrlModel" class="select" aria-label="皮肤 URL 模型">
+          <UiSelect v-model="skinUrlModel" class="select" aria-label="皮肤 URL 模型">
             <option value="classic">Steve · 经典手臂</option>
             <option value="slim">Alex · 纤细手臂</option>
-          </select>
+          </UiSelect>
           <button class="btn btn-soft" :disabled="savingSkin || uploadingSkin === skinEditor.name" @click="pickSkin(skinEditor.name)">
             {{ uploadingSkin === skinEditor.name ? '上传中' : '上传 PNG' }}
           </button>

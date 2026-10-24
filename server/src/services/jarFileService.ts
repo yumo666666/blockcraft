@@ -544,7 +544,7 @@ export async function createProjectJarDirectory(rawArchivePath: unknown, rawPare
   });
 }
 
-export async function uploadProjectJarFile(rawArchivePath: unknown, rawParent: unknown, rawName: unknown, input: NodeJS.ReadableStream, contentLength: number): Promise<{ entry: FileEntry; signatureInvalidated: boolean }> {
+export async function uploadProjectJarFile(rawArchivePath: unknown, rawParent: unknown, rawName: unknown, input: NodeJS.ReadableStream, contentLength: number, overwrite = false): Promise<{ entry: FileEntry; signatureInvalidated: boolean }> {
   const name = validateProjectFileName(rawName);
   if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) throw payloadTooLarge('单个文件不能超过 10 GB', 'A single file is limited to 10 GB.');
   const initial = await resolveProjectTarget(rawArchivePath);
@@ -562,7 +562,12 @@ export async function uploadProjectJarFile(rawArchivePath: unknown, rawParent: u
     return await withJarMutation(rawArchivePath, async (index) => {
       const parent = assertJarDirectory(index, rawParent);
       const entryPath = parent ? `${parent}/${name}` : name;
-      if (index.records.some((record) => record.path === entryPath || record.path.startsWith(`${entryPath}/`))) throw conflict('JAR 内已有同名文件或文件夹');
+      const exactRecords = index.records.filter((record) => record.path === entryPath);
+      const existingFile = exactRecords.find((record) => !record.directory);
+      const conflictsWithDirectory = exactRecords.some((record) => record.directory)
+        || index.records.some((record) => record.path.startsWith(`${entryPath}/`));
+      if (conflictsWithDirectory) throw conflict('JAR 内同名路径是文件夹，无法覆盖上传');
+      if (existingFile && !overwrite) throw conflict('JAR 内已有同名文件');
       const signatureInvalidated = await rewriteJar(index, { replacements: new Map([[entryPath, { filePath: tempPath }]]) });
       return {
         entry: { name, path: entryPath, type: 'file', size: bytes, modifiedAt: new Date().toISOString(), editable: bytes <= MAX_EDIT_BYTES && EDITABLE_EXTENSIONS.has(path.extname(name).toLowerCase()), previewable: true, deletable: true },

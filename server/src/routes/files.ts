@@ -226,8 +226,9 @@ export function registerFileRoutes(app: Express): void {
       let filename = '';
       try { filename = decodeURIComponent(String(req.headers['x-blockcraft-filename'] ?? '')); }
       catch { throw bad('文件名编码无效'); }
-      const entry = await PF.uploadProjectFile(projectPath(req), filename, req, Number(req.headers['content-length'] ?? 0));
-      audit({ ip: req.ip, action: 'project-file.upload', target: entry.path, detail: { bytes: entry.size } });
+      const overwrite = req.query.overwrite === '1';
+      const entry = await PF.uploadProjectFile(projectPath(req), filename, req, Number(req.headers['content-length'] ?? 0), overwrite);
+      audit({ ip: req.ip, action: 'project-file.upload', target: entry.path, detail: { bytes: entry.size, overwrite } });
       res.json({ ok: true, entry });
     } catch (error) {
       if (!req.readableEnded && !req.destroyed) req.resume();
@@ -343,8 +344,9 @@ export function registerFileRoutes(app: Express): void {
       let filename = '';
       try { filename = decodeURIComponent(String(req.headers['x-blockcraft-filename'] ?? '')); }
       catch { throw bad('文件名编码无效'); }
-      const result = await JAR.uploadProjectJarFile(req.query.archive, req.query.path ?? '', filename, req, Number(req.headers['content-length'] ?? 0));
-      audit({ ip: req.ip, action: 'project-jar.upload', target: `${String(req.query.archive ?? '')}!/${result.entry.path}`, detail: { bytes: result.entry.size } });
+      const overwrite = req.query.overwrite === '1';
+      const result = await JAR.uploadProjectJarFile(req.query.archive, req.query.path ?? '', filename, req, Number(req.headers['content-length'] ?? 0), overwrite);
+      audit({ ip: req.ip, action: 'project-jar.upload', target: `${String(req.query.archive ?? '')}!/${result.entry.path}`, detail: { bytes: result.entry.size, overwrite } });
       res.json({ ok: true, ...result });
     } catch (error) {
       if (!req.readableEnded && !req.destroyed) req.resume();

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import UiSelect from '../components/UiSelect.vue';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, type UploadProgress } from '../lib/api.ts';
@@ -370,26 +371,26 @@ function backgroundJob() {
             <div class="field" style="min-width: 220px">
               <label class="field-label">Minecraft 版本</label>
               <div v-if="loadingMinecraftVersions && !versionsLoaded" class="skeleton wizard-field-skeleton" aria-label="正在读取 Minecraft 版本" />
-              <select v-else-if="versions.length" v-model="form.mc" class="select" @change="refreshLoaders">
+              <UiSelect v-else-if="versions.length" v-model="form.mc" class="select" @change="refreshLoaders">
                 <option v-for="v in versions" :key="v.id" :value="v.id">{{ v.id }}</option>
-              </select>
+              </UiSelect>
               <input v-else v-model="form.mc" class="input mono" @change="refreshLoaders" />
             </div>
             <div class="field" style="min-width: 200px">
               <label class="field-label">加载器</label>
               <div v-if="loadingVersions && loaderSnapshotMc !== form.mc" class="skeleton wizard-field-skeleton" aria-label="正在读取加载器" />
-              <select v-else v-model="form.loader" class="select" :disabled="loadingVersions && loaderSnapshotMc !== form.mc" @change="form.loaderVersion = currentLoader?.suggested ?? ''">
+              <UiSelect v-else v-model="form.loader" class="select" :disabled="loadingVersions && loaderSnapshotMc !== form.mc" @change="form.loaderVersion = currentLoader?.suggested ?? ''">
                 <option v-for="l in loaders" :key="l.loader" :value="l.loader" :disabled="!l.available">
                   {{ l.label }}{{ l.available ? '' : '（不可用）' }}
                 </option>
-              </select>
+              </UiSelect>
             </div>
             <div class="field" style="min-width: 200px">
               <label class="field-label">加载器版本</label>
               <div v-if="loadingVersions && loaderSnapshotMc !== form.mc" class="skeleton wizard-field-skeleton" aria-label="正在读取加载器版本" />
-              <select v-else-if="currentLoader?.versions.length" v-model="form.loaderVersion" class="select" :disabled="loadingVersions && loaderSnapshotMc !== form.mc">
+              <UiSelect v-else-if="currentLoader?.versions.length" v-model="form.loaderVersion" class="select" :disabled="loadingVersions && loaderSnapshotMc !== form.mc">
                 <option v-for="v in currentLoader.versions" :key="v" :value="v">{{ v }}</option>
-              </select>
+              </UiSelect>
               <input v-else v-model="form.loaderVersion" class="input mono" placeholder="原版无需填写" />
             </div>
           </div>
@@ -410,21 +411,21 @@ function backgroundJob() {
             </div>
             <div class="field">
               <label class="field-label">游戏模式</label>
-              <select v-model="form.gamemode" class="select">
+              <UiSelect v-model="form.gamemode" class="select">
                 <option value="survival">生存</option>
                 <option value="creative">创造</option>
                 <option value="adventure">冒险</option>
                 <option value="spectator">旁观</option>
-              </select>
+              </UiSelect>
             </div>
             <div class="field">
               <label class="field-label">难度</label>
-              <select v-model="form.difficulty" class="select">
+              <UiSelect v-model="form.difficulty" class="select">
                 <option value="peaceful">和平</option>
                 <option value="easy">简单</option>
                 <option value="normal">普通</option>
                 <option value="hard">困难</option>
-              </select>
+              </UiSelect>
             </div>
           </div>
           <div class="col gap-3">
@@ -608,13 +609,13 @@ function backgroundJob() {
             </div>
             <div class="field">
               <label class="field-label">加载器</label>
-              <select v-model="importForm.loader" class="select">
+              <UiSelect v-model="importForm.loader" class="select">
                 <option value="forge">Forge</option>
                 <option value="neoforge">NeoForge</option>
                 <option value="fabric">Fabric</option>
                 <option value="paper">Paper</option>
                 <option value="vanilla">原版</option>
-              </select>
+              </UiSelect>
             </div>
             <div class="field">
               <label class="field-label">加载器版本</label>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import UiSelect from '../components/UiSelect.vue';
 import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
@@ -401,12 +402,12 @@ async function killWorld(id: string) {
           <div class="card-body col gap-3">
             <div class="field">
               <label class="field-label">Java 下载源</label>
-              <select v-model="form.javaSource" class="select">
+              <UiSelect v-model="form.javaSource" class="select">
                 <option value="official">Adoptium 官方源（直连）</option>
                 <option value="tuna">清华 TUNA 镜像</option>
                 <option value="nju">南京大学镜像</option>
                 <option value="custom">自定义 Adoptium 镜像</option>
-              </select>
+              </UiSelect>
               <span class="field-hint">
                 只影响面板自动下载 Java 运行时；已经安装的 Java 不会被替换。国内建议选清华 TUNA 或南京大学。
               </span>
@@ -420,10 +421,10 @@ async function killWorld(id: string) {
             </div>
             <div class="field">
               <label class="field-label">Minecraft 下载源</label>
-              <select v-model="form.minecraftSource" class="select">
+              <UiSelect v-model="form.minecraftSource" class="select">
                 <option value="official">Mojang 官方源</option>
                 <option value="bmclapi">BMCLAPI 国内镜像</option>
-              </select>
+              </UiSelect>
               <span class="field-hint">
                 影响版本清单和原版服务端下载；Forge / NeoForge 使用各自的 Maven 源，已经默认带 BMCLAPI 回退。
               </span>

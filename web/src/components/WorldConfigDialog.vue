@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import UiSelect from './UiSelect.vue';
 import { ref, watch } from 'vue';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
@@ -268,21 +269,21 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
           </div>
           <div class="field">
             <label class="field-label">游戏模式</label>
-            <select v-model="form.gamemode" class="select">
+            <UiSelect v-model="form.gamemode" class="select">
               <option value="survival">生存</option>
               <option value="creative">创造</option>
               <option value="adventure">冒险</option>
               <option value="spectator">旁观</option>
-            </select>
+            </UiSelect>
           </div>
           <div class="field">
             <label class="field-label">难度</label>
-            <select v-model="form.difficulty" class="select">
+            <UiSelect v-model="form.difficulty" class="select">
               <option value="peaceful">和平</option>
               <option value="easy">简单</option>
               <option value="normal">普通</option>
               <option value="hard">困难</option>
-            </select>
+            </UiSelect>
           </div>
         </div>
         <div class="row gap-4 mt-3 wrap">

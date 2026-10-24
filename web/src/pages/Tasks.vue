@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import UiSelect from '../components/UiSelect.vue';
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
@@ -441,9 +442,9 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
         <span class="text-3 small">共 {{ total }} 条 · 每页 {{ pageSize }} 条</span>
       </div>
       <div class="card-body task-filters">
-        <label class="field"><span class="field-label">类型</span><select v-model="typeFilter" class="input" @change="refreshFilters"><option value="all">全部类型</option><option v-for="item in TYPES" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
-        <label class="field"><span class="field-label">目标</span><select v-model="targetFilter" class="input" @change="refreshFilters"><option value="all">全部目标</option><option value="panel">面板任务</option><option v-for="world in worlds" :key="world.id" :value="world.id">{{ world.name }}</option></select></label>
-        <label class="field"><span class="field-label">状态</span><select v-model="statusFilter" class="input" @change="refreshFilters"><option value="all">全部状态</option><option v-for="item in STATUSES" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
+        <label class="field"><span class="field-label">类型</span><UiSelect v-model="typeFilter" class="input" @change="refreshFilters"><option value="all">全部类型</option><option v-for="item in TYPES" :key="item.value" :value="item.value">{{ item.label }}</option></UiSelect></label>
+        <label class="field"><span class="field-label">目标</span><UiSelect v-model="targetFilter" class="input" @change="refreshFilters"><option value="all">全部目标</option><option value="panel">面板任务</option><option v-for="world in worlds" :key="world.id" :value="world.id">{{ world.name }}</option></UiSelect></label>
+        <label class="field"><span class="field-label">状态</span><UiSelect v-model="statusFilter" class="input" @change="refreshFilters"><option value="all">全部状态</option><option v-for="item in STATUSES" :key="item.value" :value="item.value">{{ item.label }}</option></UiSelect></label>
         <button class="btn btn-soft task-refresh" :disabled="loading" @click="load"><Icon name="undo" :size="15" />刷新</button>
       </div>
       <div v-if="loading && !hasLoaded" class="card-body task-record-skeleton" aria-hidden="true"><span v-for="item in 6" :key="item" class="skeleton" /></div>
@@ -473,8 +474,8 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
       <form class="task-form col gap-4" @submit.prevent="saveTask">
         <div class="form-grid-2">
           <label class="field"><span class="field-label">任务名称</span><input v-model="form.name" class="input" maxlength="80" placeholder="例如：每日自动保存" /></label>
-          <label class="field"><span class="field-label">目标世界</span><select v-model="form.instanceId" class="input" required><option value="" disabled>选择世界</option><option v-for="world in worlds" :key="world.id" :value="world.id">{{ world.name }}</option></select></label>
-          <label class="field"><span class="field-label">任务内容</span><select v-model="form.action" class="input"><option v-for="action in ACTIONS" :key="action.value" :value="action.value">{{ action.label }}</option></select></label>
+          <label class="field"><span class="field-label">目标世界</span><UiSelect v-model="form.instanceId" class="input" required><option value="" disabled>选择世界</option><option v-for="world in worlds" :key="world.id" :value="world.id">{{ world.name }}</option></UiSelect></label>
+          <label class="field"><span class="field-label">任务内容</span><UiSelect v-model="form.action" class="input"><option v-for="action in ACTIONS" :key="action.value" :value="action.value">{{ action.label }}</option></UiSelect></label>
           <fieldset class="task-mode-group field-span-2">
             <legend class="field-label">执行方式</legend>
             <div class="task-mode-options">
@@ -564,14 +565,14 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
 .empty-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: var(--accent); background: var(--accent-soft); }
 .task-form { min-width: 0; }
 .task-mode-group, .task-weekdays-group { min-width: 0; margin: 0; padding: 0; border: 0; }
-.task-mode-group legend, .task-weekdays-group legend { margin-bottom: 9px; }
+.task-mode-group legend, .task-weekdays-group legend { margin-bottom: 5px; }
 .task-mode-options, .task-weekday-options { display: flex; flex-wrap: wrap; gap: 8px; }
-.task-mode-option, .task-weekday-option { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 13px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); color: var(--text-2); cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
-.task-mode-option input, .task-weekday-option input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.task-mode-option, .task-weekday-option { position: relative; display: inline-flex; align-items: center; justify-content: center; height: 35px; min-height: 35px; padding: 0 13px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); color: var(--text-2); cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
+.task-mode-option input, .task-weekday-option input { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
 .task-mode-option.active, .task-weekday-option.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .task-mode-option:focus-within, .task-weekday-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .task-weekday-options { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.task-weekday-option { justify-content: flex-start; }
+.task-weekday-option { justify-content: center; white-space: nowrap; }
 .task-weekdays-group legend small { margin-left: 8px; color: var(--text-3); font-size: 12px; font-weight: 400; }
 .task-textarea { min-height: 92px; resize: vertical; }
 .task-announcement { display: grid; gap: 14px; border: 1px solid var(--border); border-radius: var(--r); padding: 14px; background: var(--surface-2); }
@@ -607,6 +608,9 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
 }
 @media (max-width: 600px) {
   .task-weekday-options { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .task-mode-option, .task-weekday-option { height: 44px; min-height: 44px; }
 }
 @media (max-width: 480px) {
   .task-filters { grid-template-columns: 1fr; }
