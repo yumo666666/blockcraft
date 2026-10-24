@@ -4,6 +4,8 @@ go 1.22
 
 require github.com/getlantern/systray v1.2.2
 
+replace github.com/getlantern/systray => ./tray
+
 require (
 	github.com/getlantern/context v0.0.0-20190109183933-c447772a6520 // indirect
 	github.com/getlantern/errors v0.0.0-20190325191628-abdb3e3e36f7 // indirect

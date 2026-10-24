@@ -129,7 +129,7 @@ export interface Job {
   kind: string;
   title: string;
   instanceId: string | null;
-  status: string;
+  status: 'queued' | 'waiting' | 'running' | 'cancelling' | 'cancelled' | 'done' | 'failed' | 'skipped' | 'interrupted';
   stages: { key: string; label: string; status: string }[];
   lines: string[];
   progress: number;

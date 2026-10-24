@@ -66,6 +66,17 @@ export function listRunningJobs(): Job[] {
     .map(({ lines, ...rest }) => ({ ...rest, lines: [] }) as Job);
 }
 
+/** Jobs that still hold a world resource, including backups waiting for a world to stop. */
+export function listBlockingJobs(): Job[] {
+  return readAllJobs()
+    .filter((job) => job.status === 'queued' || job.status === 'waiting' || job.status === 'running' || job.status === 'cancelling')
+    .map(({ lines, ...rest }) => ({ ...rest, lines: [] }) as Job);
+}
+
+export function listWaitingJobs(): Job[] {
+  return readAllJobs().filter((job) => job.status === 'waiting');
+}
+
 export function getJob(jobId: string): Job {
   const job = readJsonSync<Job | null>(file(jobId), null);
   if (!job) throw notFound(`任务不存在：${jobId}`);
@@ -244,12 +255,27 @@ export function skipJob(jobId: string, reason: string): Job {
   return updateJob(jobId, { status: 'skipped', error: reason, stages, endedAt: Date.now() });
 }
 
+export function deferJob(jobId: string, reason: string): Job {
+  const current = getJob(jobId);
+  logJob(jobId, `已延后等待：${reason}`);
+  const stages = current.stages.map((stage) => stage.key === 'action'
+    ? { ...stage, status: 'pending' as const, label: '等待目标世界停止' }
+    : stage);
+  return updateJob(jobId, { status: 'waiting', error: null, endedAt: null, stages });
+}
+
 export function jobSignal(jobId: string): AbortSignal | undefined {
   return abortControllers.get(jobId)?.signal;
 }
 
 export function requestJobCancellation(jobId: string): Job {
   const job = getJob(jobId);
+  if (job.status === 'waiting') {
+    const stages = job.stages.map((stage) => stage.status === 'pending' || stage.status === 'running'
+      ? { ...stage, status: 'cancelled' as const }
+      : stage);
+    return updateJob(jobId, { status: 'cancelled', error: null, stages, endedAt: Date.now() });
+  }
   if (job.status === 'queued') {
     const index = queue.indexOf(jobId);
     if (index >= 0) queue.splice(index, 1);

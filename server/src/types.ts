@@ -227,7 +227,7 @@ export interface Job {
   kind: 'create' | 'import' | 'world-import' | 'pack-import' | 'backup-import' | 'copy' | 'backup' | 'rollback' | 'install' | 'start' | 'stop' | 'save' | 'broadcast' | 'restart' | 'command' | 'panel';
   title: string;
   instanceId: string | null;
-  status: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'done' | 'failed' | 'skipped' | 'interrupted';
+  status: 'queued' | 'waiting' | 'running' | 'cancelling' | 'cancelled' | 'done' | 'failed' | 'skipped' | 'interrupted';
   source?: 'operation' | 'scheduled' | 'system';
   scheduledTaskId?: string | null;
   createdAt?: number;

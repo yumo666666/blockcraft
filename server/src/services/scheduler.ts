@@ -6,8 +6,8 @@ import * as I from './instanceService.ts';
 import * as sup from './supervisor.ts';
 import { loadConfig } from '../config.ts';
 import { listScheduledTasks, markScheduledOccurrence } from './scheduledTasks.ts';
-import { enqueueActionTask } from './taskRunner.ts';
-import { createJob } from './jobService.ts';
+import { enqueueActionTask, resumeWaitingBackupJob } from './taskRunner.ts';
+import { createJob, listWaitingJobs } from './jobService.ts';
 
 const logger = createLogger('scheduler');
 const TICK_MS = 5000;
@@ -172,9 +172,17 @@ async function tickAutomaticBackups(): Promise<void> {
   }
 }
 
+async function tickWaitingBackups(): Promise<void> {
+  const waiting = listWaitingJobs().filter((job) => job.kind === 'backup' && job.source === 'scheduled');
+  await Promise.all(waiting.map((job) => resumeWaitingBackupJob(job.id).catch((err) => {
+    logger.warn(`延后备份任务恢复失败：${job.title}`, String(err));
+  })));
+}
+
 async function tick(): Promise<void> {
   const now = new Date();
   await tickScheduledTasks(now);
+  await tickWaitingBackups();
   await tickAutomaticBackups();
   const panel = loadConfig();
   const runningIds = I.listInstanceIds().filter((id) => sup.isRunning(id));

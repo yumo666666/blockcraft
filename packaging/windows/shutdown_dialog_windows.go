@@ -100,10 +100,11 @@ var (
 	endPaint                = shutdownUser32.NewProc("EndPaint")
 	getClientRect           = shutdownUser32.NewProc("GetClientRect")
 	fillRect                = shutdownUser32.NewProc("FillRect")
-	frameRect               = shutdownUser32.NewProc("FrameRect")
 	drawTextW               = shutdownUser32.NewProc("DrawTextW")
 	getStockObject          = shutdownGdi32.NewProc("GetStockObject")
 	createSolidBrush        = shutdownGdi32.NewProc("CreateSolidBrush")
+	createPen               = shutdownGdi32.NewProc("CreatePen")
+	roundRect               = shutdownGdi32.NewProc("RoundRect")
 	deleteObject            = shutdownGdi32.NewProc("DeleteObject")
 	setTextColor            = shutdownGdi32.NewProc("SetTextColor")
 	setBkMode               = shutdownGdi32.NewProc("SetBkMode")
@@ -111,6 +112,7 @@ var (
 	selectObject            = shutdownGdi32.NewProc("SelectObject")
 	getSystemMetrics        = shutdownUser32.NewProc("GetSystemMetrics")
 	getModuleHandleW        = shutdownKernel32.NewProc("GetModuleHandleW")
+	dwmSetWindowAttribute   = syscall.NewLazyDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
 	shutdownWindowClassName = syscall.StringToUTF16Ptr("BlockCraftWorldShutdownProgress")
 	shutdownWindowProc      = syscall.NewCallback(shutdownWindowProcedure)
 	shutdownWindowHandle    atomic.Uintptr
@@ -119,6 +121,40 @@ var (
 
 func shutdownRGB(r, g, b byte) uintptr {
 	return uintptr(r) | uintptr(g)<<8 | uintptr(b)<<16
+}
+
+func paintShutdownRoundedRect(hdc uintptr, rect shutdownRect, fillColor, borderColor uintptr, radius int32) {
+	brush, _, _ := createSolidBrush.Call(fillColor)
+	pen, _, _ := createPen.Call(0, 1, borderColor)
+	if brush == 0 || pen == 0 {
+		if brush != 0 {
+			deleteObject.Call(brush)
+		}
+		if pen != 0 {
+			deleteObject.Call(pen)
+		}
+		return
+	}
+	oldBrush, _, _ := selectObject.Call(hdc, brush)
+	oldPen, _, _ := selectObject.Call(hdc, pen)
+	roundRect.Call(hdc, uintptr(rect.left), uintptr(rect.top), uintptr(rect.right), uintptr(rect.bottom), uintptr(radius), uintptr(radius))
+	selectObject.Call(hdc, oldPen)
+	selectObject.Call(hdc, oldBrush)
+	deleteObject.Call(pen)
+	deleteObject.Call(brush)
+}
+
+func styleLauncherWindow(hwnd uintptr) {
+	defer func() { _ = recover() }()
+	const (
+		dwmaWindowCornerPreference = 33
+		dwmaBorderColor            = 34
+		dwmwcpRound                = int32(2)
+	)
+	corner := dwmwcpRound
+	border := uint32(shutdownRGB(111, 91, 105))
+	dwmSetWindowAttribute.Call(hwnd, dwmaWindowCornerPreference, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
+	dwmSetWindowAttribute.Call(hwnd, dwmaBorderColor, uintptr(unsafe.Pointer(&border)), unsafe.Sizeof(border))
 }
 
 func drawShutdownText(hdc uintptr, value string, rect shutdownRect, color uintptr, flags uintptr) {
@@ -170,49 +206,48 @@ func paintShutdownWindow(hwnd uintptr) uintptr {
 	}
 	var client shutdownRect
 	getClientRect.Call(hwnd, uintptr(unsafe.Pointer(&client)))
-	background, _, _ := createSolidBrush.Call(shutdownRGB(17, 23, 19))
-	headerBrush, _, _ := createSolidBrush.Call(shutdownRGB(29, 39, 33))
-	cardBrush, _, _ := createSolidBrush.Call(shutdownRGB(23, 32, 27))
-	border, _, _ := createSolidBrush.Call(shutdownRGB(49, 66, 55))
-	accent, _, _ := createSolidBrush.Call(shutdownRGB(132, 200, 95))
+	background, _, _ := createSolidBrush.Call(shutdownRGB(44, 34, 42))
+	headerBrush, _, _ := createSolidBrush.Call(shutdownRGB(54, 40, 51))
+	border, _, _ := createSolidBrush.Call(shutdownRGB(111, 91, 105))
+	accent, _, _ := createSolidBrush.Call(shutdownRGB(216, 169, 171))
 	if background != 0 {
 		fillRect.Call(hdc, uintptr(unsafe.Pointer(&client)), background)
 	}
+	outer := shutdownRect{left: 1, top: 1, right: client.right - 1, bottom: client.bottom - 1}
+	paintShutdownRoundedRect(hdc, outer, shutdownRGB(44, 34, 42), shutdownRGB(111, 91, 105), 16)
+	header := shutdownRect{left: 2, top: 2, right: client.right - 2, bottom: 90}
+	paintShutdownRoundedRect(hdc, header, shutdownRGB(54, 40, 51), shutdownRGB(54, 40, 51), 14)
+	headerLower := shutdownRect{left: 2, top: 28, right: client.right - 2, bottom: 89}
+	if headerBrush != 0 {
+		fillRect.Call(hdc, uintptr(unsafe.Pointer(&headerLower)), headerBrush)
+	}
 	if accent != 0 {
-		stripe := shutdownRect{left: 0, top: 0, right: client.right, bottom: 5}
+		stripe := shutdownRect{left: 20, top: 7, right: client.right - 20, bottom: 10}
 		fillRect.Call(hdc, uintptr(unsafe.Pointer(&stripe)), accent)
 	}
-	if headerBrush != 0 {
-		header := shutdownRect{left: 1, top: 5, right: client.right - 1, bottom: 89}
-		fillRect.Call(hdc, uintptr(unsafe.Pointer(&header)), headerBrush)
-	}
 	card := shutdownRect{left: 20, top: 102, right: client.right - 20, bottom: client.bottom - 60}
-	if cardBrush != 0 {
-		fillRect.Call(hdc, uintptr(unsafe.Pointer(&card)), cardBrush)
-	}
+	paintShutdownRoundedRect(hdc, card, shutdownRGB(58, 47, 55), shutdownRGB(111, 91, 105), 12)
 	if border != 0 {
-		frameRect.Call(hdc, uintptr(unsafe.Pointer(&client)), border)
-		separator := shutdownRect{left: 1, top: 89, right: client.right - 1, bottom: 90}
+		separator := shutdownRect{left: 2, top: 89, right: client.right - 2, bottom: 90}
 		fillRect.Call(hdc, uintptr(unsafe.Pointer(&separator)), border)
-		frameRect.Call(hdc, uintptr(unsafe.Pointer(&card)), border)
 	}
 
 	titleFont, oldTitleFont := selectedShutdownFont(hdc, -22, fontWeightBold)
 	title := shutdownRect{left: 28, top: 19, right: client.right - 28, bottom: 52}
-	drawShutdownText(hdc, "正在安全关闭 BlockCraft", title, shutdownRGB(229, 237, 231), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "正在安全关闭 BlockCraft", title, shutdownRGB(246, 239, 227), textSingleLine|textVCenter)
 	restoreShutdownFont(hdc, titleFont, oldTitleFont)
 
 	subtitleFont, oldSubtitleFont := selectedShutdownFont(hdc, -14, fontWeight)
 	subtitle := shutdownRect{left: 29, top: 55, right: client.right - 28, bottom: 80}
-	drawShutdownText(hdc, "等待世界、FRP 与面板服务全部停止后，启动器才会退出", subtitle, shutdownRGB(155, 171, 160), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "等待世界、FRP 与面板服务全部停止后，启动器才会退出", subtitle, shutdownRGB(182, 168, 151), textSingleLine|textVCenter)
 	body := shutdownRect{left: 38, top: 116, right: client.right - 36, bottom: client.bottom - 70}
-	drawShutdownText(hdc, currentShutdownText(), body, shutdownRGB(221, 231, 224), textWordBreak)
+	drawShutdownText(hdc, currentShutdownText(), body, shutdownRGB(246, 239, 227), textWordBreak)
 
 	footer := shutdownRect{left: 29, top: client.bottom - 47, right: client.right - 28, bottom: client.bottom - 19}
-	drawShutdownText(hdc, "请耐心等待 · 请勿手动结束进程，以免世界存档损坏", footer, shutdownRGB(155, 171, 160), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "请耐心等待 · 请勿手动结束进程，以免世界存档损坏", footer, shutdownRGB(182, 168, 151), textSingleLine|textVCenter)
 	restoreShutdownFont(hdc, subtitleFont, oldSubtitleFont)
 
-	for _, brush := range []uintptr{background, headerBrush, cardBrush, border, accent} {
+	for _, brush := range []uintptr{background, headerBrush, border, accent} {
 		if brush != 0 {
 			deleteObject.Call(brush)
 		}
@@ -357,6 +392,7 @@ func showShutdownProgress(items []string) (func(string, []string, string), func(
 			return
 		}
 		shutdownWindowHandle.Store(hwnd)
+		styleLauncherWindow(hwnd)
 		select {
 		case <-cancel:
 			destroyWindow.Call(hwnd)

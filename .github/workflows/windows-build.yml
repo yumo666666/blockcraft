@@ -1,0 +1,46 @@
+name: Windows Package Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.24.2
+
+      - name: Build Windows x64 package
+        run: ./packaging/windows/build.sh
+
+      - name: Create checksum
+        working-directory: dist-release
+        run: sha256sum BlockCraft-Windows-x64.zip > BlockCraft-Windows-x64.zip.sha256
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlockCraft-Windows-x64-${{ github.sha }}
+          path: |
+            dist-release/BlockCraft-Windows-x64.zip
+            dist-release/BlockCraft-Windows-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -5,7 +5,7 @@ import { dirSizeSync } from '../core/fsx.ts';
 import { loadConfig, publicConfig, saveConfig, randomToken } from '../config.ts';
 import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
-import { createJob, listRunningJobs, pendingJobSetups, waitForJob } from '../services/jobService.ts';
+import { createJob, listBlockingJobs, listRunningJobs, pendingJobSetups, waitForJob } from '../services/jobService.ts';
 import { enqueueActionTask } from '../services/taskRunner.ts';
 import { evSystem, listEvents as evList } from '../services/eventLog.ts';
 import { bad } from '../core/errors.ts';
@@ -307,6 +307,22 @@ export function registerSystemRoutes(app: Express): void {
         });
         return;
       }
+
+      // Waiting scheduled backups must be allowed to outlive the world stop,
+      // then finish before the panel process exits and interrupts file writes.
+      let lastBackupWaitLog = 0;
+      while (true) {
+        const backups = listBlockingJobs().filter((job) => job.kind === 'backup' && job.source === 'scheduled');
+        if (backups.length === 0) break;
+        if (Date.now() - lastBackupWaitLog >= 10_000) {
+          shutdownLogger.info('托盘关机：等待已延后的定时备份完成', {
+            jobs: backups.map((job) => ({ title: job.title, status: job.status, progress: job.progress })),
+          });
+          lastBackupWaitLog = Date.now();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
       const frpStop = await frp.stopChannelsForShutdown();
       if (!frpStop.ok) {
         shutdownAfterWorldsInProgress = false;

@@ -88,6 +88,7 @@ const TYPES = [
 ];
 const STATUSES = [
   { value: 'queued', label: '排队中' },
+  { value: 'waiting', label: '延后等待中' },
   { value: 'running', label: '执行中' },
   { value: 'done', label: '已完成' },
   { value: 'failed', label: '失败' },
@@ -98,7 +99,7 @@ const STATUSES = [
 const STATUS_LABEL: Record<string, string> = Object.fromEntries(STATUSES.map((item) => [item.value, item.label]));
 const TYPE_LABEL: Record<string, string> = Object.fromEntries(TYPES.map((item) => [item.value, item.label]));
 const STATUS_CLASS: Record<string, string> = {
-  queued: 'queued', running: 'running', done: 'done', failed: 'failed', skipped: 'skipped', cancelled: 'cancelled', interrupted: 'failed',
+  queued: 'queued', waiting: 'waiting', running: 'running', done: 'done', failed: 'failed', skipped: 'skipped', cancelled: 'cancelled', interrupted: 'failed',
 };
 
 const cachedTasks = readBrowserSnapshot<TaskCenterSnapshot>('tasks');
@@ -236,7 +237,7 @@ async function load(): Promise<void> {
     total.value = recordData.total ?? 0;
     hasLoaded.value = true;
     persistTaskSnapshot();
-    if (detailOpen.value && selectedRecord.value && ['queued', 'running', 'cancelling'].includes(selectedRecord.value.status)) {
+    if (detailOpen.value && selectedRecord.value && ['queued', 'waiting', 'running', 'cancelling'].includes(selectedRecord.value.status)) {
       const taskId = selectedRecord.value.id;
       void api.get<Job>(`/api/tasks/${taskId}`).then((task) => {
         if (selectedRecord.value?.id === taskId) selectedRecord.value = task;
@@ -358,8 +359,9 @@ async function deleteTask(task: ScheduledTask): Promise<void> {
 
 async function runTask(task: ScheduledTask): Promise<void> {
   try {
-    await api.post(`/api/tasks/scheduled/${task.id}/run`);
-    toast('ok', '任务已加入执行队列');
+    const result = await api.post<{ status?: string }>(`/api/tasks/scheduled/${task.id}/run`);
+    if (task.action === 'backup' && result.status === 'waiting') toast('ok', '备份任务已延后等待', '目标世界停止后会自动开始备份');
+    else toast('ok', '任务已加入执行队列');
     await load();
   } catch (err) {
     toastError(err, '启动任务失败');
@@ -459,7 +461,7 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
               <td><span class="task-status" :class="`status-${STATUS_CLASS[record.status] ?? 'failed'}`">{{ STATUS_LABEL[record.status] ?? record.status }}</span></td>
               <td>{{ formatTime(record.createdAt ?? record.startedAt) }}</td>
               <td>{{ duration(record) }}</td>
-              <td><span class="task-stage">{{ record.stages.find((stage) => stage.status === 'running')?.label ?? record.stages.at(-1)?.label ?? '—' }}</span><small v-if="record.status === 'queued'">队列中</small><small v-else>{{ record.progress }}%</small></td>
+              <td><span class="task-stage">{{ record.stages.find((stage) => stage.status === 'running')?.label ?? record.stages.at(-1)?.label ?? '—' }}</span><small v-if="record.status === 'queued'">队列中</small><small v-else-if="record.status === 'waiting'">等待目标世界停止</small><small v-else>{{ record.progress }}%</small></td>
             </tr>
           </tbody>
         </table>
@@ -505,7 +507,7 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
             <label class="field field-span-2"><span class="field-label">公告内容</span><input v-model="form.announceText" class="input" maxlength="500" placeholder="用 {n} 代表剩余分钟数" /></label>
           </div>
         </div>
-        <p class="task-form-note">世界未运行时，依赖在线世界的命令、公告、保存、停止或重启会标记为“已跳过”。开始世界任务仍会执行；若提前公告时世界离线，公告单独记为跳过。</p>
+        <p class="task-form-note">停止、保存、重启、命令和公告任务会在执行时检查世界状态：世界未运行则标记为“已跳过”，之后不会补执行；启动任务遇到已运行的世界也会跳过。备份任务遇到运行中的世界时会延后等待，世界停止后再自动执行。</p>
       </form>
       <template #footer><button class="btn btn-soft" @click="formOpen = false">取消</button><button class="btn btn-primary" :disabled="busy || !form.instanceId" @click="saveTask"><span v-if="busy" class="spinner spinner-on-accent" />保存任务</button></template>
     </Modal>
@@ -545,6 +547,7 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
 .state-off, .status-cancelled { color: var(--text-3); background: var(--surface-2); }
 .status-running { color: var(--accent-strong); background: var(--accent-soft); }
 .status-queued { color: #946000; background: #fff1c9; }
+.status-waiting { color: #5b63a8; background: #eceeff; }
 .status-failed { color: var(--danger); background: var(--danger-soft); }
 .status-skipped { color: #796225; background: #fff2d5; }
 .task-table-wrap { overflow-x: auto; }

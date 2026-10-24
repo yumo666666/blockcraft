@@ -122,7 +122,7 @@ export function registerTaskRoutes(app: Express): void {
       scheduledTaskId: task.id,
       title: `手动执行：${task.name}`,
     });
-    res.status(202).json({ ok: true, jobId: job.id });
+    res.status(202).json({ ok: true, jobId: job.id, status: getJob(job.id).status });
   });
 
   app.get('/api/tasks/:id', (req, res) => {

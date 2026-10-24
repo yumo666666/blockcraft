@@ -14,21 +14,21 @@ const (
 	wmKeyDown   = 0x0100
 	wmSetCursor = 0x0020
 
-	wsBorder      = 0x00800000
-	vkReturn      = 0x0D
-	vkEscape      = 0x1B
-	vkY           = 0x59
-	vkN           = 0x4E
-	idYes         = 6
-	idNo          = 7
+	wsBorder            = 0x00800000
+	vkReturn            = 0x0D
+	vkEscape            = 0x1B
+	vkY                 = 0x59
+	vkN                 = 0x4E
+	idYes               = 6
+	idNo                = 7
 	confirmWindowWidth  = 580
 	confirmWindowHeight = 270
 )
 
 var (
-	shutdownConfirmClassName = syscall.StringToUTF16Ptr("BlockCraftShutdownConfirmation")
+	shutdownConfirmClassName  = syscall.StringToUTF16Ptr("BlockCraftShutdownConfirmation")
 	shutdownConfirmWindowProc = syscall.NewCallback(shutdownConfirmationWindowProcedure)
-	shutdownConfirmResult atomic.Int32
+	shutdownConfirmResult     atomic.Int32
 )
 
 func paintShutdownConfirmation(hwnd uintptr) uintptr {
@@ -39,62 +39,55 @@ func paintShutdownConfirmation(hwnd uintptr) uintptr {
 	}
 	var client shutdownRect
 	getClientRect.Call(hwnd, uintptr(unsafe.Pointer(&client)))
-	background, _, _ := createSolidBrush.Call(shutdownRGB(17, 23, 19))
-	headerBrush, _, _ := createSolidBrush.Call(shutdownRGB(29, 39, 33))
-	border, _, _ := createSolidBrush.Call(shutdownRGB(67, 91, 72))
-	accent, _, _ := createSolidBrush.Call(shutdownRGB(132, 200, 95))
-	button, _, _ := createSolidBrush.Call(shutdownRGB(132, 200, 95))
-	buttonQuiet, _, _ := createSolidBrush.Call(shutdownRGB(29, 39, 33))
+	background, _, _ := createSolidBrush.Call(shutdownRGB(44, 34, 42))
+	headerBrush, _, _ := createSolidBrush.Call(shutdownRGB(54, 40, 51))
+	border, _, _ := createSolidBrush.Call(shutdownRGB(111, 91, 105))
+	accent, _, _ := createSolidBrush.Call(shutdownRGB(216, 169, 171))
 	if background != 0 {
 		fillRect.Call(hdc, uintptr(unsafe.Pointer(&client)), background)
 	}
-	stripe := shutdownRect{left: 0, top: 0, right: client.right, bottom: 5}
+	outer := shutdownRect{left: 1, top: 1, right: client.right - 1, bottom: client.bottom - 1}
+	paintShutdownRoundedRect(hdc, outer, shutdownRGB(44, 34, 42), shutdownRGB(111, 91, 105), 16)
+	header := shutdownRect{left: 2, top: 2, right: client.right - 2, bottom: 57}
+	paintShutdownRoundedRect(hdc, header, shutdownRGB(54, 40, 51), shutdownRGB(54, 40, 51), 14)
+	headerLower := shutdownRect{left: 2, top: 25, right: client.right - 2, bottom: 56}
+	if headerBrush != 0 {
+		fillRect.Call(hdc, uintptr(unsafe.Pointer(&headerLower)), headerBrush)
+	}
+	stripe := shutdownRect{left: 20, top: 7, right: client.right - 20, bottom: 10}
 	if accent != 0 {
 		fillRect.Call(hdc, uintptr(unsafe.Pointer(&stripe)), accent)
 	}
-	header := shutdownRect{left: 1, top: 5, right: client.right - 1, bottom: 56}
-	if headerBrush != 0 {
-		fillRect.Call(hdc, uintptr(unsafe.Pointer(&header)), headerBrush)
-	}
-	frame := shutdownRect{left: 0, top: 0, right: client.right, bottom: client.bottom}
 	if border != 0 {
-		frameRect.Call(hdc, uintptr(unsafe.Pointer(&frame)), border)
-		separator := shutdownRect{left: 1, top: 56, right: client.right - 1, bottom: 57}
+		separator := shutdownRect{left: 2, top: 56, right: client.right - 2, bottom: 57}
 		fillRect.Call(hdc, uintptr(unsafe.Pointer(&separator)), border)
 	}
 
 	titleFont, oldTitleFont := selectedShutdownFont(hdc, -20, fontWeightBold)
 	title := shutdownRect{left: 28, top: 15, right: client.right - 56, bottom: 48}
-	drawShutdownText(hdc, "关闭 BlockCraft", title, shutdownRGB(229, 237, 231), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "关闭 BlockCraft", title, shutdownRGB(246, 239, 227), textSingleLine|textVCenter)
 	closeGlyph := shutdownRect{left: client.right - 42, top: 10, right: client.right - 14, bottom: 48}
-	drawShutdownText(hdc, "×", closeGlyph, shutdownRGB(155, 171, 160), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "×", closeGlyph, shutdownRGB(182, 168, 151), textSingleLine|textVCenter)
 	restoreShutdownFont(hdc, titleFont, oldTitleFont)
 
 	bodyFont, oldBodyFont := selectedShutdownFont(hdc, -16, fontWeight)
 	body1 := shutdownRect{left: 34, top: 78, right: client.right - 30, bottom: 112}
 	body2 := shutdownRect{left: 34, top: 116, right: client.right - 30, bottom: 150}
-	drawShutdownText(hdc, "这会先安全停止所有正在运行的 Minecraft 世界，然后关闭 BlockCraft。", body1, shutdownRGB(221, 231, 224), textSingleLine|textVCenter)
-	drawShutdownText(hdc, "停止过程可能需要一些时间。是否继续？", body2, shutdownRGB(155, 171, 160), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "这会先安全停止所有正在运行的 Minecraft 世界，然后关闭 BlockCraft。", body1, shutdownRGB(246, 239, 227), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "停止过程可能需要一些时间。是否继续？", body2, shutdownRGB(182, 168, 151), textSingleLine|textVCenter)
 	restoreShutdownFont(hdc, bodyFont, oldBodyFont)
 
 	// The lower-right pair mirrors BlockCraft's secondary and primary actions.
 	noRect := shutdownRect{left: client.right - 248, top: client.bottom - 58, right: client.right - 142, bottom: client.bottom - 20}
 	yesRect := shutdownRect{left: client.right - 130, top: client.bottom - 58, right: client.right - 24, bottom: client.bottom - 20}
-	if buttonQuiet != 0 {
-		fillRect.Call(hdc, uintptr(unsafe.Pointer(&noRect)), buttonQuiet)
-	}
-	if border != 0 {
-		frameRect.Call(hdc, uintptr(unsafe.Pointer(&noRect)), border)
-	}
-	if button != 0 {
-		fillRect.Call(hdc, uintptr(unsafe.Pointer(&yesRect)), button)
-	}
+	paintShutdownRoundedRect(hdc, noRect, shutdownRGB(58, 47, 55), shutdownRGB(111, 91, 105), 9)
+	paintShutdownRoundedRect(hdc, yesRect, shutdownRGB(216, 169, 171), shutdownRGB(216, 169, 171), 9)
 	labelFont, oldLabelFont := selectedShutdownFont(hdc, -15, fontWeightBold)
-	drawShutdownText(hdc, "否 (N)", noRect, shutdownRGB(221, 231, 224), textSingleLine|textVCenter)
-	drawShutdownText(hdc, "是 (Y)", yesRect, shutdownRGB(24, 38, 25), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "否 (N)", noRect, shutdownRGB(246, 239, 227), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "是 (Y)", yesRect, shutdownRGB(42, 31, 36), textSingleLine|textVCenter)
 	restoreShutdownFont(hdc, labelFont, oldLabelFont)
 
-	for _, brush := range []uintptr{background, headerBrush, border, accent, button, buttonQuiet} {
+	for _, brush := range []uintptr{background, headerBrush, border, accent} {
 		if brush != 0 {
 			deleteObject.Call(brush)
 		}
@@ -152,8 +145,8 @@ func shutdownConfirmationWindowProcedure(hwnd uintptr, message uint32, wParam, l
 	return result
 }
 
-// showShutdownConfirmation replaces the plain Windows MessageBox with the
-// same forest-green visual language as the safe-shutdown progress window.
+// showShutdownConfirmation uses the same dusk-glass visual language as the
+// BlockCraft panel and its safe-shutdown progress window.
 // It is an ordinary centered window, stays in normal z-order, and defaults to No.
 func showShutdownConfirmation() bool {
 	runtime.LockOSThread()
@@ -188,6 +181,7 @@ func showShutdownConfirmation() bool {
 	if hwnd == 0 {
 		return false
 	}
+	styleLauncherWindow(hwnd)
 	showWindow.Call(hwnd, swShow)
 	updateWindow.Call(hwnd)
 	setForegroundWindow.Call(hwnd)

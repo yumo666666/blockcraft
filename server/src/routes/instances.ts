@@ -9,7 +9,7 @@ import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
 import * as ports from '../services/portService.ts';
 import { summarize, summarizeAll, invalidateModCount } from '../services/overview.ts';
-import { createJob, enqueueJob, finishJob, getJob, jobSignal, listRunningJobs, logJob, setStage, updateJob, waitForJob } from '../services/jobService.ts';
+import { createJob, enqueueJob, finishJob, getJob, jobSignal, listBlockingJobs, logJob, setStage, updateJob, waitForJob } from '../services/jobService.ts';
 import { installServer, copyInstance } from '../services/installService.ts';
 import { validateInstall } from '../launcher/index.ts';
 import { loadConfig } from '../config.ts';
@@ -45,9 +45,9 @@ export function registerInstanceRoutes(app: Express): void {
     const instance = await summarize(id);
     if (
       !['stopped', 'crashed'].includes(instance.status) || sup.isRunning(id) || await sup.hasActiveProcessEvidence(id) ||
-      listRunningJobs().some((job) => job.instanceId === id)
+      listBlockingJobs().some((job) => job.instanceId === id)
     ) {
-      throw conflict('下载世界前必须先完全停止该世界，并等待创建、导入或安装任务结束');
+      throw conflict('下载世界前必须先完全停止该世界，并等待相关任务结束');
     }
     res.status(200);
     res.setHeader('Content-Type', 'application/zip');
@@ -255,8 +255,8 @@ export function registerInstanceRoutes(app: Express): void {
     const id = requireId(req.params.id);
     const confirm = String(req.query.confirm ?? '');
     if (confirm !== id) throw bad('请输入完整的世界 id 以确认删除');
-    if (listRunningJobs().some((job) => job.instanceId === id)) {
-      throw conflict('这个世界仍有任务排队或执行中。请等任务结束后再删除。 / A task for this world is queued or running. Wait for it to finish before deleting it.');
+    if (listBlockingJobs().some((job) => job.instanceId === id)) {
+      throw conflict('这个世界仍有任务等待、排队或执行中。请等任务结束后再删除。 / A task for this world is waiting, queued or running. Wait for it to finish before deleting it.');
     }
     if (sup.isRunning(id) || await sup.hasActiveProcessEvidence(id)) {
       const stopJob = await enqueueActionTask({ instanceId: id, action: 'stop', stopOptions: { message: '这个世界即将被删除' } });

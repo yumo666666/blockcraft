@@ -653,14 +653,6 @@ a.nav-item:hover { text-decoration: none; }
   -webkit-backdrop-filter: blur(20px) saturate(150%);
 }
 
-/* 长世界页滚动时，避免 sticky 玻璃层与性能图重绘出白色接缝。 */
-.main-world > .topbar {
-  border-bottom-color: transparent;
-  background: var(--surface-solid);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
 .topbar-left,
 .topbar-right {
   display: flex;
