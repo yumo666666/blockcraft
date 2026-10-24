@@ -3,6 +3,7 @@ import path from 'node:path';
 import { instanceServerDir } from '../core/paths.ts';
 import * as I from './instanceService.ts';
 import * as sup from './supervisor.ts';
+import { readRuntimePerformance } from './performanceAgent.ts';
 import type { InstanceSummary } from '../types.ts';
 
 interface CacheEntry {
@@ -12,6 +13,11 @@ interface CacheEntry {
 const modCountCache = new Map<string, CacheEntry>();
 const sizeCache = new Map<string, CacheEntry>();
 const TTL = 30_000;
+
+function normalizeEpochMilliseconds(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0;
+  return value < 100_000_000_000 ? value * 1_000 : value;
+}
 
 /** MOD 数量：目录扫描带 30 秒缓存（344 个文件的世界不必每次轮询都数一遍） */
 export function countMods(id: string): number {
@@ -99,13 +105,17 @@ export async function summarize(id: string): Promise<InstanceSummary> {
     cpu: st.cpu,
     rss: st.rss,
     players: st.players,
+    playersKnown: st.playersKnown,
+    queryLatencyMs: st.queryLatencyMs,
+    threads: st.threads,
     maxPlayers: cfg.maxPlayers,
     modCount: countMods(id),
     diskUsage: await dirSizeCachedAsync(id),
     lastBackup,
     intentionalStop: state.intentionalStop,
-    createdAt: cfg.createdAt ?? cfg.created,
+    createdAt: normalizeEpochMilliseconds(cfg.createdAt ?? cfg.created),
     javaMajor: cfg.javaMajor,
+    performance: readRuntimePerformance(id, st.pid),
     // 上次崩溃/异常退出的原因（由 sweepDeadWorlds / 退出事件读崩溃报告写入）
     lastError: state.lastError ?? null,
   };

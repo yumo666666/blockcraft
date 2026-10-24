@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { WalkingAnimation, SkinViewer } from 'skinview3d';
 import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
+import { readBrowserSnapshot, writeBrowserSnapshot } from '../lib/browserSnapshot.ts';
 import { fmtDuration, statusClass } from '../lib/format.ts';
 import type { InstanceDetail, InstanceSummary, PlayerInfo, SkinPoolEntry } from '../lib/types.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
@@ -18,17 +19,28 @@ const playerNameCollator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity:
 
 const base = computed(() => `/api/instances/${encodeURIComponent(props.id)}`);
 
-const instance = ref<InstanceSummary | null>(null);
-const players = ref<PlayerInfo[]>([]);
-const onlineNames = ref<string[]>([]);
-const serverOnline = ref(false);
+interface PlayersSnapshot {
+  instance: InstanceSummary | null;
+  players: PlayerInfo[];
+  onlineNames: string[];
+  serverOnline: boolean;
+}
+
+const cachedPlayers = readBrowserSnapshot<PlayersSnapshot>(`players:${props.id}`);
+
+const instance = ref<InstanceSummary | null>(cachedPlayers?.instance ?? null);
+const players = ref<PlayerInfo[]>(cachedPlayers?.players ?? []);
+const onlineNames = ref<string[]>(cachedPlayers?.onlineNames ?? []);
+const serverOnline = ref(cachedPlayers?.serverOnline ?? false);
+const hasPlayerSnapshot = ref(Boolean(cachedPlayers));
 const loading = ref(false);
 const busyName = ref<string | null>(null);
 const uploadingSkin = ref<string | null>(null);
 const skinEditor = ref<PlayerInfo | null>(null);
 const skinUrl = ref('');
 const savingSkin = ref(false);
-const skinPool = ref<SkinPoolEntry[]>([]);
+const cachedSkinPool = readBrowserSnapshot<SkinPoolEntry[]>('players:skin-pool');
+const skinPool = ref<SkinPoolEntry[]>(cachedSkinPool ?? []);
 const skinPoolPage = ref(0);
 const poolPageSize = 8;
 const skinPoolPageCount = computed(() => Math.max(1, Math.ceil(skinPool.value.length / poolPageSize)));
@@ -61,12 +73,38 @@ let rosterTimer: number | null = null;
 let hasBeenDeactivated = false;
 let playersLoadRevision = 0;
 
+function persistSkinPool(): void {
+  writeBrowserSnapshot('players:skin-pool', skinPool.value);
+}
+
+function persistPlayersSnapshot(): void {
+  if (!hasPlayerSnapshot.value) return;
+  writeBrowserSnapshot<PlayersSnapshot>(`players:${props.id}`, {
+    instance: instance.value,
+    players: players.value,
+    onlineNames: onlineNames.value,
+    serverOnline: serverOnline.value,
+  });
+}
+
+function restorePlayersSnapshot(id: string): void {
+  const cached = readBrowserSnapshot<PlayersSnapshot>(`players:${id}`);
+  instance.value = cached?.instance ?? null;
+  players.value = cached?.players ?? [];
+  onlineNames.value = cached?.onlineNames ?? [];
+  serverOnline.value = cached?.serverOnline ?? false;
+  hasPlayerSnapshot.value = Boolean(cached);
+}
+
 async function loadInstance() {
+  const id = props.id;
   try {
-    const r = await api.get<InstanceDetail>(base.value);
+    const r = await api.get<InstanceDetail>(`/api/instances/${encodeURIComponent(id)}`);
+    if (disposed || id !== props.id) return;
     instance.value = r.instance;
+    persistPlayersSnapshot();
   } catch (err) {
-    toastError(err, '读取世界信息失败');
+    if (!disposed && id === props.id) toastError(err, '读取世界信息失败');
   }
 }
 
@@ -81,6 +119,8 @@ async function loadPlayers() {
     players.value = r.players;
     onlineNames.value = r.onlineNames;
     serverOnline.value = r.serverOnline;
+    hasPlayerSnapshot.value = true;
+    persistPlayersSnapshot();
     // 皮肤可能刚好补上了，让之前失败的卡片重试一次
     skinFailed.value = {};
     await nextTick();
@@ -106,6 +146,7 @@ async function refreshOnlineRoster() {
     const changed = rosterKey(onlineNames.value, serverOnline.value) !== rosterKey(r.names, r.serverOnline);
     onlineNames.value = r.names;
     serverOnline.value = r.serverOnline;
+    persistPlayersSnapshot();
     if (changed) await loadPlayers();
   } catch {
     // A temporary RCON disconnect should not interrupt the player page.
@@ -127,6 +168,7 @@ async function loadSkinPool() {
   try {
     const r = await api.get<{ skins: SkinPoolEntry[] }>('/api/skin-pool');
     skinPool.value = r.skins;
+    persistSkinPool();
     if (skinPoolPage.value >= skinPoolPageCount.value) skinPoolPage.value = skinPoolPageCount.value - 1;
     void renderMissingPoolPreviews(r.skins);
   } catch (err) {
@@ -147,6 +189,15 @@ onMounted(() => {
     { onError: () => loadInstance() },
   );
   startRosterPolling();
+});
+
+watch(() => props.id, (id) => {
+  playersLoadRevision += 1;
+  restorePlayersSnapshot(id);
+  skinFailed.value = {};
+  disposeViewers();
+  loadInstance();
+  void loadPlayers();
 });
 
 onActivated(() => {
@@ -284,6 +335,7 @@ async function addSkinFiles(files: File[], playerName: string | null) {
     }
     if (added.length) {
       skinPool.value = [...skinPool.value, ...added].sort((a, b) => a.name.localeCompare(b.name));
+      persistSkinPool();
       if (playerName) {
         const chosen = added[0];
         const selectedIndex = skinPool.value.findIndex((skin) => skin.id === chosen.id);
@@ -332,6 +384,7 @@ async function removePoolSkin(item: SkinPoolEntry) {
   try {
     await api.del(`/api/skin-pool/${encodeURIComponent(item.id)}`);
     skinPool.value = skinPool.value.filter((skin) => skin.id !== item.id);
+    persistSkinPool();
     toast('ok', '已从公共皮肤池删除', `「${item.name}」已不可供新的选择。`);
   } catch (err) {
     toastError(err, '删除皮肤失败');
@@ -661,6 +714,7 @@ async function renderMissingPoolPreviews(items: SkinPoolEntry[]) {
         changed = true;
       }
       skinPool.value = skinPool.value.map((skin) => skin.id === item.id ? { ...skin, previewReady: item.previewReady, animationReady: item.animationReady } : skin);
+      persistSkinPool();
     } catch (err) {
       toastError(err, `生成「${item.name}」的皮肤展示失败`);
     }
@@ -808,7 +862,19 @@ function skinLabel(p: PlayerInfo): string {
         <span class="text-3 small">{{ knownPlayers.length }} 名玩家 · {{ onlineNames.length }} 人在线</span>
       </div>
       <div class="card-body">
-        <div v-if="!knownPlayers.length" class="empty">
+        <div v-if="loading && !hasPlayerSnapshot" class="player-grid" role="status" aria-label="正在读取玩家列表" aria-busy="true">
+          <div v-for="slot in 4" :key="slot" class="player-card player-card-skeleton" aria-hidden="true">
+            <span class="skeleton player-status-dot player-skeleton-dot" />
+            <div class="player-skin"><span class="skeleton player-skeleton-avatar" /></div>
+            <span class="skeleton player-skeleton-name" />
+            <div class="row gap-1 wrap center"><span class="skeleton player-skeleton-badge" /></div>
+            <span class="skeleton player-skeleton-caption" />
+            <div class="player-actions">
+              <span v-for="action in 5" :key="action" class="skeleton player-skeleton-action" />
+            </div>
+          </div>
+        </div>
+        <div v-else-if="!knownPlayers.length" class="empty">
           <div class="empty-icon">🫥</div>
           <div>{{ serverOnline ? '还没有已知玩家' : '服务端未运行，暂无已知玩家记录' }}</div>
         </div>
@@ -1035,6 +1101,13 @@ function skinLabel(p: PlayerInfo): string {
 .skin-pool-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .skin-pool-actions .btn { justify-self: end; white-space: nowrap; }
 .skin-pool-empty { min-height: 150px; }
+.player-skeleton-dot { width: 8px; height: 8px; border-radius: 50%; }
+.player-skeleton-avatar { width: 100%; height: 100%; border-radius: 0; }
+.player-skeleton-name { width: 104px; height: 16px; }
+.player-skeleton-badge { width: 78px; height: 22px; border-radius: 999px; }
+.player-skeleton-caption { width: 62%; height: 13px; margin-block: 3px; }
+.player-skeleton-action { height: 29px; border-radius: var(--r-xs); }
+
 .skin-pool-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -1086,7 +1159,7 @@ function skinLabel(p: PlayerInfo): string {
   border-radius: var(--r-sm);
   cursor: pointer;
 }
-.skin-choice:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-2); }
+.skin-choice:hover:not(:disabled) { border-color: var(--accent-strong); background: var(--surface-2); }
 .skin-choice:disabled { opacity: .55; cursor: wait; }
 .skin-choice img, .skin-choice-pending { width: 56px; height: 64px; object-fit: contain; border-radius: var(--r-xs); background: var(--surface-2); }
 .skin-choice-pending { display: grid; place-items: center; }

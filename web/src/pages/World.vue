@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
-import { fmtBytes, fmtDuration, fmtRelative } from '../lib/format.ts';
+import { fmtBytes, fmtDuration, fmtRelative, normalizeTimestamp } from '../lib/format.ts';
 import type { InstanceSummary } from '../lib/types.ts';
 import WorldNote from '../components/WorldNote.vue';
 import WorldPerformance from '../components/WorldPerformance.vue';
@@ -13,6 +13,7 @@ import CopyDialog from '../components/CopyDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import JobProgress from '../components/JobProgress.vue';
 import Icon from '../components/Icon.vue';
+import WorldPageSkeleton from '../components/WorldPageSkeleton.vue';
 import { setBackgroundJob } from '../lib/backgroundJob.ts';
 import { useWorlds } from '../lib/worlds.ts';
 
@@ -31,8 +32,9 @@ const publicPort = computed(() => {
   return world.value.frpEnabled ? '未映射' : '未启用';
 });
 const createdLabel = computed(() => {
-  if (!world.value?.createdAt) return '—';
-  return new Date(world.value.createdAt).toLocaleString('zh-CN', {
+  const timestamp = normalizeTimestamp(world.value?.createdAt);
+  if (timestamp === null) return '—';
+  return new Date(timestamp).toLocaleString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -140,7 +142,7 @@ function backgroundJob() {
 
 <template>
   <div class="page col gap-4">
-    <div v-if="!world && !worldsReady" class="row gap-2"><span class="spinner" /> 读取世界…</div>
+    <WorldPageSkeleton v-if="!world && !worldsReady" />
 
     <div v-else-if="!world" class="card empty world-missing">
       <span class="world-missing-icon"><Icon name="globe" :size="26" /></span>
@@ -306,7 +308,7 @@ function backgroundJob() {
 <style scoped>
 .world-bottom-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.05fr) minmax(260px, 0.8fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--sp-4);
   align-items: stretch;
 }
@@ -323,7 +325,6 @@ function backgroundJob() {
 .world-fact > strong { overflow: hidden; font-size: 13.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .world-fact-wide { grid-column: 1 / -1; }
 .world-fact-wide > strong { white-space: normal; line-height: 1.5; }
-
 .world-action {
   display: flex;
   align-items: center;
@@ -339,7 +340,7 @@ function backgroundJob() {
   cursor: pointer;
   transition: border-color 0.16s, background 0.16s, transform 0.16s;
 }
-.world-action > svg { flex: none; color: var(--accent); }
+.world-action > svg { flex: none; color: var(--accent-text); }
 .world-action > span { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
 .world-action strong { font-size: 12.5px; font-weight: 650; }
 .world-action small { color: var(--text-3); font-size: 10.5px; }
@@ -361,22 +362,21 @@ function backgroundJob() {
   border: 1px solid var(--accent-border);
   border-radius: 18px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   box-shadow: var(--sh-1);
 }
 .world-missing-title { font-size: 15px; font-weight: 650; color: var(--text); }
 .world-missing p { max-width: 30rem; }
 
-@media (max-width: 1180px) {
+@media (max-width: 1100px) {
   .world-bottom-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .world-actions-card { grid-column: 1 / -1; }
   .world-actions-card .card-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (max-width: 760px) {
+@media (max-width: 780px) {
   .world-bottom-grid { grid-template-columns: minmax(0, 1fr); }
   .world-actions-card { grid-column: auto; }
   .world-actions-card .card-body { display: flex; }
-  .world-facts { grid-template-columns: minmax(0, 1fr); }
   .world-fact-wide { grid-column: auto; }
 }
 </style>

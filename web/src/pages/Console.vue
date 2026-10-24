@@ -4,9 +4,10 @@ import { useRouter } from 'vue-router';
 import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import { fmtDuration, fmtTime, STATUS_TEXT, statusClass } from '../lib/format.ts';
-import type { ConsoleLine, InstanceDetail, ScheduleInfo } from '../lib/types.ts';
+import type { ConsoleLine, InstanceDetail, InstanceSummary, ScheduleInfo } from '../lib/types.ts';
 import { applySuggestion, suggest, type Suggestion } from '../lib/commands.ts';
 import { ANNOUNCE_COLORS, DEFAULT_ANNOUNCE_COLOR, buildAnnounce, previewAnnounce } from '../lib/announce.ts';
+import { readBrowserSnapshot, writeBrowserSnapshot } from '../lib/browserSnapshot.ts';
 import Icon from '../components/Icon.vue';
 
 defineOptions({ name: 'Console' });
@@ -21,8 +22,30 @@ const RETRY_MS = 1500;
 const WEEK = ['一', '二', '三', '四', '五', '六', '日'];
 const RUNNING_STATUS = ['running', 'starting', 'stopping', 'stuck'];
 
-const detail = ref<InstanceDetail | null>(null);
-const lines = ref<ConsoleLine[]>([]);
+interface Shortcut {
+  label: string;
+  cmd: string;
+  group: string;
+  needsArg?: boolean;
+  danger?: boolean;
+  hint?: string;
+}
+
+interface ConsoleSnapshot {
+  instance: InstanceSummary | null;
+  lines: ConsoleLine[];
+  logsLoaded: boolean;
+  shortcuts: Shortcut[];
+  schedule: ScheduleInfo | null;
+  onlinePlayers: string[];
+  serverCommands: string[];
+}
+
+const cachedConsole = readBrowserSnapshot<ConsoleSnapshot>(`console:${props.id}`);
+const detail = ref<InstanceDetail | null>(cachedConsole?.instance ? { instance: cachedConsole.instance } as InstanceDetail : null);
+const lines = ref<ConsoleLine[]>(cachedConsole?.lines ?? []);
+const hasConsoleSnapshot = ref(Boolean(cachedConsole?.logsLoaded));
+const booting = ref(!hasConsoleSnapshot.value);
 const paused = ref(false);
 const pending = ref<ConsoleLine[]>([]);
 const autoScroll = ref(true);
@@ -36,16 +59,7 @@ let scrollFrame1: number | null = null;
 let scrollFrame2: number | null = null;
 let scrollPending = false;
 
-interface Shortcut {
-  label: string;
-  cmd: string;
-  group: string;
-  needsArg?: boolean;
-  danger?: boolean;
-  hint?: string;
-}
-
-const shortcuts = ref<Shortcut[]>([]);
+const shortcuts = ref<Shortcut[]>(cachedConsole?.shortcuts ?? []);
 const cmd = ref('');
 const sending = ref(false);
 
@@ -65,8 +79,8 @@ const suggestions = ref<Suggestion[]>([]);
 const suggestIndex = ref(0);
 const suggestOpen = ref(false);
 const inputEl = ref<HTMLInputElement | null>(null);
-const onlinePlayers = ref<string[]>([]);
-const serverCommands = ref<string[]>([]);
+const onlinePlayers = ref<string[]>(cachedConsole?.onlinePlayers ?? []);
+const serverCommands = ref<string[]>(cachedConsole?.serverCommands ?? []);
 
 function refreshSuggest(): void {
   suggestions.value = suggest(cmd.value, onlinePlayers.value, serverCommands.value);
@@ -75,11 +89,14 @@ function refreshSuggest(): void {
 }
 
 async function loadOnlinePlayers(): Promise<void> {
+  const id = props.id;
   try {
-    const r = await api.get<{ names: string[] }>(`/api/instances/${props.id}/players/online`);
+    const r = await api.get<{ names: string[] }>(`/api/instances/${encodeURIComponent(id)}/players/online`);
+    if (id !== props.id || closed) return;
     onlinePlayers.value = r.names ?? [];
+    persistConsoleSnapshot(id);
   } catch {
-    onlinePlayers.value = [];
+    // Keep the cached command-completion names if the server is temporarily unavailable.
   }
 }
 
@@ -87,9 +104,12 @@ async function loadServerCommands(): Promise<void> {
   const id = props.id;
   try {
     const r = await api.get<{ commands: string[] }>(`/api/instances/${id}/command-roots`);
-    if (props.id === id) serverCommands.value = r.commands ?? [];
+    if (props.id === id) {
+      serverCommands.value = r.commands ?? [];
+      persistConsoleSnapshot(id);
+    }
   } catch {
-    if (props.id === id) serverCommands.value = [];
+    // Keep the cached command roots on a temporary API failure.
   }
   if (props.id === id) refreshSuggest();
 }
@@ -172,7 +192,8 @@ const announceHex = computed(
   () => ANNOUNCE_COLORS.find((c) => c.id === announceColor.value)?.hex ?? '#ffffff',
 );
 
-const sched = ref<ScheduleInfo | null>(null);
+const sched = ref<ScheduleInfo | null>(cachedConsole?.schedule ?? null);
+const scheduleLoading = ref(!sched.value);
 const startTimesText = ref('');
 const stopTimesText = ref('');
 const savingSchedule = ref(false);
@@ -181,8 +202,47 @@ const testingWarn = ref(false);
 let offStream: (() => void) | null = null;
 let retryTimer: number | null = null;
 let pollTimer: number | null = null;
-let lastSeq = 0;
+let lastSeq = lines.value.at(-1)?.seq ?? 0;
 let closed = false;
+let cacheWriteTimer: number | null = null;
+
+function persistConsoleSnapshot(id = props.id): void {
+  writeBrowserSnapshot<ConsoleSnapshot>(`console:${id}`, {
+    instance: detail.value?.instance ?? null,
+    lines: lines.value.slice(-MAX_LINES),
+    logsLoaded: hasConsoleSnapshot.value,
+    shortcuts: shortcuts.value,
+    schedule: sched.value,
+    onlinePlayers: onlinePlayers.value,
+    serverCommands: serverCommands.value,
+  });
+}
+
+function scheduleConsoleCacheWrite(): void {
+  if (cacheWriteTimer !== null) window.clearTimeout(cacheWriteTimer);
+  cacheWriteTimer = window.setTimeout(() => {
+    cacheWriteTimer = null;
+    persistConsoleSnapshot();
+  }, 700);
+}
+
+function restoreConsoleSnapshot(id: string): void {
+  const cached = readBrowserSnapshot<ConsoleSnapshot>(`console:${id}`);
+  detail.value = cached?.instance ? { instance: cached.instance } as InstanceDetail : null;
+  lines.value = cached?.lines ?? [];
+  hasConsoleSnapshot.value = Boolean(cached?.logsLoaded);
+  shortcuts.value = cached?.shortcuts ?? [];
+  sched.value = cached?.schedule ?? null;
+  if (sched.value) fillTimes(sched.value);
+  else {
+    startTimesText.value = '';
+    stopTimesText.value = '';
+  }
+  onlinePlayers.value = cached?.onlinePlayers ?? [];
+  serverCommands.value = cached?.serverCommands ?? [];
+  lastSeq = lines.value.at(-1)?.seq ?? 0;
+  scheduleLoading.value = !sched.value;
+}
 
 const instance = computed(() => detail.value?.instance ?? null);
 const commandScopeLabel = computed(() => {
@@ -281,9 +341,11 @@ function receive(rows: ConsoleLine[]): void {
   if (paused.value) {
     for (const r of fresh) pending.value.push(r);
     if (pending.value.length > MAX_LINES) pending.value.splice(0, pending.value.length - MAX_LINES);
+    scheduleConsoleCacheWrite();
     return;
   }
   for (const r of fresh) pushLine(r);
+  scheduleConsoleCacheWrite();
   void scrollToBottom();
 }
 
@@ -292,15 +354,19 @@ async function fetchConsole(): Promise<void> {
   try {
     // 首次就只要 200 行：反正界面上也只保留这么多，别白拉几千行过来
     const q = lastSeq > 0 ? `?since=${lastSeq}` : `?lines=${MAX_LINES}`;
-    const r = await api.get<{ lines: ConsoleLine[]; seq: number }>(`/api/instances/${props.id}/console${q}`);
+    const id = props.id;
+    const r = await api.get<{ lines: ConsoleLine[]; seq: number }>(`/api/instances/${encodeURIComponent(id)}/console${q}`);
+    if (id !== props.id || closed) return;
     if (r.lines?.length) {
       receive(r.lines);
     } else if (lastSeq > 0 && r.seq > lastSeq) {
       // 服务端缓冲已经滚过这一段，追不回来了，只把游标对齐
       lastSeq = r.seq;
     }
+    hasConsoleSnapshot.value = true;
+    persistConsoleSnapshot(id);
   } catch (err) {
-    toastError(err, '读取控制台日志失败');
+    if (!closed) toastError(err, '读取控制台日志失败');
   }
 }
 
@@ -403,19 +469,27 @@ async function send(text: string): Promise<void> {
 // ---------------------------------------------------------------- 数据加载
 
 async function loadDetail(): Promise<void> {
+  const id = props.id;
   try {
-    detail.value = await api.get<InstanceDetail>(`/api/instances/${props.id}`);
+    const result = await api.get<InstanceDetail>(`/api/instances/${encodeURIComponent(id)}`);
+    if (id === props.id && !closed) {
+      detail.value = result;
+      persistConsoleSnapshot(id);
+    }
   } catch (err) {
-    toastError(err, '读取世界信息失败');
+    if (!closed && id === props.id) toastError(err, '读取世界信息失败');
   }
 }
 
 async function loadShortcuts(): Promise<void> {
+  const id = props.id;
   try {
-    const r = await api.get<{ shortcuts: Shortcut[] }>(`/api/instances/${props.id}/shortcuts`);
+    const r = await api.get<{ shortcuts: Shortcut[] }>(`/api/instances/${encodeURIComponent(id)}/shortcuts`);
+    if (id !== props.id || closed) return;
     shortcuts.value = r.shortcuts ?? [];
+    persistConsoleSnapshot(id);
   } catch (err) {
-    toastError(err, '读取快捷命令失败');
+    if (id === props.id && !closed) toastError(err, '读取快捷命令失败');
   }
 }
 
@@ -432,12 +506,17 @@ function fillTimes(r: ScheduleInfo): void {
 }
 
 async function loadSchedule(): Promise<void> {
+  const id = props.id;
   try {
-    const r = await api.get<ScheduleInfo>(`/api/instances/${props.id}/schedule`);
+    const r = await api.get<ScheduleInfo>(`/api/instances/${encodeURIComponent(id)}/schedule`);
+    if (id !== props.id || closed) return;
     sched.value = r;
     fillTimes(r);
+    persistConsoleSnapshot(id);
   } catch (err) {
-    toastError(err, '读取定时设置失败');
+    if (id === props.id && !closed) toastError(err, '读取定时设置失败');
+  } finally {
+    if (id === props.id) scheduleLoading.value = false;
   }
 }
 
@@ -467,6 +546,7 @@ async function saveSchedule(): Promise<void> {
     );
     sched.value = { ...cur, schedule: r.schedule, describe: r.describe, nextStart: r.nextStart, nextStop: r.nextStop };
     fillTimes(sched.value);
+    persistConsoleSnapshot();
     toast('ok', '定时设置已保存', r.describe);
   } catch (err) {
     toastError(err, '保存定时设置失败');
@@ -500,24 +580,27 @@ function reset(): void {
     retryTimer = null;
   }
   closed = false;
-  lastSeq = 0;
-  lines.value = [];
   pending.value = [];
   paused.value = false;
   autoScroll.value = true;
   filter.value = '';
   streaming.value = '';
-  detail.value = null;
-  sched.value = null;
-  serverCommands.value = [];
+  restoreConsoleSnapshot(props.id);
+  booting.value = !hasConsoleSnapshot.value;
 }
 
 async function boot(): Promise<void> {
-  await Promise.all([loadDetail(), loadShortcuts(), loadSchedule(), loadOnlinePlayers()]);
-  void loadServerCommands();
-  await fetchConsole();
-  if (closed) return;
-  connect();
+  booting.value = !hasConsoleSnapshot.value;
+  scheduleLoading.value = !sched.value;
+  try {
+    await Promise.all([loadDetail(), loadShortcuts(), loadSchedule(), loadOnlinePlayers()]);
+    void loadServerCommands();
+    await fetchConsole();
+    if (closed) return;
+    connect();
+  } finally {
+    booting.value = false;
+  }
 }
 
 onMounted(async () => {
@@ -542,12 +625,15 @@ onUnmounted(() => {
   offStream = null;
   if (retryTimer) window.clearTimeout(retryTimer);
   if (pollTimer) window.clearInterval(pollTimer);
+  if (cacheWriteTimer !== null) window.clearTimeout(cacheWriteTimer);
+  persistConsoleSnapshot();
 });
 
 // 同一个组件实例在不同世界之间跳转时要整套重来，否则会把上一个世界的日志留在屏幕上
 watch(
   () => props.id,
-  async () => {
+  async (_id, oldId) => {
+    persistConsoleSnapshot(oldId);
     reset();
     await boot();
   },
@@ -561,24 +647,27 @@ watch(
       <div class="row gap-3 console-title-group">
         <div class="row gap-2">
           <i class="dot" :class="instance ? statusClass(instance.status) : 'dot-idle'" />
-          <h1 class="ellipsis">{{ instance?.name ?? props.id }}</h1>
+          <h1 v-if="instance" class="ellipsis">{{ instance.name }}</h1>
+          <span v-else class="skeleton console-title-skeleton" aria-label="正在读取世界名称" />
         </div>
-        <span class="badge" :class="instance ? badgeClass(instance.status) : 'badge-outline'">
-          {{ instance ? STATUS_TEXT[instance.status] ?? instance.status : '读取中' }}
-        </span>
+        <span v-if="instance" class="badge" :class="badgeClass(instance.status)">{{ STATUS_TEXT[instance.status] ?? instance.status }}</span>
+        <span v-else class="skeleton console-status-skeleton" aria-label="正在读取世界状态" />
       </div>
       <div class="head-stats">
         <div class="stat">
           <span class="stat-label">运行时长</span>
-          <span class="stat-value">{{ instance && running ? fmtDuration(instance.uptime) : '—' }}</span>
+          <span v-if="instance" class="stat-value">{{ running ? fmtDuration(instance.uptime) : '—' }}</span>
+          <span v-else class="skeleton console-stat-skeleton" />
         </div>
         <div class="stat">
           <span class="stat-label">在线人数</span>
-          <span class="stat-value">{{ instance ? `${instance.players}/${instance.maxPlayers}` : '—' }}</span>
+          <span v-if="instance" class="stat-value">{{ `${instance.players}/${instance.maxPlayers}` }}</span>
+          <span v-else class="skeleton console-stat-skeleton short" />
         </div>
         <div class="stat">
           <span class="stat-label">端口</span>
-          <span class="stat-value mono">{{ instance?.port ?? '—' }}</span>
+          <span v-if="instance" class="stat-value mono">{{ instance.port }}</span>
+          <span v-else class="skeleton console-stat-skeleton short" />
         </div>
       </div>
     </div>
@@ -601,8 +690,11 @@ watch(
           </div>
         </div>
         <div class="card-body console-body">
-          <div ref="consoleEl" class="console" @pointerdown="onConsolePointerDown" @scroll.passive="onConsoleScroll">
-            <div v-if="!filteredLines.length" class="console-empty">
+          <div ref="consoleEl" class="console" :aria-busy="booting" @pointerdown="onConsolePointerDown" @scroll.passive="onConsoleScroll">
+            <div v-if="booting && !hasConsoleSnapshot" class="console-skeleton-lines" role="status" aria-label="正在读取控制台日志">
+              <span v-for="line in 14" :key="line" class="skeleton console-skeleton-line" :class="`console-skeleton-line-${line % 4}`" aria-hidden="true" />
+            </div>
+            <div v-else-if="!filteredLines.length" class="console-empty">
               {{ filter ? '没有匹配的日志行' : '还没有日志。世界启动后这里会实时输出。' }}
             </div>
             <div v-for="l in filteredLines" :key="l.seq" class="console-line" :class="lineClass(l.text)">{{ l.text }}</div>
@@ -742,7 +834,9 @@ watch(
     <div class="card">
       <div class="card-head">
         <h2><span class="head-icon"><Icon name="clock" :size="15" /></span>定时开服 / 停服</h2>
-        <span class="text-3 small ellipsis">{{ sched?.describe ?? '读取中…' }}</span>
+        <span v-if="sched" class="text-3 small ellipsis">{{ sched.describe }}</span>
+        <span v-else-if="scheduleLoading" class="skeleton console-schedule-summary-skeleton" aria-label="正在读取定时设置状态" />
+        <span v-else class="text-3 small ellipsis">定时设置暂不可用</span>
       </div>
 
       <div v-if="sched" class="card-body col gap-4">
@@ -852,12 +946,14 @@ watch(
         </div>
       </div>
 
-      <div v-else class="card-body">
-        <div class="row gap-2">
-          <span class="spinner" />
-          <span class="text-3">正在读取定时设置…</span>
+      <div v-else-if="scheduleLoading" class="card-body console-schedule-skeleton" role="status" aria-label="正在读取定时设置" aria-busy="true">
+        <div v-for="row in 4" :key="row" class="console-schedule-skeleton-row">
+          <span class="skeleton console-schedule-skeleton-label" />
+          <span class="skeleton console-schedule-skeleton-control" />
         </div>
+        <span class="skeleton console-schedule-skeleton-note" />
       </div>
+      <div v-else class="card-body text-3 small">暂时无法读取定时设置。</div>
 
       <div v-if="sched" class="card-foot row gap-2">
         <button class="btn btn-soft" :disabled="testingWarn" @click="testWarn">
@@ -887,7 +983,23 @@ watch(
   .console-grid { grid-template-columns: 1fr; }
 }
 .head-stats { display: flex; gap: var(--sp-5); }
+.console-title-skeleton { width: min(220px, 46vw); height: 25px; }
+.console-status-skeleton { width: 72px; height: 24px; border-radius: 999px; }
+.console-stat-skeleton { display: block; width: 72px; height: 17px; }
+.console-stat-skeleton.short { width: 48px; }
+.console-schedule-summary-skeleton { display: block; width: 180px; height: 12px; flex: none; }
 .filter-input { width: 150px; }
+.console-skeleton-lines { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
+.console-skeleton-line { display: block; width: 74%; height: 12px; border-radius: 4px; }
+.console-skeleton-line-0 { width: 88%; }
+.console-skeleton-line-1 { width: 61%; }
+.console-skeleton-line-2 { width: 79%; }
+.console-skeleton-line-3 { width: 47%; }
+.console-schedule-skeleton { display: flex; flex-direction: column; gap: var(--sp-3); }
+.console-schedule-skeleton-row { display: grid; grid-template-columns: minmax(78px, 0.35fr) minmax(0, 1fr); align-items: center; gap: var(--sp-3); }
+.console-schedule-skeleton-label { width: 68px; height: 12px; border-radius: 5px; }
+.console-schedule-skeleton-control { width: 100%; height: 36px; border-radius: var(--r-sm); }
+.console-schedule-skeleton-note { width: 74%; height: 12px; margin-top: 4px; border-radius: 5px; }
 .grace-input { width: 84px; }
 
 /* 两栏同高、高度固定：日志在窗口内滚动，永远不会被内容撑长。

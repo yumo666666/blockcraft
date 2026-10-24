@@ -120,6 +120,34 @@ export const api = {
     link.click();
     link.remove();
   },
+  downloadArchive: async (path: string, paths: string[]): Promise<void> => {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'X-Blockcraft': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths }),
+      cache: 'no-store',
+    });
+    if (res.status === 401) {
+      onUnauthorized?.();
+      throw new ApiError('UNAUTHORIZED', '登录已过期，请重新登录');
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      let data: unknown = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+      const err = (data as ApiErrorBody | null)?.error;
+      const message = err?.message_en ? `${err.message} / ${err.message_en}` : err?.message;
+      throw new ApiError(err?.code ?? 'INTERNAL', message ?? `打包下载失败（HTTP ${res.status}）`, err?.detail);
+    }
+    const blob = await res.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = decodeURIComponent(res.headers.get('Content-Disposition')?.match(/filename\*=UTF-8''([^;]+)/i)?.[1] ?? 'project-files.zip');
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+  },
   login: (token: string) => request<{ ok: boolean }>('POST', '/api/login', { token }),
   logout: () => request<{ ok: boolean }>('POST', '/api/logout'),
 };

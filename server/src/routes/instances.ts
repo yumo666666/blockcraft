@@ -9,7 +9,7 @@ import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
 import * as ports from '../services/portService.ts';
 import { summarize, summarizeAll, invalidateModCount } from '../services/overview.ts';
-import { createJob, finishJob, listRunningJobs, logJob, setStage } from '../services/jobService.ts';
+import { createJob, finishJob, jobSignal, listRunningJobs, logJob, setStage } from '../services/jobService.ts';
 import { installServer, copyInstance } from '../services/installService.ts';
 import { validateInstall } from '../launcher/index.ts';
 import { loadConfig } from '../config.ts';
@@ -106,8 +106,6 @@ export function registerInstanceRoutes(app: Express): void {
       ...(body as unknown as Record<string, never>),
       createdFrom: { type: 'new' },
     } as Parameters<typeof I.createInstance>[0]);
-    // 分配远端 FRP 端口
-    await frp.ensureRemotePort(cfg.id);
     audit({ ip: req.ip, action: 'instance.create', target: cfg.id, detail: { mc: cfg.mc, loader: cfg.loader } });
 
     const job = await createJob({
@@ -124,15 +122,20 @@ export function registerInstanceRoutes(app: Express): void {
     });
 
     const run = async () => {
+      const signal = jobSignal(job.id);
       try {
+        signal?.throwIfAborted();
         setStage(job.id, 'install', 'running');
-        await installServer(cfg.id, (line) => logJob(job.id, line));
+        await installServer(cfg.id, (line) => logJob(job.id, line), { signal });
+        signal?.throwIfAborted();
         setStage(job.id, 'install', 'done');
 
         setStage(job.id, 'skin', 'running');
-        await ensureSkinSupport(cfg.id, (line) => logJob(job.id, line));
+        await ensureSkinSupport(cfg.id, (line) => logJob(job.id, line), { signal });
+        signal?.throwIfAborted();
         setStage(job.id, 'skin', 'done');
 
+        signal?.throwIfAborted();
         setStage(job.id, 'config', 'running');
         I.writeProperties(cfg.id);
         logJob(job.id, '已生成 server.properties 与 eula.txt');
@@ -140,13 +143,15 @@ export function registerInstanceRoutes(app: Express): void {
 
         setStage(job.id, 'frp', 'running');
         const remote = await frp.ensureRemotePort(cfg.id);
+        signal?.throwIfAborted();
         await frp.syncWorlds();
         logJob(job.id, `远端端口 ${remote} 已映射到 frps`);
         setStage(job.id, 'frp', 'done');
 
         if (body.start !== false) {
           setStage(job.id, 'start', 'running');
-          const started = await sup.start(cfg.id, { wait: true });
+          const started = await sup.start(cfg.id, { wait: true, signal });
+          signal?.throwIfAborted();
           logJob(job.id, started.ok ? '世界已启动' : `启动失败：${started.error}`);
           setStage(job.id, 'start', started.ok ? 'done' : 'failed');
         } else {
@@ -154,6 +159,17 @@ export function registerInstanceRoutes(app: Express): void {
         }
         finishJob(job.id);
       } catch (err) {
+        if (signal?.aborted) {
+          logJob(job.id, '创建任务已取消；已保留已下载文件和部分世界配置，可在总览中删除该世界。');
+          if (sup.isRunning(cfg.id)) {
+            logJob(job.id, '正在安全停止刚启动的世界…');
+            const stopped = await sup.stop(cfg.id, { message: '创建任务已取消' }).catch((stopError) => ({ ok: false, error: String(stopError) }));
+            if (!stopped.ok) logJob(job.id, `世界未能自动停止：${stopped.error ?? '未知错误'}`);
+          }
+          await frp.syncWorlds().catch(() => undefined);
+          finishJob(job.id);
+          return;
+        }
         logJob(job.id, `失败：${String(err)}`);
         finishJob(job.id, String(err));
       }

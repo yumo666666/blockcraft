@@ -2,30 +2,35 @@
 import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
+import { readBrowserSnapshot, writeBrowserSnapshot } from '../lib/browserSnapshot.ts';
 import { fmtBytes } from '../lib/format.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import AppearanceSettings from '../components/AppearanceSettings.vue';
 
 defineOptions({ name: 'Settings' });
-const panel = ref<{
+type PanelResponse = {
   config: Record<string, never>;
   addresses: { label: string; value: string; kind: string }[];
   instanceDir: string;
   dataDir: string;
   projectRoot: string;
   java: { installed: { major: number; path: string }[]; managed: boolean };
-} | null>(null);
-const storage = ref<{
+};
+type StorageResponse = {
   instances: { id: string; name: string; bytes: number; mods: number }[];
   jdk: number;
   store: number;
   trash: number;
   logs: number;
   total: number;
-} | null>(null);
-const frpBinary = ref(false);
+};
+interface SettingsSnapshot { panel: PanelResponse; storage: StorageResponse; frpBinary: boolean; appVersion: string }
+const cachedSettings = readBrowserSnapshot<SettingsSnapshot>('settings');
+const panel = ref<PanelResponse | null>(cachedSettings?.panel ?? null);
+const storage = ref<StorageResponse | null>(cachedSettings?.storage ?? null);
+const frpBinary = ref(cachedSettings?.frpBinary ?? false);
 const busy = ref(false);
-const appVersion = ref('');
+const appVersion = ref(cachedSettings?.appVersion ?? '');
 
 const form = ref({
   maxRunningInstances: 3,
@@ -38,9 +43,9 @@ const form = ref({
   mineskinApiKeyConfigured: false,
   clearMineSkinApiKey: false,
   githubMirror: 'https://gh-proxy.com/',
-  javaSource: 'official',
+  javaSource: 'tuna',
   javaMirror: '',
-  minecraftSource: 'official',
+  minecraftSource: 'bmclapi',
   exposePanel: false,
   panelRemotePort: 26006,
   configRollback: true,
@@ -49,24 +54,19 @@ const form = ref({
   frpRangeStart: 26006,
   frpRangeEnd: 27000,
 });
+const loadingSections = [
+  { area: 'settings-access', rows: 3 },
+  { area: 'settings-source', rows: 5 },
+  { area: 'settings-skins', rows: 4 },
+  { area: 'settings-java', rows: 3 },
+  { area: 'settings-limits', rows: 2 },
+  { area: 'settings-frp', rows: 3 },
+  { area: 'settings-ports', rows: 3 },
+  { area: 'settings-storage', rows: 4 },
+  { area: 'settings-about', rows: 4 },
+];
 
-const newToken = ref('');
-const showResetToken = ref(false);
-const showClean = ref(false);
-const cleanTarget = ref<'trash' | 'logs'>('trash');
-const cleanFreed = ref(0);
-
-async function load() {
-  const [p, disk, frp, ping] = await Promise.all([
-    api.get<typeof panel.value>('/api/panel'),
-    api.get<typeof storage.value>('/api/system/storage'),
-    api.get<{ binaryReady: boolean }>('/api/frp/status').catch(() => null),
-    api.get<{ version: string }>('/api/ping').catch(() => null),
-  ]);
-  panel.value = p;
-  storage.value = disk;
-  frpBinary.value = frp?.binaryReady ?? false;
-  appVersion.value = ping?.version ?? '';
+function applyPanelConfig(p: PanelResponse | null): void {
   const cfg = p?.config as unknown as {
     limits: { maxRunningInstances: number; memoryBudgetMb: number | 'auto' };
     panel: { sessionHours: number };
@@ -82,29 +82,51 @@ async function load() {
     skins: { mineskinApiKey: string };
     frp: { exposePanel: boolean; panelRemotePort: number; configRollback: boolean };
     portRanges: { game: [number, number]; frpRemote: [number, number] };
-  };
-  if (cfg) {
-    form.value.maxRunningInstances = cfg.limits.maxRunningInstances;
-    form.value.memoryBudget = String(cfg.limits.memoryBudgetMb);
-    form.value.sessionHours = cfg.panel.sessionHours;
-    form.value.trashRetentionDays = cfg.ui.trashRetentionDays;
-    form.value.curseforgeApiKey = cfg.mirrors.curseforgeApiKey === '••••••' ? '' : cfg.mirrors.curseforgeApiKey;
-    form.value.curseforgeApiUrl = cfg.mirrors.curseforgeApi;
-    form.value.mineskinApiKeyConfigured = cfg.skins.mineskinApiKey === '••••••';
-    form.value.mineskinApiKey = '';
-    form.value.clearMineSkinApiKey = false;
-    form.value.githubMirror = cfg.mirrors.githubMirror;
-    form.value.javaSource = cfg.mirrors.javaSource ?? 'official';
-    form.value.javaMirror = cfg.mirrors.javaMirror ?? '';
-    form.value.minecraftSource = cfg.mirrors.minecraftSource ?? 'official';
-    form.value.exposePanel = cfg.frp.exposePanel;
-    form.value.panelRemotePort = cfg.frp.panelRemotePort;
-    form.value.configRollback = cfg.frp.configRollback;
-    form.value.gameRangeStart = cfg.portRanges.game[0];
-    form.value.gameRangeEnd = cfg.portRanges.game[1];
-    form.value.frpRangeStart = cfg.portRanges.frpRemote[0];
-    form.value.frpRangeEnd = cfg.portRanges.frpRemote[1];
-  }
+  } | undefined;
+  if (!cfg) return;
+  form.value.maxRunningInstances = cfg.limits.maxRunningInstances;
+  form.value.memoryBudget = String(cfg.limits.memoryBudgetMb);
+  form.value.sessionHours = cfg.panel.sessionHours;
+  form.value.trashRetentionDays = cfg.ui.trashRetentionDays;
+  form.value.curseforgeApiKey = cfg.mirrors.curseforgeApiKey === '••••••' ? '' : cfg.mirrors.curseforgeApiKey;
+  form.value.curseforgeApiUrl = cfg.mirrors.curseforgeApi;
+  form.value.mineskinApiKeyConfigured = cfg.skins.mineskinApiKey === '••••••';
+  form.value.mineskinApiKey = '';
+  form.value.clearMineSkinApiKey = false;
+  form.value.githubMirror = cfg.mirrors.githubMirror;
+  form.value.javaSource = cfg.mirrors.javaSource ?? 'tuna';
+  form.value.javaMirror = cfg.mirrors.javaMirror ?? '';
+  form.value.minecraftSource = cfg.mirrors.minecraftSource ?? 'bmclapi';
+  form.value.exposePanel = cfg.frp.exposePanel;
+  form.value.panelRemotePort = cfg.frp.panelRemotePort;
+  form.value.configRollback = cfg.frp.configRollback;
+  form.value.gameRangeStart = cfg.portRanges.game[0];
+  form.value.gameRangeEnd = cfg.portRanges.game[1];
+  form.value.frpRangeStart = cfg.portRanges.frpRemote[0];
+  form.value.frpRangeEnd = cfg.portRanges.frpRemote[1];
+}
+
+if (cachedSettings?.panel) applyPanelConfig(cachedSettings.panel);
+
+const newToken = ref('');
+const showResetToken = ref(false);
+const showClean = ref(false);
+const cleanTarget = ref<'trash' | 'logs'>('trash');
+const cleanFreed = ref(0);
+
+async function load() {
+  const [p, disk, frp, ping] = await Promise.all([
+    api.get<PanelResponse>('/api/panel'),
+    api.get<StorageResponse>('/api/system/storage'),
+    api.get<{ binaryReady: boolean }>('/api/frp/status').catch(() => null),
+    api.get<{ version: string }>('/api/ping').catch(() => null),
+  ]);
+  panel.value = p;
+  storage.value = disk;
+  frpBinary.value = frp?.binaryReady ?? false;
+  appVersion.value = ping?.version ?? '';
+  applyPanelConfig(p);
+  writeBrowserSnapshot<SettingsSnapshot>('settings', { panel: p, storage: disk, frpBinary: frpBinary.value, appVersion: appVersion.value });
 }
 
 let javaTimer: number | null = null;
@@ -112,7 +134,17 @@ let settingsActive = false;
 async function refreshJavaInfo() {
   try {
     const java = await api.get<NonNullable<typeof panel.value>['java']>('/api/system/java');
-    if (panel.value) panel.value.java = java;
+    if (panel.value) {
+      panel.value.java = java;
+      if (storage.value) {
+        writeBrowserSnapshot<SettingsSnapshot>('settings', {
+          panel: panel.value,
+          storage: storage.value,
+          frpBinary: frpBinary.value,
+          appVersion: appVersion.value,
+        });
+      }
+    }
   } catch {
     // Keep the last known status if one refresh fails.
   }
@@ -241,7 +273,17 @@ async function killWorld(id: string) {
 
     <AppearanceSettings />
 
-    <div v-if="!panel" class="row gap-2"><span class="spinner" /> 读取中…</div>
+    <div v-if="!panel" class="settings-grid" role="status" aria-label="正在读取面板设置" aria-busy="true">
+      <section v-for="section in loadingSections" :key="section.area" class="card" :class="section.area" aria-hidden="true">
+        <div class="card-head"><span class="skeleton settings-loading-heading" /></div>
+        <div class="card-body col gap-3">
+          <div v-for="field in section.rows" :key="field" class="field">
+            <span class="skeleton settings-loading-label" />
+            <span class="skeleton settings-loading-control" />
+          </div>
+        </div>
+      </section>
+    </div>
 
     <template v-else>
       <div class="settings-grid">
@@ -537,6 +579,9 @@ async function killWorld(id: string) {
 }
 .settings-grid > .card { display: flex; flex-direction: column; min-width: 0; }
 .settings-grid > .card > .card-body { flex: 1; min-width: 0; }
+.settings-loading-heading { display: block; width: 88px; height: 18px; }
+.settings-loading-label { width: 45%; max-width: 190px; height: 12px; border-radius: 5px; }
+.settings-loading-control { width: 100%; height: 36px; border-radius: var(--r-sm); }
 .settings-access { grid-area: access; }
 .settings-source { grid-area: source; }
 .settings-skins { grid-area: skins; }

@@ -10,14 +10,22 @@ import { createLogger } from '../core/logger.ts';
 import { withLock } from '../core/lock.ts';
 import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile } from '../launcher/index.ts';
 import { ensureSkinSupport } from './skinSupportService.ts';
+import { ensurePaperclipServerCache } from './installService.ts';
 import { processCommandLine, processStat } from './systemService.ts';
 import { latestCrashReport } from '../core/crashReport.ts';
 import { evCrash, evReady, evStart, evStop } from './eventLog.ts';
-import { pingServer } from '../core/mcping.ts';
+import { pingServer, type PingResult } from '../core/mcping.ts';
 import * as systemService from './systemService.ts';
 import { ensureJava, inspectJava, selectCompatibleJava } from './javaService.ts';
 import * as frp from './frpService.ts';
 import * as I from './instanceService.ts';
+import {
+  ensureFabricApiSupport,
+  ensureSparkSupport,
+  performanceAgentArgument,
+  preparePerformanceAgent,
+  runtimePerformanceSnapshotFile,
+} from './performanceAgent.ts';
 import type { InstanceConfig, InstanceState, InstanceStatus } from '../types.ts';
 
 const logger = createLogger('supervisor');
@@ -357,22 +365,23 @@ export interface StatusSnapshot {
   phase: string;
   progress: string | null;
   players: number;
+  playersKnown: boolean;
+  queryLatencyMs: number | null;
   uptime: number;
   cpu: number;
   rss: number;
+  threads: number | null;
   detectedFrom: 'memory' | 'disk';
 }
 
-/** 协议探测出来的在线人数缓存：概览每几秒就会问一次，不能每次都去连 */
-const playerCountCache = new Map<string, { at: number; value: number }>();
+/** Protocol probe is shared by player count and latency charts. */
+const serverProbeCache = new Map<string, { at: number; value: PingResult | null }>();
 
-async function livePlayerCount(id: string, host: string, port: number, fallback: number): Promise<number> {
-  const hit = playerCountCache.get(id);
+async function liveServerProbe(id: string, host: string, port: number): Promise<PingResult | null> {
+  const hit = serverProbeCache.get(id);
   if (hit && Date.now() - hit.at < 5000) return hit.value;
-  const r = await pingServer(host, port, 2500);
-  // 探不到就沿用上一次/状态里的值，别把界面刷成 0
-  const value = r ? r.online : fallback;
-  playerCountCache.set(id, { at: Date.now(), value });
+  const value = await pingServer(host, port, 2500);
+  serverProbeCache.set(id, { at: Date.now(), value });
   return value;
 }
 
@@ -419,17 +428,21 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
       status = 'stuck';
       phase = '启动了 3 分钟仍未监听端口，可能卡住了';
     }
+    const probe = status === 'running' ? await liveServerProbe(id, '127.0.0.1', cfg.port) : null;
     const summary: StatusSnapshot = {
       status,
       pid,
       listening,
       phase,
       progress: progress ?? null,
-      // 在线人数用协议探测实时拿（state.players 只在启动/停止时写过 0，从来没被更新）
-      players: status === 'running' ? await livePlayerCount(id, '127.0.0.1', cfg.port, st.players) : st.players,
+      // 在线人数仍沿用上次状态作界面兜底；历史记录会看 playersKnown，避免把兜底值记成实测值。
+      players: status === 'running' ? (probe?.online ?? st.players) : st.players,
+      playersKnown: probe !== null,
+      queryLatencyMs: probe?.latencyMs ?? null,
       uptime: proc?.uptime || (st.startedAt ? Math.max(0, Date.now() / 1000 - st.startedAt) : 0),
       cpu: proc?.cpu ?? 0,
       rss: proc?.rss ?? 0,
+      threads: proc?.threads ?? null,
       detectedFrom: 'memory',
     };
     return summary;
@@ -450,9 +463,12 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
       phase,
       progress: null,
       players: st.players,
+      playersKnown: false,
+      queryLatencyMs: null,
       uptime: st.startedAt ? Math.max(0, Date.now() / 1000 - st.startedAt) : 0,
       cpu: 0,
       rss: 0,
+      threads: null,
       detectedFrom: 'memory',
     };
   }
@@ -461,9 +477,9 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
   }
   const javaPhase = javaPreparing.get(id);
   if (javaPhase) {
-    return { status: 'starting', pid: null, listening: false, phase: javaPhase, progress: null, players: 0, uptime: 0, cpu: 0, rss: 0, detectedFrom: 'memory' };
+    return { status: 'starting', pid: null, listening: false, phase: javaPhase, progress: null, players: 0, playersKnown: false, queryLatencyMs: null, uptime: 0, cpu: 0, rss: 0, threads: null, detectedFrom: 'memory' };
   }
-  return { status, pid: null, listening: false, phase: st.phase || '', progress: null, players: 0, uptime: 0, cpu: 0, rss: 0, detectedFrom: 'memory' };
+  return { status, pid: null, listening: false, phase: st.phase || '', progress: null, players: 0, playersKnown: false, queryLatencyMs: null, uptime: 0, cpu: 0, rss: 0, threads: null, detectedFrom: 'memory' };
 }
 
 /** 把控制台输出接到缓冲，并维护状态 */
@@ -620,17 +636,43 @@ export async function start(id: string, opts: { wait?: boolean; signal?: AbortSi
       return { ok: false, error: `缺少服务端文件：${check.missing.join('、')}。请先在「配置」里重新安装这个世界的服务端。` };
     }
 
+    // Paperclip otherwise fetches Mojang's base jar itself and bypasses the
+    // Minecraft mirror selected in panel settings. Warm and checksum its cache
+    // through the same mirror-aware downloader before Java starts.
+    if (launchCfg.loader === 'paper') {
+      await ensurePaperclipServerCache(launchCfg, (line) => logger.info(`世界 ${id} Paper 依赖：${line}`), opts.signal);
+      opts.signal?.throwIfAborted();
+    }
+
+    // Spark and the bundled skin component may depend on Fabric API even in a
+    // newly created, otherwise empty Fabric server.
+    await ensureFabricApiSupport(id, (line) => logger.info(`世界 ${id} Fabric 依赖：${line}`), { signal: opts.signal });
+    opts.signal?.throwIfAborted();
+
     // Retrofit the server-only skin component for worlds created by older
     // BlockCraft versions. The selected loader decides whether this is a MOD,
     // Paper plugin, or unsupported pure Vanilla.
     await ensureSkinSupport(id, (line) => logger.info(`世界 ${id} 皮肤组件：${line}`), { signal: opts.signal });
     opts.signal?.throwIfAborted();
 
+    // Spark exposes loader-neutral TPS/MSPT, player ping and world statistics.
+    // Install its official server artifact for mod loaders that do not bundle it.
+    await ensureSparkSupport(id, (line) => logger.info(`世界 ${id} 性能采集：${line}`), { signal: opts.signal });
+    opts.signal?.throwIfAborted();
+
     // 3) 生成 JVM 参数。Node 直接启动 Java，Windows 和 Linux 使用同一条路径。
-    writeJvmArgsFile(serverDir, check.plan);
-    const javaArgs = check.plan.useArgFile
-      ? ['@user_jvm_args.txt', ...check.plan.serverArgs]
-      : [...check.plan.jvmArgs, ...check.plan.serverArgs];
+    const agentJar = preparePerformanceAgent(selectedJava.home);
+    if (!agentJar) logger.warn(`世界 ${id} 没有可用的 javac/jar，JVM 性能采集器未加载`);
+    const launchPlan = agentJar
+      ? {
+          ...check.plan,
+          jvmArgs: [...check.plan.jvmArgs, performanceAgentArgument(agentJar, runtimePerformanceSnapshotFile(id))],
+        }
+      : check.plan;
+    writeJvmArgsFile(serverDir, launchPlan);
+    const javaArgs = launchPlan.useArgFile
+      ? ['@user_jvm_args.txt', ...launchPlan.serverArgs]
+      : [...launchPlan.jvmArgs, ...launchPlan.serverArgs];
     try {
       fs.unlinkSync(intentFile(id));
     } catch {

@@ -23,15 +23,23 @@ export function fmtDuration(seconds: number | null | undefined): string {
   return `${s} 秒`;
 }
 
+/** Legacy instance configs may store Unix seconds; normalize them for JS Date. */
+export function normalizeTimestamp(ts: number | null | undefined): number | null {
+  if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null;
+  return ts < 100_000_000_000 ? ts * 1_000 : ts;
+}
+
 export function fmtTime(ts: number | null | undefined): string {
-  if (!ts) return '—';
-  const d = new Date(ts);
+  const normalized = normalizeTimestamp(ts);
+  if (normalized === null) return '—';
+  const d = new Date(normalized);
   return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 export function fmtRelative(ts: number | null | undefined): string {
-  if (!ts) return '从未';
-  const diff = Date.now() - ts;
+  const normalized = normalizeTimestamp(ts);
+  if (normalized === null) return '从未';
+  const diff = Date.now() - normalized;
   if (diff < 60_000) return '刚刚';
   if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
   if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`;

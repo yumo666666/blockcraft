@@ -1,4 +1,4 @@
-import type { Express } from 'express';
+import express, { type Express } from 'express';
 import { bad } from '../core/errors.ts';
 import { audit } from '../core/logger.ts';
 import * as I from '../services/instanceService.ts';
@@ -7,6 +7,7 @@ import { invalidateModCount } from '../services/overview.ts';
 import * as M from '../services/modService.ts';
 
 const isRunning = (id: string) => sup.isRunning(id);
+const modUploadJsonParser = express.json({ limit: '256mb' });
 
 export function registerModRoutes(app: Express): void {
   app.get('/api/instances/:id/mods', async (req, res) => {
@@ -45,7 +46,7 @@ export function registerModRoutes(app: Express): void {
     res.json({ ok: true });
   });
 
-  app.post('/api/instances/:id/mods/upload', async (req, res) => {
+  app.post('/api/instances/:id/mods/upload', modUploadJsonParser, async (req, res) => {
     const id = req.params.id;
     const files = (req.body as { files?: { name: string; data: string }[] })?.files ?? [];
     if (!files.length) throw bad('没有收到文件');

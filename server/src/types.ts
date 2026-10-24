@@ -149,6 +149,9 @@ export interface InstanceSummary {
   cpu: number;
   rss: number;
   players: number;
+  playersKnown: boolean;
+  queryLatencyMs: number | null;
+  threads: number | null;
   maxPlayers: number;
   modCount: number;
   diskUsage: number;
@@ -156,6 +159,24 @@ export interface InstanceSummary {
   intentionalStop: boolean;
   createdAt: number;
   javaMajor: number | null;
+  performance: {
+    t: number;
+    pid: number;
+    tps: number | null;
+    msptMean: number | null;
+    msptP95: number | null;
+    msptPeak: number | null;
+    heapUsed: number | null;
+    heapMax: number | null;
+    gcCount: number | null;
+    gcPause: number | null;
+    pingMedian: number | null;
+    pingP95: number | null;
+    networkRx: number | null;
+    networkTx: number | null;
+    chunks: number | null;
+    entities: number | null;
+  } | null;
   /** 上次崩溃/异常退出的原因（面板自动读崩溃报告生成） */
   lastError: string | null;
 }
@@ -233,7 +254,7 @@ export interface Job {
   title: string;
   instanceId: string | null;
   status: 'running' | 'cancelling' | 'cancelled' | 'done' | 'failed' | 'interrupted';
-  stages: { key: string; label: string; status: 'pending' | 'running' | 'done' | 'failed' }[];
+  stages: { key: string; label: string; status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled' }[];
   lines: string[];
   progress: number;
   error: string | null;

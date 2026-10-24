@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, type UploadProgress } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
+import { readBrowserSnapshot, writeBrowserSnapshot } from '../lib/browserSnapshot.ts';
 import JobProgress from '../components/JobProgress.vue';
 import Icon from '../components/Icon.vue';
 import { setBackgroundJob } from '../lib/backgroundJob.ts';
@@ -30,9 +31,10 @@ const showJob = ref(false);
 const jobId = ref<string | null>(null);
 
 // 新建
-const versions = ref<{ id: string; type: string }[]>([]);
-const loaders = ref<LoaderAvailability[]>([]);
-const loadingVersions = ref(false);
+const cachedVersions = readBrowserSnapshot<{ id: string; type: string }[]>('wizard:minecraft-versions');
+const versions = ref<{ id: string; type: string }[]>(cachedVersions ?? []);
+const versionsLoaded = ref(cachedVersions !== null);
+const loadingMinecraftVersions = ref(false);
 const form = ref({
   name: '',
   mc: '1.20.1',
@@ -57,11 +59,23 @@ const form = ref({
   autostart: false,
   start: true,
 });
+const cachedLoaders = readBrowserSnapshot<{ mc: string; loaders: LoaderAvailability[] }>(`wizard:loaders:${form.value.mc}`);
+const loaders = ref<LoaderAvailability[]>(cachedLoaders?.loaders ?? []);
+const loaderSnapshotMc = ref(cachedLoaders?.mc ?? '');
+const loadingVersions = ref(false);
+let versionsRequest = 0;
+let loadersRequest = 0;
 
 // 导入
-const packs = ref<{ id: string; file: string; bytes: number; uploadedAt: number; format?: string | null }[]>([]);
-const curseForgeKeyConfigured = ref(false);
-const importSettingsLoading = ref(true);
+type PackInfo = { id: string; file: string; bytes: number; uploadedAt: number; format?: string | null };
+const cachedPacks = readBrowserSnapshot<PackInfo[]>('wizard:packs');
+const packs = ref<PackInfo[]>(cachedPacks ?? []);
+const packsLoaded = ref(cachedPacks !== null);
+const packsLoading = ref(false);
+const cachedCurseForgeKeyConfigured = readBrowserSnapshot<boolean>('wizard:curseforge-key-configured');
+const curseForgeKeyConfigured = ref(cachedCurseForgeKeyConfigured ?? false);
+const hasImportSettingsSnapshot = ref(cachedCurseForgeKeyConfigured !== null);
+const importSettingsLoading = ref(!hasImportSettingsSnapshot.value);
 const importForm = ref({
   packId: '',
   name: '',
@@ -101,14 +115,21 @@ function skinSupportHint(loader: string): string {
 }
 
 async function loadVersions() {
+  const request = ++versionsRequest;
+  if (!versionsLoaded.value) loadingMinecraftVersions.value = true;
   try {
     const r = await api.get<{ versions: { id: string; type: string }[] }>('/api/versions');
+    if (request !== versionsRequest) return;
     versions.value = r.versions;
+    versionsLoaded.value = true;
+    writeBrowserSnapshot('wizard:minecraft-versions', r.versions);
     if (r.versions.length && !r.versions.some((v) => v.id === form.value.mc)) form.value.mc = r.versions[0].id;
   } catch (err) {
-    toastError(err, '读取 Minecraft 版本列表失败（可以手动填写版本号）');
+    if (request === versionsRequest) toastError(err, '读取 Minecraft 版本列表失败（可以手动填写版本号）');
+  } finally {
+    if (request === versionsRequest) loadingMinecraftVersions.value = false;
   }
-  void refreshLoaders();
+  if (request === versionsRequest) void refreshLoaders();
 }
 
 function resetFlowForm() {
@@ -139,38 +160,59 @@ watch(() => route.path, (path) => {
 });
 
 async function refreshLoaders() {
+  const mc = form.value.mc;
+  const request = ++loadersRequest;
+  const cached = readBrowserSnapshot<LoaderAvailability[]>(`wizard:loaders:${mc}`);
+  if (cached !== null) {
+    loaders.value = cached;
+    loaderSnapshotMc.value = mc;
+  } else if (loaderSnapshotMc.value !== mc) {
+    loaders.value = [];
+    loaderSnapshotMc.value = '';
+  }
   loadingVersions.value = true;
   try {
-    const r = await api.get<{ loaders: LoaderAvailability[] }>(`/api/loaders?mc=${encodeURIComponent(form.value.mc)}`);
+    const r = await api.get<{ loaders: LoaderAvailability[] }>(`/api/loaders?mc=${encodeURIComponent(mc)}`);
+    if (request !== loadersRequest || mc !== form.value.mc) return;
     loaders.value = r.loaders;
+    loaderSnapshotMc.value = mc;
+    writeBrowserSnapshot(`wizard:loaders:${mc}`, r.loaders);
     const cur = r.loaders.find((l) => l.loader === form.value.loader) ?? r.loaders.find((l) => l.available);
     if (cur) {
       form.value.loader = cur.loader;
       form.value.loaderVersion = cur.suggested ?? '';
     }
   } catch (err) {
-    toastError(err, '读取加载器版本失败（网络可能不通，可以稍后重试）');
+    if (request === loadersRequest && mc === form.value.mc) toastError(err, '读取加载器版本失败（网络可能不通，可以稍后重试）');
   } finally {
-    loadingVersions.value = false;
+    if (request === loadersRequest) loadingVersions.value = false;
   }
 }
 
 async function loadPacks() {
+  packsLoading.value = true;
   try {
-    const r = await api.get<{ packs: { id: string; file: string; bytes: number; uploadedAt: number; format?: string | null }[] }>('/api/packs');
+    const r = await api.get<{ packs: PackInfo[] }>('/api/packs');
     packs.value = r.packs;
+    packsLoaded.value = true;
+    writeBrowserSnapshot('wizard:packs', r.packs);
   } catch {
-    packs.value = [];
+    if (!packsLoaded.value) packs.value = [];
+  } finally {
+    packsLoading.value = false;
+    packsLoaded.value = true;
   }
 }
 
 async function loadImportSettings() {
-  importSettingsLoading.value = true;
+  if (!hasImportSettingsSnapshot.value) importSettingsLoading.value = true;
   try {
     const r = await api.get<{ config: { mirrors: { curseforgeApiKey: string } } }>('/api/panel');
     curseForgeKeyConfigured.value = Boolean(r.config.mirrors.curseforgeApiKey);
+    hasImportSettingsSnapshot.value = true;
+    writeBrowserSnapshot('wizard:curseforge-key-configured', curseForgeKeyConfigured.value);
   } catch {
-    curseForgeKeyConfigured.value = false;
+    if (!hasImportSettingsSnapshot.value) curseForgeKeyConfigured.value = false;
   } finally {
     importSettingsLoading.value = false;
   }
@@ -327,13 +369,16 @@ function backgroundJob() {
           <div class="row gap-3 wrap">
             <div class="field" style="min-width: 220px">
               <label class="field-label">Minecraft 版本</label>
-              <select v-model="form.mc" class="select" @change="refreshLoaders">
+              <div v-if="loadingMinecraftVersions && !versionsLoaded" class="skeleton wizard-field-skeleton" aria-label="正在读取 Minecraft 版本" />
+              <select v-else-if="versions.length" v-model="form.mc" class="select" @change="refreshLoaders">
                 <option v-for="v in versions" :key="v.id" :value="v.id">{{ v.id }}</option>
               </select>
+              <input v-else v-model="form.mc" class="input mono" @change="refreshLoaders" />
             </div>
             <div class="field" style="min-width: 200px">
               <label class="field-label">加载器</label>
-              <select v-model="form.loader" class="select" @change="form.loaderVersion = currentLoader?.suggested ?? ''">
+              <div v-if="loadingVersions && loaderSnapshotMc !== form.mc" class="skeleton wizard-field-skeleton" aria-label="正在读取加载器" />
+              <select v-else v-model="form.loader" class="select" :disabled="loadingVersions && loaderSnapshotMc !== form.mc" @change="form.loaderVersion = currentLoader?.suggested ?? ''">
                 <option v-for="l in loaders" :key="l.loader" :value="l.loader" :disabled="!l.available">
                   {{ l.label }}{{ l.available ? '' : '（不可用）' }}
                 </option>
@@ -341,13 +386,17 @@ function backgroundJob() {
             </div>
             <div class="field" style="min-width: 200px">
               <label class="field-label">加载器版本</label>
-              <select v-if="currentLoader?.versions.length" v-model="form.loaderVersion" class="select">
+              <div v-if="loadingVersions && loaderSnapshotMc !== form.mc" class="skeleton wizard-field-skeleton" aria-label="正在读取加载器版本" />
+              <select v-else-if="currentLoader?.versions.length" v-model="form.loaderVersion" class="select" :disabled="loadingVersions && loaderSnapshotMc !== form.mc">
                 <option v-for="v in currentLoader.versions" :key="v" :value="v">{{ v }}</option>
               </select>
               <input v-else v-model="form.loaderVersion" class="input mono" placeholder="原版无需填写" />
             </div>
           </div>
-          <div v-if="loadingVersions" class="row gap-2"><span class="spinner" /> 正在查询可用版本…</div>
+          <div v-if="loadingVersions && loaderSnapshotMc !== form.mc" class="wizard-loader-note-skeleton" role="status" aria-label="正在查询可用版本" aria-busy="true">
+            <span class="skeleton wizard-loader-note-line" />
+            <span class="skeleton wizard-loader-note-line short" />
+          </div>
           <div v-else-if="currentLoader" class="badge badge-info">{{ currentLoader.note }} · 需要 Java {{ currentLoader.javaMajor }}</div>
           <p class="text-3 small skin-support-hint">{{ newSkinSupportHint }} 只有上游发布了该组合的兼容版本时才能自动安装。</p>
         </template>
@@ -469,7 +518,13 @@ function backgroundJob() {
           </div>
         </div>
 
-        <div v-if="!packs.length" class="import-empty">
+        <div v-if="packsLoading && !packsLoaded" class="import-pack-skeleton-list" role="status" aria-label="正在读取整合包" aria-busy="true">
+          <div v-for="slot in 3" :key="slot" class="pack-row import-pack-skeleton-row" aria-hidden="true">
+            <span class="skeleton import-pack-skeleton-name" />
+            <span class="skeleton import-pack-skeleton-size" />
+          </div>
+        </div>
+        <div v-else-if="!packs.length" class="import-empty">
           <div class="import-empty-head">
             <span class="import-empty-icon"><Icon name="package" :size="22" /></span>
             <div>
@@ -517,7 +572,15 @@ function backgroundJob() {
           <button class="btn btn-soft" @click="router.push('/settings')">去设置 / Settings</button>
         </div>
 
-        <div v-if="inspecting" class="row gap-2"><span class="spinner" /> 解析中…</div>
+        <div v-if="inspecting" class="card card-pad import-inspection-skeleton" role="status" aria-label="正在解析整合包" aria-busy="true">
+          <div class="row gap-2 wrap">
+            <span class="skeleton import-inspection-badge" />
+            <span class="skeleton import-inspection-badge wide" />
+            <span class="skeleton import-inspection-badge" />
+          </div>
+          <span class="skeleton import-inspection-line" />
+          <span class="skeleton import-inspection-line short" />
+        </div>
         <div v-else-if="inspection" class="card card-pad" style="background: var(--surface-2)">
           <div class="col gap-2">
             <div class="row gap-2 wrap">
@@ -732,7 +795,7 @@ function backgroundJob() {
   font-size: 11px;
   font-weight: 700;
 }
-.aside-step.active .aside-step-index { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
+.aside-step.active .aside-step-index { border-color: var(--accent-strong); background: var(--accent-strong); color: var(--accent-contrast); }
 .aside-step.done .aside-step-index { border-color: var(--ok); background: var(--ok-soft); color: var(--ok-text); }
 .aside-tips p { margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.65; }
 .aside-tips .btn { justify-content: flex-start; }
@@ -760,7 +823,7 @@ function backgroundJob() {
   border: 1px solid var(--accent-border);
   border-radius: 14px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .import-formats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .import-format {
@@ -773,15 +836,24 @@ function backgroundJob() {
   border-radius: var(--r-sm);
   background: var(--surface-strong);
 }
-.import-format > svg { color: var(--accent); }
+.import-format > svg { color: var(--accent-text); }
 .import-format strong { margin-top: 2px; font-size: 12px; font-weight: 650; }
 .import-format span { color: var(--text-3); font-size: 10.5px; }
+.import-pack-skeleton-list { display: grid; gap: 8px; }
+.import-pack-skeleton-row { cursor: default; }
+.import-pack-skeleton-name { width: min(54%, 360px); height: 13px; }
+.import-pack-skeleton-size { width: 56px; height: 11px; }
+.import-inspection-skeleton { display: grid; gap: 11px; background: var(--surface-2); }
+.import-inspection-badge { width: 70px; height: 22px; border-radius: 999px; }
+.import-inspection-badge.wide { width: 130px; }
+.import-inspection-line { width: 92%; height: 12px; }
+.import-inspection-line.short { width: 58%; }
 .skin-support-hint {
   max-width: 860px;
   margin: 0;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--accent-strong);
   border-radius: var(--r-sm);
   background: var(--surface-2);
   line-height: 1.6;
@@ -789,6 +861,10 @@ function backgroundJob() {
 .wizard-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
 .wizard-step { max-width: 100%; }
 .wizard-steps { min-width: 0; }
+.wizard-field-skeleton { height: 38px; }
+.wizard-loader-note-skeleton { display: grid; gap: 7px; width: min(100%, 440px); padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
+.wizard-loader-note-line { height: 11px; }
+.wizard-loader-note-line.short { width: 56%; }
 .pack-row {
   display: flex;
   align-items: center;
@@ -809,7 +885,7 @@ function backgroundJob() {
   .wizard-steps { flex: 1 1 240px; justify-content: flex-start; }
 }
 .pack-row:hover { border-color: var(--border-strong); }
-.pack-row.active { border-color: var(--accent); background: var(--accent-soft); }
+.pack-row.active { border-color: var(--accent-strong); background: var(--accent-soft); }
 .pack-upload-progress { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
 .pack-upload-done { border-color: var(--ok); }
 .pack-upload-failed { border-color: var(--danger); }

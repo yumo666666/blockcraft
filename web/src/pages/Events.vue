@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../lib/api.ts';
 import { toastError } from '../lib/toast.ts';
+import { readBrowserSnapshot, writeBrowserSnapshot } from '../lib/browserSnapshot.ts';
 
 defineOptions({ name: 'Events' });
 
@@ -21,8 +22,10 @@ interface PanelEvent {
   text: string;
 }
 
-const events = ref<PanelEvent[]>([]);
-const loading = ref(true);
+const cachedEvents = readBrowserSnapshot<{ events: PanelEvent[] }>('events');
+const events = ref<PanelEvent[]>(cachedEvents?.events ?? []);
+const hasSnapshot = ref(Boolean(cachedEvents));
+const loading = ref(!hasSnapshot.value);
 const autoScroll = ref(true);
 const boxEl = ref<HTMLElement | null>(null);
 let timer: number | null = null;
@@ -40,6 +43,8 @@ async function load(): Promise<void> {
     const r = await api.get<{ events: PanelEvent[] }>(`/api/events?limit=${MAX_LINES}`);
     // 只留最近 200 行
     events.value = (r.events ?? []).slice(-MAX_LINES);
+    hasSnapshot.value = true;
+    writeBrowserSnapshot('events', { events: events.value });
     if (autoScroll.value) {
       await nextTick();
       const el = boxEl.value;
@@ -64,7 +69,7 @@ function fmtTs(ts: number): string {
   return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-const empty = computed(() => !loading.value && events.value.length === 0);
+const empty = computed(() => (!loading.value || hasSnapshot.value) && events.value.length === 0);
 
 onMounted(() => {
   void load();
@@ -98,8 +103,16 @@ onUnmounted(() => {
         <span class="text-3 small">{{ events.length }} 行 · 每 {{ POLL_MS / 1000 }} 秒自动刷新</span>
       </div>
       <div class="card-body">
-        <div ref="boxEl" class="console event-log">
-          <div v-if="empty" class="console-empty">还没有事件。世界启动、关闭或崩溃时会记录在这里。</div>
+        <div ref="boxEl" class="console event-log" :aria-busy="loading">
+          <div v-if="loading && !hasSnapshot" class="event-skeleton-list" role="status" aria-label="正在读取事件日志">
+            <div v-for="line in 14" :key="line" class="event-skeleton-row" aria-hidden="true">
+              <span class="skeleton event-skeleton-time" />
+              <span class="skeleton event-skeleton-kind" />
+              <span class="skeleton event-skeleton-world" />
+              <span class="skeleton event-skeleton-text" :class="`event-skeleton-text-${line % 3}`" />
+            </div>
+          </div>
+          <div v-else-if="empty" class="console-empty">还没有事件。世界启动、关闭或崩溃时会记录在这里。</div>
           <div v-for="e in events" :key="e.seq" class="console-line" :class="`ev-${e.kind}`">
             <span class="ev-time">{{ fmtTs(e.ts) }}</span>
             <span class="ev-kind">{{ KIND_LABEL[e.kind] ?? e.kind }}</span>
@@ -118,6 +131,15 @@ onUnmounted(() => {
   height: min(64vh, 620px);
   overflow-y: auto;
 }
+.event-skeleton-list { display: flex; flex-direction: column; gap: 10px; padding: 2px 0; }
+.event-skeleton-row { display: flex; min-height: 14px; align-items: center; gap: 8px; }
+.event-skeleton-time, .event-skeleton-kind, .event-skeleton-world, .event-skeleton-text { height: 10px; border-radius: 4px; }
+.event-skeleton-time { width: 102px; flex: none; }
+.event-skeleton-kind { width: 36px; flex: none; }
+.event-skeleton-world { width: 76px; flex: none; }
+.event-skeleton-text { width: min(58%, 480px); }
+.event-skeleton-text-0 { width: min(72%, 620px); }
+.event-skeleton-text-1 { width: min(42%, 360px); }
 .ev-time { color: #7b8794; margin-right: 8px; }
 .ev-kind {
   display: inline-block;

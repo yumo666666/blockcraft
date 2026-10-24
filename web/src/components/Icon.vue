@@ -35,6 +35,7 @@ const ICONS: Record<string, string> = {
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   'chevron-left': '<path d="m14.5 6-6 6 6 6"/>',
   'chevron-right': '<path d="m9.5 6 6 6-6 6"/>',
+  'chevron-down': '<path d="m6 9 6 6 6-6"/>',
   external: '<path d="M14 4.4h5.6V10M19.6 4.4l-8 8"/><path d="M18.4 14v4.2a1.4 1.4 0 0 1-1.4 1.4H5.8a1.4 1.4 0 0 1-1.4-1.4V7a1.4 1.4 0 0 1 1.4-1.4H10"/>',
   info: '<circle cx="12" cy="12" r="8.6"/><path d="M12 10.8v5.4M12 7.8h.01"/>',
   help: '<circle cx="12" cy="12" r="8.6"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.6 2.3c-.8.5-1.2 1-1.2 1.9M12 17h.01"/>',

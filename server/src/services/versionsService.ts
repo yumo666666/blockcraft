@@ -78,7 +78,10 @@ export async function forgeVersions(mc: string): Promise<string[]> {
 
 export async function neoforgeVersions(mc: string): Promise<string[]> {
   const all = await cached('neoforge_all', async () => {
-    const text = await getText('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml').catch(() => '');
+    // Do not persist a transient network failure as an empty catalog for six
+    // hours. loadersFor() can still degrade to "unavailable" for this request,
+    // and the next refresh should be allowed to retry.
+    const text = await getText('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
     return [...text.matchAll(/<version>([^<]+)<\/version>/g)].map((m) => m[1]);
   }).catch(() => [] as string[]);
   // NeoForge 版本形如 20.4.237 对应 MC 1.20.4；1.20.2 之前没有 NeoForge
@@ -88,11 +91,19 @@ export async function neoforgeVersions(mc: string): Promise<string[]> {
   return all.filter((v) => v.startsWith(prefix)).reverse().slice(0, 30);
 }
 
-export async function fabricLoaderVersions(): Promise<string[]> {
-  return cached('fabric_loaders', async () => {
-    const text = await getText('https://meta.fabricmc.net/v2/versions/loader');
-    const json = JSON.parse(text) as { version: string; stable: boolean }[];
-    return json.filter((v) => v.stable).map((v) => v.version).slice(0, 30);
+export async function fabricLoaderVersions(mc: string): Promise<string[]> {
+  return cached(`fabric_loaders_${mc}`, async () => {
+    const text = await getText(`https://meta.fabricmc.net/v2/versions/loader/${encodeURIComponent(mc)}`);
+    const json = JSON.parse(text) as { loader?: { version?: string; stable?: boolean } }[];
+    const compatible = json.flatMap((entry) => {
+      const version = entry.loader?.version;
+      return typeof version === 'string' ? [{ version, stable: entry.loader?.stable === true }] : [];
+    });
+    // Keep every version Fabric reports as compatible, with its stable release first as the default.
+    return [...new Set([
+      ...compatible.filter((entry) => entry.stable).map((entry) => entry.version),
+      ...compatible.filter((entry) => !entry.stable).map((entry) => entry.version),
+    ])];
   }).catch(() => [] as string[]);
 }
 
@@ -111,8 +122,7 @@ export interface PaperBuild {
  */
 export async function paperBuilds(mc: string): Promise<PaperBuild[]> {
   return cached(`paper_${mc}`, async () => {
-    const text = await getText(`https://fill.papermc.io/v3/projects/paper/versions/${mc}/builds`).catch(() => '');
-    if (!text) return [] as PaperBuild[];
+    const text = await getText(`https://fill.papermc.io/v3/projects/paper/versions/${mc}/builds`);
     const items = JSON.parse(text) as {
       id: number;
       channel?: string;
@@ -165,7 +175,7 @@ export async function loadersFor(mc: string): Promise<LoaderAvailability[]> {
   const [forge, neo, fabric] = await Promise.all([
     forgeVersions(mc).catch(() => [] as string[]),
     neoforgeVersions(mc).catch(() => [] as string[]),
-    fabricLoaderVersions().catch(() => [] as string[]),
+    fabricLoaderVersions(mc).catch(() => [] as string[]),
   ]);
   const [paper, paperJava] = await Promise.all([
     paperBuilds(mc).catch(() => [] as PaperBuild[]),

@@ -28,7 +28,8 @@ const activeList = computed(() => props.instances.filter((i) => i.status !== 'st
   <div class="card monitor-card">
     <div class="card-head">
       <h3><span class="head-icon"><Icon name="cpu" :size="15" /></span>资源监控</h3>
-      <span class="text-3 small">{{ running.length }} 个世界在跑 / 共 {{ instances.length }} 个</span>
+      <span v-if="snap" class="text-3 small">{{ running.length }} 个世界在跑 / 共 {{ instances.length }} 个</span>
+      <span v-else class="skeleton monitor-skeleton-count" aria-label="正在读取世界状态" />
     </div>
     <div class="card-body col gap-4">
       <!-- 主机 -->
@@ -37,27 +38,31 @@ const activeList = computed(() => props.instances.filter((i) => i.status !== 'st
         <div class="monitor-grid">
           <div class="stat">
             <span class="stat-label">主机</span>
-            <span class="stat-value ellipsis">{{ snap?.hostname ?? '—' }}</span>
-            <span class="text-3 small">{{ snap ? `${snap.platform} / ${snap.arch}` : '—' }}</span>
+            <span v-if="snap" class="stat-value ellipsis">{{ snap.hostname }}</span>
+            <span v-else class="skeleton monitor-skeleton-value" />
+            <span v-if="snap" class="text-3 small">{{ `${snap.platform} / ${snap.arch}` }}</span>
+            <span v-else class="skeleton monitor-skeleton-caption" />
           </div>
           <div class="stat">
             <span class="stat-label">CPU 使用率</span>
-            <span class="stat-value">{{ snap?.cpuPercent === null || snap?.cpuPercent === undefined ? '采集中…' : `${snap.cpuPercent.toFixed(0)}%` }}</span>
-            <div class="meter"><div class="meter-fill" :class="cpuClass" :style="{ width: cpuPct + '%' }" /></div>
+            <span v-if="snap" class="stat-value">{{ snap.cpuPercent === null || snap.cpuPercent === undefined ? '采集中…' : `${snap.cpuPercent.toFixed(0)}%` }}</span>
+            <span v-else class="skeleton monitor-skeleton-value monitor-skeleton-value-short" />
+            <div v-if="snap" class="meter"><div class="meter-fill" :class="cpuClass" :style="{ width: cpuPct + '%' }" /></div>
+            <span v-else class="skeleton monitor-skeleton-meter" />
           </div>
           <div class="stat">
             <span class="stat-label">系统内存</span>
-            <span class="stat-value">
-              {{ snap ? `${(snap.memory.usedMb / 1024).toFixed(1)} / ${(snap.memory.totalMb / 1024).toFixed(1)} G` : '—' }}
-            </span>
-            <div class="meter"><div class="meter-fill" :class="memClass" :style="{ width: memPct + '%' }" /></div>
+            <span v-if="snap" class="stat-value">{{ `${(snap.memory.usedMb / 1024).toFixed(1)} / ${(snap.memory.totalMb / 1024).toFixed(1)} G` }}</span>
+            <span v-else class="skeleton monitor-skeleton-value" />
+            <div v-if="snap" class="meter"><div class="meter-fill" :class="memClass" :style="{ width: memPct + '%' }" /></div>
+            <span v-else class="skeleton monitor-skeleton-meter" />
           </div>
           <div class="stat">
             <span class="stat-label">项目磁盘</span>
-            <span class="stat-value">
-              {{ snap ? `${snap.disk.freeGb} G 可用` : '—' }}
-            </span>
-            <div class="meter"><div class="meter-fill" :class="diskClass" :style="{ width: diskPct + '%' }" /></div>
+            <span v-if="snap" class="stat-value">{{ `${snap.disk.freeGb} G 可用` }}</span>
+            <span v-else class="skeleton monitor-skeleton-value" />
+            <div v-if="snap" class="meter"><div class="meter-fill" :class="diskClass" :style="{ width: diskPct + '%' }" /></div>
+            <span v-else class="skeleton monitor-skeleton-meter" />
           </div>
         </div>
       </div>
@@ -68,21 +73,23 @@ const activeList = computed(() => props.instances.filter((i) => i.status !== 'st
         <div class="monitor-grid">
           <div class="stat">
             <span class="stat-label">内存占用</span>
-            <span class="stat-value">{{ fmtBytes(snap?.panel.rss) }}</span>
+            <span v-if="snap" class="stat-value">{{ fmtBytes(snap.panel.rss) }}</span>
+            <span v-else class="skeleton monitor-skeleton-value monitor-skeleton-value-short" />
           </div>
           <div class="stat">
             <span class="stat-label">已运行</span>
-            <span class="stat-value">{{ fmtDuration(snap?.panel.uptime ?? 0) }}</span>
+            <span v-if="snap" class="stat-value">{{ fmtDuration(snap.panel.uptime) }}</span>
+            <span v-else class="skeleton monitor-skeleton-value" />
           </div>
           <div class="stat">
             <span class="stat-label">CPU 核数</span>
-            <span class="stat-value">{{ snap?.cpuCount ?? '—' }}</span>
+            <span v-if="snap" class="stat-value">{{ snap.cpuCount }}</span>
+            <span v-else class="skeleton monitor-skeleton-value monitor-skeleton-value-short" />
           </div>
           <div class="stat">
             <span class="stat-label">Swap 使用</span>
-            <span class="stat-value">
-              {{ !snap ? '—' : snap.memory.swapAvailable ? `${(snap.memory.swapUsedMb / 1024).toFixed(1)} G` : '系统未提供' }}
-            </span>
+            <span v-if="snap" class="stat-value">{{ snap.memory.swapAvailable ? `${(snap.memory.swapUsedMb / 1024).toFixed(1)} G` : '系统未提供' }}</span>
+            <span v-else class="skeleton monitor-skeleton-value" />
           </div>
         </div>
       </div>
@@ -90,7 +97,14 @@ const activeList = computed(() => props.instances.filter((i) => i.status !== 'st
       <!-- 各世界 -->
       <div class="monitor-section">
         <div class="monitor-label">世界进程</div>
-        <div v-if="!activeList.length" class="text-3 small">目前没有世界在运行</div>
+        <div v-if="!snap" class="col gap-3" role="status" aria-label="正在读取运行中的世界">
+          <div v-for="row in 2" :key="row" class="monitor-world-row monitor-skeleton-world" aria-hidden="true">
+            <span class="skeleton monitor-skeleton-world-dot" />
+            <span class="skeleton monitor-skeleton-world-name" />
+            <span class="skeleton monitor-skeleton-world-stats" />
+          </div>
+        </div>
+        <div v-else-if="!activeList.length" class="text-3 small">目前没有世界在运行</div>
         <div v-else class="col gap-2">
           <div v-for="i in activeList" :key="i.id" class="monitor-world-row">
             <i class="dot" :class="statusClass(i.status)" />
@@ -127,6 +141,16 @@ const activeList = computed(() => props.instances.filter((i) => i.status !== 'st
   color: var(--text-3);
   text-transform: uppercase;
 }
+.monitor-skeleton-count { width: 148px; height: 12px; border-radius: 5px; }
+.monitor-skeleton-value { display: block; width: min(84%, 132px); height: 17px; border-radius: 5px; }
+.monitor-skeleton-value-short { width: 64px; }
+.monitor-skeleton-caption { display: block; width: 88px; height: 12px; border-radius: 5px; }
+.monitor-skeleton-meter { display: block; width: 100%; height: 6px; margin-top: 4px; border-radius: 999px; }
+.monitor-skeleton-world { grid-template-columns: 8px minmax(0, 1fr) minmax(120px, 38%); }
+.monitor-skeleton-world-dot { width: 8px; height: 8px; border-radius: 50%; }
+.monitor-skeleton-world-name, .monitor-skeleton-world-stats { height: 12px; border-radius: 5px; }
+.monitor-skeleton-world-name { width: min(100%, 120px); }
+.monitor-skeleton-world-stats { width: 100%; }
 .monitor-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(146px, 1fr));

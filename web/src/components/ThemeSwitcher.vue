@@ -80,7 +80,7 @@ onUnmounted(() => {
 .theme-trigger { list-style: none; }
 .theme-trigger::-webkit-details-marker { display: none; }
 .theme-trigger svg { transition: transform 0.2s var(--ease); }
-.theme-switcher[open] .theme-trigger { border-color: var(--border); background: var(--surface-3); color: var(--accent); }
+.theme-switcher[open] .theme-trigger { border-color: var(--border); background: var(--surface-3); color: var(--accent-text); }
 
 .theme-popover {
   position: absolute;
@@ -139,7 +139,7 @@ onUnmounted(() => {
 .theme-choice-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
 .theme-choice-copy strong { font-size: 12.5px; line-height: 1.35; font-weight: 600; }
 .theme-choice-copy small { overflow: hidden; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.theme-check { color: var(--accent); }
+.theme-check { color: var(--accent-text); }
 
 .theme-more {
   display: flex;

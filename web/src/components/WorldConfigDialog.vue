@@ -171,7 +171,23 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
 
 <template>
   <Modal v-if="open" :title="`${form?.name ?? ''} · 配置`" size="lg" @close="emit('close')">
-    <div v-if="!form" class="row gap-2"><span class="spinner" /> 读取配置…</div>
+    <div v-if="!form" class="config-dialog-skeleton col gap-4" role="status" aria-label="正在读取世界配置" aria-busy="true">
+      <div class="config-skeleton-switches">
+        <div v-for="slot in 3" :key="`switch-${slot}`" class="config-skeleton-switch">
+          <span class="skeleton config-skeleton-toggle" />
+          <span class="skeleton config-skeleton-line" />
+        </div>
+      </div>
+      <section v-for="(count, section) in [4, 3, 4, 3]" :key="section" class="cfg-section config-skeleton-section">
+        <span class="skeleton config-skeleton-heading" />
+        <div class="form-grid">
+          <div v-for="field in count" :key="field" class="field">
+            <span class="skeleton config-skeleton-label" />
+            <span class="skeleton config-skeleton-control" />
+          </div>
+        </div>
+      </section>
+    </div>
     <div v-else class="col gap-5">
       <!-- 常用开关放最上面：手机上往下滚才找得到的话，等于没有 -->
       <section class="quick-switches">
@@ -409,5 +425,15 @@ const COLORS = ['#f6e7cf', '#e3efdd', '#dde9f4', '#f3e2ec', '#fbf1cf', '#e6e5f5'
   cursor: pointer;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
 }
-.color-dot.active { border-color: var(--accent); }
+.color-dot.active { border-color: var(--accent-strong); }
+.config-dialog-skeleton { width: 100%; }
+.config-skeleton-switches { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; padding: 14px 16px; border: 1px solid var(--accent-border); border-radius: var(--r-sm); background: var(--accent-soft); }
+.config-skeleton-switch { display: flex; align-items: center; gap: 10px; min-height: 30px; }
+.config-skeleton-toggle { width: 38px; height: 20px; border-radius: 999px; }
+.config-skeleton-line { width: min(72%, 160px); height: 13px; }
+.config-skeleton-section { display: grid; gap: 12px; }
+.config-skeleton-heading { width: 72px; height: 13px; }
+.config-skeleton-label { width: min(68%, 170px); height: 11px; }
+.config-skeleton-control { height: 38px; }
+@media (max-width: 560px) { .config-skeleton-switches, .config-skeleton-section .form-grid { grid-template-columns: 1fr; } }
 </style>

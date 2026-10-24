@@ -17,6 +17,8 @@ export interface PingResult {
   max: number;
   version: string | null;
   motd: string | null;
+  /** Time from opening the TCP connection until the status response arrives. */
+  latencyMs: number;
 }
 
 function writeVarint(value: number): Buffer {
@@ -50,6 +52,7 @@ function readVarint(buf: Buffer, offset: number): { value: number; size: number 
 /** 探测一次；任何失败都返回 null（不抛） */
 export async function pingServer(host: string, port: number, timeoutMs = 2500): Promise<PingResult | null> {
   return new Promise<PingResult | null>((resolve) => {
+    const startedAt = Date.now();
     let done = false;
     let sock: net.Socket | null = null;
     let buf = Buffer.alloc(0);
@@ -128,6 +131,7 @@ export async function pingServer(host: string, port: number, timeoutMs = 2500): 
           max: Number(j.players?.max ?? 0),
           version: j.version?.name ?? null,
           motd,
+          latencyMs: Math.max(0, Date.now() - startedAt),
         });
       } catch {
         finish(null);

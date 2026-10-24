@@ -18,9 +18,12 @@ import { registerModRoutes } from './routes/mods.ts';
 import { registerPlayerRoutes } from './routes/players.ts';
 import * as playerService from './services/playerService.ts';
 import { registerPackRoutes } from './routes/packs.ts';
+import { registerPerformanceRoutes } from './routes/performance.ts';
+import { registerFileRoutes } from './routes/files.ts';
 import { startScheduler } from './services/scheduler.ts';
+import { startPerformanceHistory } from './services/performanceHistory.ts';
 import { startFrpService } from './services/frpService.ts';
-import { beginJobSetup, createJob } from './services/jobService.ts';
+import { beginJobSetup, createJob, markInterrupted } from './services/jobService.ts';
 import { evSystem } from './services/eventLog.ts';
 import { createSession as createSessionRec, destroySession, isValidSession as isValidSessionRec, prune } from './core/sessions.ts';
 
@@ -28,6 +31,14 @@ const logger = createLogger('http');
 
 export interface AuthedRequest extends Request {
   sessionId?: string;
+}
+
+function isModUploadRequest(req: Pick<Request, 'method' | 'path'>): boolean {
+  return req.method === 'POST' && /^\/api\/instances\/[^/]+\/mods\/upload\/?$/.test(req.path);
+}
+
+function isFileTextWriteRequest(req: Pick<Request, 'method' | 'path'>): boolean {
+  return req.method === 'PUT' && /^\/api\/instances\/[^/]+\/files\/text\/?$/.test(req.path);
 }
 
 /**
@@ -67,10 +78,16 @@ function rateLimited(ip: string): boolean {
 
 export function boot(): void {
   ensureDirs();
+  markInterrupted();
   const cfg = loadConfig();
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '2mb' }));
+  const standardJsonParser = express.json({ limit: '2mb' });
+  app.use((req, res, next) => {
+    // MOD upload is parsed on its authenticated route with a larger, dedicated limit.
+    if (isModUploadRequest(req) || isFileTextWriteRequest(req)) return next();
+    standardJsonParser(req, res, next);
+  });
 
   // Skin Restorer's MineSkin integration downloads uploaded PNGs from the local
   // panel, then sends the bytes for signing. The unguessable URL is scoped to a
@@ -115,7 +132,7 @@ export function boot(): void {
   });
 
   app.get('/api/ping', (_req, res) => {
-    res.json({ ok: true, name: 'BlockCraft', version: '3.0.3' });
+    res.json({ ok: true, name: 'BlockCraft', version: '0.0.1' });
   });
 
   // ---- 鉴权中间件
@@ -188,6 +205,8 @@ export function boot(): void {
   registerModRoutes(app);
   registerPlayerRoutes(app);
   registerPackRoutes(app);
+  registerPerformanceRoutes(app);
+  registerFileRoutes(app);
 
   // ---- 带 token 的链接自动登录（登录后立刻从地址栏清掉 token，避免留在浏览器历史里）
   app.get('/', (req, res, next) => {
@@ -221,14 +240,19 @@ export function boot(): void {
   }
 
   // ---- 统一错误处理（结构化错误码：前端才能区分「改输入」与「要刷新」）
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     const parserError = err as { type?: string; status?: number };
     if (parserError?.type === 'entity.too.large' || parserError?.status === 413) {
+      const message = isModUploadRequest(req)
+        ? '本地 MOD 单次导入上限为 180 MB，请减少文件总量或分批导入'
+        : '请求内容超过服务器限制，请检查文件大小';
       res.status(413).json({
         error: {
           code: 'PAYLOAD_TOO_LARGE',
-          message: '请求内容超过服务器限制，请检查文件大小',
-          message_en: 'Request body exceeds the server limit. Check the file size.',
+          message,
+          message_en: isModUploadRequest(req)
+            ? 'Local MOD imports are limited to 180 MB per batch. Reduce the total size or split the import.'
+            : 'Request body exceeds the server limit. Check the file size.',
         },
       });
       return;
@@ -270,6 +294,7 @@ export function boot(): void {
 
   startFrpService().catch((err) => logger.warn('FRP 服务启动失败', String(err)));
   startScheduler();
+  startPerformanceHistory();
 }
 
 if (process.argv[1] && /index\.ts$/.test(process.argv[1])) {

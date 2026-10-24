@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
+import { readBrowserSnapshot, writeBrowserSnapshot } from '../lib/browserSnapshot.ts';
 import { fmtBytes, statusClass } from '../lib/format.ts';
 import type { InstanceDetail, InstanceSummary, ModInfo } from '../lib/types.ts';
 import Modal from '../components/Modal.vue';
@@ -15,19 +16,35 @@ const router = useRouter();
 
 const base = computed(() => `/api/instances/${encodeURIComponent(props.id)}`);
 
-const instance = ref<InstanceSummary | null>(null);
-const mods = ref<ModInfo[]>([]);
-const total = ref(0);
-const page = ref(1);
-const pages = ref(1);
-const pageSize = ref(24);
-const modsDir = ref('');
+interface ModsSnapshot {
+  instance: InstanceSummary | null;
+  items: ModInfo[];
+  total: number;
+  page: number;
+  pages: number;
+  pageSize: number;
+  dir: string;
+  query: string;
+  source: string;
+  status: 'all' | 'enabled' | 'disabled';
+}
+
+const cachedMods = readBrowserSnapshot<ModsSnapshot>(`mods:${props.id}`);
+
+const instance = ref<InstanceSummary | null>(cachedMods?.instance ?? null);
+const mods = ref<ModInfo[]>(cachedMods?.items ?? []);
+const total = ref(cachedMods?.total ?? 0);
+const page = ref(cachedMods?.page ?? 1);
+const pages = ref(cachedMods?.pages ?? 1);
+const pageSize = ref(cachedMods?.pageSize ?? 24);
+const modsDir = ref(cachedMods?.dir ?? '');
+const hasSnapshot = ref(Boolean(cachedMods));
 const loading = ref(false);
 const busyFile = ref<string | null>(null);
 
-const q = ref('');
-const source = ref('all');
-const status = ref<'all' | 'enabled' | 'disabled'>('all');
+const q = ref(cachedMods?.query ?? '');
+const source = ref(cachedMods?.source ?? 'all');
+const status = ref<'all' | 'enabled' | 'disabled'>(cachedMods?.status ?? 'all');
 
 /** 世界只要还有进程在，任何 MOD 写操作都先拦下来（服务端也会拒绝） */
 const running = computed(() => (instance.value ? ['running', 'starting', 'stopping', 'stuck'].includes(instance.value.status) : false));
@@ -60,61 +77,123 @@ function modName(m: ModInfo): string {
 
 let offStream: (() => void) | null = null;
 let qTimer: number | null = null;
+let disposed = false;
+let loadRevision = 0;
+let restoringMods = false;
+
+function persistModsSnapshot(): void {
+  if (!hasSnapshot.value) return;
+  writeBrowserSnapshot<ModsSnapshot>(`mods:${props.id}`, {
+    instance: instance.value,
+    items: mods.value,
+    total: total.value,
+    page: page.value,
+    pages: pages.value,
+    pageSize: pageSize.value,
+    dir: modsDir.value,
+    query: q.value,
+    source: source.value,
+    status: status.value,
+  });
+}
+
+function restoreModsSnapshot(id: string): void {
+  const cached = readBrowserSnapshot<ModsSnapshot>(`mods:${id}`);
+  restoringMods = true;
+  instance.value = cached?.instance ?? null;
+  mods.value = cached?.items ?? [];
+  total.value = cached?.total ?? 0;
+  page.value = cached?.page ?? 1;
+  pages.value = cached?.pages ?? 1;
+  pageSize.value = cached?.pageSize ?? 24;
+  modsDir.value = cached?.dir ?? '';
+  q.value = cached?.query ?? '';
+  source.value = cached?.source ?? 'all';
+  status.value = cached?.status ?? 'all';
+  hasSnapshot.value = Boolean(cached);
+  restoringMods = false;
+}
 
 async function loadInstance() {
+  const id = props.id;
   try {
-    const r = await api.get<InstanceDetail>(base.value);
+    const r = await api.get<InstanceDetail>(`/api/instances/${encodeURIComponent(id)}`);
+    if (disposed || id !== props.id) return;
     instance.value = r.instance;
+    persistModsSnapshot();
   } catch (err) {
-    toastError(err, '读取世界信息失败');
+    if (!disposed && id === props.id) toastError(err, '读取世界信息失败');
   }
 }
 
 async function load(p = page.value) {
+  const id = props.id;
+  const revision = ++loadRevision;
   loading.value = true;
   try {
     const params = new URLSearchParams({ page: String(p), size: String(pageSize.value), status: status.value });
     if (q.value.trim()) params.set('q', q.value.trim());
     if (source.value !== 'all') params.set('source', source.value);
     const r = await api.get<{ total: number; page: number; size: number; pages: number; items: ModInfo[]; dir: string }>(
-      `${base.value}/mods?${params.toString()}`,
+      `/api/instances/${encodeURIComponent(id)}/mods?${params.toString()}`,
     );
+    if (disposed || id !== props.id || revision !== loadRevision) return;
     mods.value = r.items;
     total.value = r.total;
     page.value = r.page;
     pages.value = r.pages;
     modsDir.value = r.dir;
+    hasSnapshot.value = true;
+    persistModsSnapshot();
   } catch (err) {
-    toastError(err, '读取 MOD 列表失败');
+    if (!disposed && id === props.id && revision === loadRevision) toastError(err, '读取 MOD 列表失败');
   } finally {
-    loading.value = false;
+    if (revision === loadRevision) loading.value = false;
   }
 }
 
 onMounted(() => {
+  disposed = false;
   loadInstance();
-  load(1);
+  load(page.value);
   // 顶栏的实例流已经有世界状态，直接复用它来判断能不能改 MOD
   offStream = subscribe<{ instances: InstanceSummary[] }>(
     '/api/system/stream',
     (data) => {
       const hit = data.instances?.find((i) => i.id === props.id);
-      if (hit) instance.value = hit;
+      if (hit) {
+        instance.value = hit;
+        persistModsSnapshot();
+      }
     },
     { onError: () => loadInstance() },
   );
 });
 
 onUnmounted(() => {
+  disposed = true;
+  loadRevision += 1;
   offStream?.();
   if (qTimer) window.clearTimeout(qTimer);
 });
 
-watch([source, status, pageSize], () => load(1));
+watch([source, status, pageSize], () => {
+  if (restoringMods) return;
+  void load(1);
+}, { flush: 'sync' });
 
 watch(q, () => {
+  if (restoringMods) return;
   if (qTimer) window.clearTimeout(qTimer);
   qTimer = window.setTimeout(() => load(1), 300);
+}, { flush: 'sync' });
+
+watch(() => props.id, (id) => {
+  loadRevision += 1;
+  if (qTimer) window.clearTimeout(qTimer);
+  restoreModsSnapshot(id);
+  loadInstance();
+  void load(page.value);
 });
 
 function searchNow() {
@@ -180,6 +259,7 @@ const importDone = ref(0);
 const importTotal = ref(0);
 const importResult = ref<{ added: string[]; skipped: { file: string; reason: string }[] } | null>(null);
 const showImport = ref(false);
+const MAX_MOD_IMPORT_BYTES = 180 * 1024 * 1024;
 
 function pickFiles() {
   if (!guardRunning()) return;
@@ -205,6 +285,12 @@ async function onFiles(ev: Event) {
   const files = Array.from(input.files ?? []);
   input.value = '';
   if (!files.length) return;
+
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  if (totalBytes > MAX_MOD_IMPORT_BYTES) {
+    toast('error', '本次 MOD 文件过大', `所选 JAR 合计 ${fmtBytes(totalBytes)}，单次上限 180 MB；请分批导入`);
+    return;
+  }
 
   importing.value = true;
   importDone.value = 0;
@@ -346,7 +432,7 @@ function modrinthSearch(modId: string): string {
         <button
           class="btn btn-primary"
           :disabled="importing"
-          :title="running ? '请先停服再改 MOD' : '选择本地的 .jar 文件导入'"
+          :title="running ? '请先停服再改 MOD' : '选择本地的 .jar 文件导入，单次合计最多 180 MB'"
           @click="pickFiles"
         >
           <span v-if="importing" class="spinner spinner-on-accent" />
@@ -395,7 +481,7 @@ function modrinthSearch(modId: string): string {
             <option :value="48">48</option>
           </select>
         </div>
-        <button class="btn" :disabled="loading" @click="load(1)">
+        <button class="btn filter-refresh" :disabled="loading" @click="load(1)">
           <span v-if="loading" class="spinner" />
           刷新
         </button>
@@ -403,9 +489,26 @@ function modrinthSearch(modId: string): string {
     </div>
 
     <!-- MOD 卡片网格 -->
-    <div v-if="loading && !mods.length" class="card">
-      <div class="card-body center" style="padding: 44px">
-        <span class="spinner" />
+    <div v-if="loading && !hasSnapshot" class="mod-grid mod-grid-skeleton" role="status" aria-label="正在加载 MOD 列表" aria-busy="true">
+      <div v-for="index in 6" :key="index" class="mod-card mod-card-skeleton" aria-hidden="true">
+        <div class="row-between gap-2">
+          <span class="skeleton mod-skeleton-title" />
+          <span class="skeleton mod-skeleton-badge" />
+        </div>
+        <div class="mod-skeleton-description">
+          <span class="skeleton mod-skeleton-line mod-skeleton-line-long" />
+          <span class="skeleton mod-skeleton-line mod-skeleton-line-short" />
+        </div>
+        <div class="mod-skeleton-meta">
+          <span class="skeleton mod-skeleton-version" />
+          <span class="mod-skeleton-separator" />
+          <span class="skeleton mod-skeleton-size" />
+        </div>
+        <div class="mod-foot" aria-hidden="true">
+          <span class="skeleton mod-skeleton-action" />
+          <span class="skeleton mod-skeleton-action" />
+          <span class="skeleton mod-skeleton-action" />
+        </div>
       </div>
     </div>
 
@@ -546,3 +649,67 @@ function modrinthSearch(modId: string): string {
     />
   </div>
 </template>
+
+<style scoped>
+.mod-skeleton-title {
+  width: min(54%, 180px);
+  height: 16px;
+}
+
+.mod-skeleton-badge {
+  width: 78px;
+  height: 22px;
+  border-radius: 999px;
+}
+
+.mod-skeleton-description {
+  display: flex;
+  min-height: 34px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+
+.mod-skeleton-line {
+  height: 10px;
+  border-radius: 5px;
+}
+
+.mod-skeleton-line-long { width: 92%; }
+.mod-skeleton-line-short { width: 63%; }
+
+.mod-skeleton-meta {
+  display: flex;
+  height: 20px;
+  align-items: center;
+  gap: 8px;
+}
+
+.mod-skeleton-version,
+.mod-skeleton-size {
+  height: 12px;
+  border-radius: 5px;
+}
+
+.mod-skeleton-version { width: 84px; }
+.mod-skeleton-size { width: 52px; }
+.mod-skeleton-separator { width: 4px; height: 4px; border-radius: 50%; background: var(--text-3); opacity: 0.35; }
+.mod-skeleton-action { height: 29px; flex: 1 1 0 !important; border-radius: var(--r-xs); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mod-card-skeleton .skeleton { animation: none; background-position: 50% 50%; }
+}
+
+.filter-refresh {
+  align-self: flex-end;
+  height: 35px;
+}
+
+@media (max-width: 720px) {
+  .filter-refresh {
+    height: 44px;
+    min-height: 44px;
+    padding-block: 8px;
+  }
+}
+</style>

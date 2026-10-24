@@ -1,21 +1,26 @@
 <script setup lang="ts">
 import { BLOCK_ICON_SVG } from './lib/blockIcon.ts';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { api, setUnauthorizedHandler } from './lib/api.ts';
+import { api, ApiError, setUnauthorizedHandler } from './lib/api.ts';
 import { toast, toastError } from './lib/toast.ts';
 import ToastHost from './components/ToastHost.vue';
 import ThemeSwitcher from './components/ThemeSwitcher.vue';
 import JobProgress from './components/JobProgress.vue';
 import Icon from './components/Icon.vue';
+import RoutePageSkeleton from './components/RoutePageSkeleton.vue';
 import Modal from './components/Modal.vue';
 import { backgroundJobId, setBackgroundJob } from './lib/backgroundJob.ts';
 import { useWorlds } from './lib/worlds.ts';
+import { clearBrowserSnapshots } from './lib/browserSnapshot.ts';
 import { STATUS_TEXT, statusClass } from './lib/format.ts';
 import type { InstanceSummary, Job } from './lib/types.ts';
 
 const router = useRouter();
 const route = useRoute();
+type PendingNavigation = { fullPath: string; path: string; name: string | symbol | null | undefined; params: Record<string, unknown> };
+const pendingNavigation = shallowRef<PendingNavigation | null>(null);
+const navigationTarget = computed(() => pendingNavigation.value ?? route);
 const ready = ref(false);
 const authed = ref(false);
 const token = ref('');
@@ -29,9 +34,75 @@ const appVersion = ref('');
 const showAbout = ref(false);
 const mainEl = ref<HTMLElement | null>(null);
 
+router.beforeEach((to) => {
+  pendingNavigation.value = { fullPath: to.fullPath, path: to.path, name: to.name, params: to.params };
+  if (mainEl.value) mainEl.value.scrollTop = 0;
+});
+router.afterEach((to, _from, failure) => {
+  if (pendingNavigation.value?.fullPath === to.fullPath && (!failure || router.currentRoute.value.fullPath === to.fullPath)) pendingNavigation.value = null;
+});
+router.onError((_error, to) => {
+  if (pendingNavigation.value?.fullPath === to.fullPath) pendingNavigation.value = null;
+});
+
 const SIDEBAR_KEY = 'blockcraft.sidebar.collapsed';
 const sidebarCollapsed = ref(readSidebarCollapsed());
 const mobileNavOpen = ref(false);
+const mobileLayoutActive = ref(false);
+const sidebarEl = ref<HTMLElement | null>(null);
+const mobileNavTrigger = ref<HTMLButtonElement | null>(null);
+let mobileLayoutQuery: MediaQueryList | null = null;
+
+function closeMobileNav(restoreFocus = true): void {
+  if (!mobileNavOpen.value) return;
+  mobileNavOpen.value = false;
+  if (restoreFocus) void nextTick(() => mobileNavTrigger.value?.focus());
+}
+
+function openMobileNav(event: MouseEvent): void {
+  mobileNavTrigger.value = event.currentTarget as HTMLButtonElement;
+  mobileNavOpen.value = true;
+  void nextTick(() => {
+    sidebarEl.value?.querySelector<HTMLElement>('a[href], button:not(:disabled)')?.focus();
+  });
+}
+
+function updateMobileLayout(event?: MediaQueryListEvent): void {
+  mobileLayoutActive.value = event?.matches ?? mobileLayoutQuery?.matches ?? false;
+  if (!mobileLayoutActive.value) closeMobileNav(false);
+}
+
+function onMobileNavKeydown(event: KeyboardEvent): void {
+  if (!mobileLayoutActive.value || !mobileNavOpen.value) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeMobileNav();
+    return;
+  }
+  if (event.key !== 'Tab' || !sidebarEl.value) return;
+
+  const focusable = Array.from(
+    sidebarEl.value.querySelectorAll<HTMLElement>(
+      'a[href], button:not(:disabled), input:not([type="hidden"]):not(:disabled), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => element.getClientRects().length > 0);
+  if (!focusable.length) {
+    event.preventDefault();
+    sidebarEl.value.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (event.shiftKey && (active === first || !sidebarEl.value.contains(active))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (active === last || !sidebarEl.value.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 
 function readSidebarCollapsed(): boolean {
   try {
@@ -50,8 +121,17 @@ function toggleSidebar(): void {
   }
 }
 
+function openAbout(): void {
+  if (mobileNavOpen.value) {
+    closeMobileNav();
+    void nextTick(() => { showAbout.value = true; });
+    return;
+  }
+  showAbout.value = true;
+}
+
 const worldId = computed(() => {
-  const id = route.params.id;
+  const id = navigationTarget.value.params.id;
   return typeof id === 'string' && id ? id : null;
 });
 
@@ -75,9 +155,10 @@ const navGroups = computed(() => [
   {
     label: '工作台',
     items: [
-      { label: '总览', to: '/', icon: 'overview', active: route.name === 'overview' },
-      { label: '事件日志', to: '/events', icon: 'events', active: route.name === 'events' },
-      { label: '相关网站', to: '/new', icon: 'globe', active: route.name === 'websites' },
+      { label: '总览', to: '/', icon: 'overview', active: navigationTarget.value.name === 'overview' },
+      { label: '事件日志', to: '/events', icon: 'events', active: navigationTarget.value.name === 'events' },
+      { label: '文件管理', to: '/files', icon: 'folder', active: navigationTarget.value.name === 'files' },
+      { label: '相关网站', to: '/new', icon: 'globe', active: navigationTarget.value.name === 'websites' },
     ],
   },
 ]);
@@ -86,11 +167,11 @@ const worldNav = computed(() => {
   if (!currentWorldId.value) return [];
   const id = currentWorldId.value;
   return [
-    { label: '世界详情', to: `/w/${id}`, icon: 'server', active: route.name === 'world' },
-    { label: '控制台', to: `/w/${id}/console`, icon: 'console', active: route.name === 'console' },
-    { label: '备份与回退', to: `/w/${id}/backups`, icon: 'backups', active: route.name === 'backups' },
-    { label: 'MOD 管理', to: `/w/${id}/mods`, icon: 'mods', active: route.name === 'mods' },
-    { label: '玩家管理', to: `/w/${id}/players`, icon: 'players', active: route.name === 'players' },
+    { label: '世界详情', to: `/w/${id}`, icon: 'server', active: navigationTarget.value.name === 'world' },
+    { label: '控制台', to: `/w/${id}/console`, icon: 'console', active: navigationTarget.value.name === 'console' },
+    { label: '备份与回退', to: `/w/${id}/backups`, icon: 'backups', active: navigationTarget.value.name === 'backups' },
+    { label: 'MOD 管理', to: `/w/${id}/mods`, icon: 'mods', active: navigationTarget.value.name === 'mods' },
+    { label: '玩家管理', to: `/w/${id}/players`, icon: 'players', active: navigationTarget.value.name === 'players' },
   ];
 });
 
@@ -130,7 +211,7 @@ async function importWorld(event: Event): Promise<void> {
 }
 
 const crumbTitle = computed(() => {
-  switch (route.name) {
+  switch (navigationTarget.value.name) {
     case 'overview':
       return '总览';
     case 'events':
@@ -149,20 +230,24 @@ const crumbTitle = computed(() => {
       return '控制台';
     case 'backups':
       return '备份与回退';
+    case 'files':
+      return '文件管理';
     case 'mods':
       return 'MOD 管理';
     case 'players':
       return '玩家管理';
+    case 'performance-detail':
+      return '实时性能';
     default:
       return '总览';
   }
 });
 
 const crumbSection = computed(() => {
-  if (route.name === 'overview') return '工作台';
+  if (['overview', 'events', 'websites', 'files'].includes(String(navigationTarget.value.name))) return '工作台';
   return currentWorldId.value ? '世界' : '控制台';
 });
-const showWorldCrumb = computed(() => route.name !== 'overview' && Boolean(currentWorldId.value));
+const showWorldCrumb = computed(() => navigationTarget.value.name !== 'overview' && Boolean(currentWorldId.value));
 
 const backgroundJobLabel = computed(() => {
   if (!backgroundJobId.value) return '';
@@ -187,11 +272,12 @@ watch(
 );
 
 watch(() => route.path, () => {
-  mobileNavOpen.value = false;
+  closeMobileNav(false);
   if (mainEl.value) mainEl.value.scrollTop = 0;
+  void nextTick(() => mainEl.value?.focus({ preventScroll: true }));
 });
 watch(() => route.query, () => {
-  mobileNavOpen.value = false;
+  closeMobileNav();
 });
 
 watch(() => [authed.value, backgroundJobId.value] as const, ([loggedIn, id], _old, onCleanup) => {
@@ -234,8 +320,9 @@ async function checkAuth() {
   try {
     await loadShell();
     authed.value = true;
-  } catch {
+  } catch (err) {
     authed.value = false;
+    if (err instanceof ApiError && err.code === 'UNAUTHORIZED') clearBrowserSnapshots();
   } finally {
     ready.value = true;
   }
@@ -267,8 +354,17 @@ setUnauthorizedHandler(() => {
 });
 
 onMounted(() => {
+  mobileLayoutQuery = window.matchMedia('(max-width: 1024px)');
+  updateMobileLayout();
+  mobileLayoutQuery.addEventListener('change', updateMobileLayout);
+  document.addEventListener('keydown', onMobileNavKeydown);
   void checkAuth();
   void loadVersion();
+});
+
+onUnmounted(() => {
+  mobileLayoutQuery?.removeEventListener('change', updateMobileLayout);
+  document.removeEventListener('keydown', onMobileNavKeydown);
 });
 
 async function refreshPublic() {
@@ -290,7 +386,7 @@ onMounted(refreshPublic);
   <div v-else-if="!authed" class="login-wrap">
     <div class="login-card">
       <div class="login-brand">
-        <div class="brand-mark" v-html="BLOCK_ICON_SVG" />
+        <div class="brand-mark" aria-hidden="true" v-html="BLOCK_ICON_SVG" />
         <div>
           <div class="login-title">BlockCraft</div>
           <div class="login-sub">多世界 Minecraft 管理面板</div>
@@ -308,11 +404,14 @@ onMounted(refreshPublic);
           type="password"
           placeholder="粘贴 panel.json 里的 token"
           autocomplete="current-password"
+          :aria-describedby="loginError ? 'access-token-hint login-error' : 'access-token-hint'"
+          :aria-invalid="loginError ? 'true' : undefined"
           @keyup.enter="doLogin"
+          @input="loginError = ''"
         />
-        <span class="field-hint">令牌在数据目录的 <code class="mono">panel.json</code> 里，也可以在设置页重置</span>
+        <span id="access-token-hint" class="field-hint">令牌在数据目录的 <code class="mono">panel.json</code> 里，也可以在设置页重置</span>
       </div>
-      <div v-if="loginError" class="login-error">{{ loginError }}</div>
+      <div v-if="loginError" id="login-error" class="login-error" role="alert">{{ loginError }}</div>
       <button class="btn btn-primary btn-block btn-lg" :disabled="loginBusy || !token" @click="doLogin">
         <span v-if="loginBusy" class="spinner spinner-on-accent" />
         {{ loginBusy ? '正在验证…' : '进入面板' }}
@@ -326,9 +425,21 @@ onMounted(refreshPublic);
   </div>
 
   <div v-else class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-    <div class="sidebar-scrim" :class="{ show: mobileNavOpen }" @click="mobileNavOpen = false" />
+    <a class="skip-link" href="#main-content">跳到主内容</a>
+    <div class="sidebar-scrim" :class="{ show: mobileNavOpen }" aria-hidden="true" @click="closeMobileNav()" />
 
-    <aside class="sidebar" :class="{ open: mobileNavOpen }" aria-label="主导航">
+    <aside
+      id="primary-navigation"
+      ref="sidebarEl"
+      class="sidebar"
+      :class="{ open: mobileNavOpen }"
+      :role="mobileLayoutActive && mobileNavOpen ? 'dialog' : undefined"
+      :aria-modal="mobileLayoutActive && mobileNavOpen ? 'true' : undefined"
+      :aria-hidden="mobileLayoutActive && !mobileNavOpen ? 'true' : undefined"
+      :inert="mobileLayoutActive && !mobileNavOpen"
+      aria-label="主导航"
+      tabindex="-1"
+    >
       <div class="sidebar-head">
         <RouterLink to="/" class="brand-mark" aria-label="返回总览">
           <span class="brand-mark-inner" v-html="BLOCK_ICON_SVG" />
@@ -346,7 +457,7 @@ onMounted(refreshPublic);
         >
           <Icon :name="sidebarCollapsed ? 'chevron-right' : 'chevron-left'" :size="16" />
         </button>
-        <button type="button" class="sidebar-close icon-btn" aria-label="关闭导航" @click="mobileNavOpen = false">
+        <button type="button" class="sidebar-close icon-btn" aria-label="关闭导航" @click="closeMobileNav()">
           <Icon name="close" :size="17" />
         </button>
       </div>
@@ -362,6 +473,7 @@ onMounted(refreshPublic);
             :class="{ active: item.active }"
             :aria-current="item.active ? 'page' : undefined"
             :title="item.label"
+            @click="closeMobileNav()"
           >
             <Icon :name="item.icon" :size="18" />
             <span>{{ item.label }}</span>
@@ -382,7 +494,7 @@ onMounted(refreshPublic);
             :class="{ active: isWorldActive(world.id) }"
             :aria-current="isWorldActive(world.id) ? 'page' : undefined"
             :title="worldStatusTitle(world)"
-            @click="mobileNavOpen = false"
+            @click="closeMobileNav()"
           >
             <i class="dot world-dot" :class="statusClass(world.status)" aria-hidden="true" />
             <span class="ellipsis">{{ world.name }}</span>
@@ -393,7 +505,7 @@ onMounted(refreshPublic);
             to="/create"
             class="nav-item world-empty-row"
             title="新建世界"
-            @click="mobileNavOpen = false"
+            @click="closeMobileNav()"
           >
             <Icon name="plus" :size="18" />
             <span>还没有世界，先新建一个</span>
@@ -403,9 +515,9 @@ onMounted(refreshPublic);
             <RouterLink
               to="/create"
               class="nav-item nav-subtle"
-              :class="{ active: route.name === 'wizard-create' }"
+              :class="{ active: navigationTarget.name === 'wizard-create' }"
               title="新建世界"
-              @click="mobileNavOpen = false"
+              @click="closeMobileNav()"
             >
               <Icon name="plus" :size="17" />
               <span>新建世界</span>
@@ -413,9 +525,9 @@ onMounted(refreshPublic);
             <RouterLink
               to="/import"
               class="nav-item nav-subtle"
-              :class="{ active: route.name === 'wizard-import' }"
+              :class="{ active: navigationTarget.name === 'wizard-import' }"
               title="导入整合包"
-              @click="mobileNavOpen = false"
+              @click="closeMobileNav()"
             >
               <Icon name="package" :size="17" />
               <span>导入整合包</span>
@@ -425,7 +537,7 @@ onMounted(refreshPublic);
               class="nav-item nav-subtle"
               title="导入 BlockCraft 导出的世界 ZIP"
               :disabled="importingWorld"
-              @click="chooseWorldImport"
+              @click="closeMobileNav(); chooseWorldImport()"
             >
               <i v-if="importingWorld" class="spinner" style="width: 15px; height: 15px" />
               <Icon v-else name="upload" :size="17" />
@@ -437,10 +549,6 @@ onMounted(refreshPublic);
 
         <nav v-if="currentWorldId" class="nav-group" aria-label="当前世界">
           <p class="nav-label">当前世界</p>
-          <div class="world-current" :title="currentWorldId">
-            <Icon name="folder" :size="14" />
-            <span class="ellipsis">{{ currentWorld?.name ?? currentWorldId }}</span>
-          </div>
           <RouterLink
             v-for="item in worldNav"
             :key="item.to"
@@ -449,7 +557,7 @@ onMounted(refreshPublic);
             :class="{ active: item.active }"
             :aria-current="item.active ? 'page' : undefined"
             :title="item.label"
-            @click="mobileNavOpen = false"
+            @click="closeMobileNav()"
           >
             <Icon :name="item.icon" :size="18" />
             <span>{{ item.label }}</span>
@@ -461,14 +569,15 @@ onMounted(refreshPublic);
         <RouterLink
           to="/settings"
           class="nav-item"
-          :class="{ active: route.name === 'settings' }"
-          :aria-current="route.name === 'settings' ? 'page' : undefined"
+          :class="{ active: navigationTarget.name === 'settings' }"
+          :aria-current="navigationTarget.name === 'settings' ? 'page' : undefined"
           title="面板设置"
+          @click="closeMobileNav()"
         >
           <Icon name="settings" :size="18" />
           <span>面板设置</span>
         </RouterLink>
-        <button type="button" class="nav-item" title="帮助与关于" @click="showAbout = true">
+        <button type="button" class="nav-item" title="帮助与关于" @click="openAbout">
           <Icon name="help" :size="18" />
           <span>帮助与关于</span>
         </button>
@@ -479,17 +588,24 @@ onMounted(refreshPublic);
       </div>
     </aside>
 
-    <main ref="mainEl" class="main">
+    <main id="main-content" ref="mainEl" class="main" :class="{ 'main-world': navigationTarget.path.startsWith('/w/') }" tabindex="-1">
       <header class="topbar">
         <div class="topbar-left">
-          <button type="button" class="icon-btn menu-btn" aria-label="打开导航" @click="mobileNavOpen = true">
+          <button
+            type="button"
+            class="icon-btn menu-btn"
+            aria-label="打开导航"
+            aria-controls="primary-navigation"
+            :aria-expanded="mobileNavOpen"
+            @click="openMobileNav"
+          >
             <Icon name="menu" :size="18" />
           </button>
           <div class="crumbs">
             <span class="crumb-parent">{{ crumbSection }}</span>
             <span class="sep">/</span>
             <template v-if="showWorldCrumb">
-              <span class="mono ellipsis" style="max-width: 180px">{{ currentWorldId }}</span>
+              <span class="mono ellipsis crumb-world-id" :title="currentWorldId ?? undefined">{{ currentWorld?.name ?? currentWorldId }}</span>
               <span class="sep">/</span>
             </template>
             <b>{{ crumbTitle }}</b>
@@ -510,8 +626,10 @@ onMounted(refreshPublic);
         </div>
       </header>
 
-      <router-view v-slot="{ Component }">
-        <KeepAlive :include="['Overview', 'Wizard', 'MinecraftSites', 'Events', 'Settings', 'Console', 'Backups', 'Mods', 'Players']" :max="16">
+      <RoutePageSkeleton v-if="pendingNavigation" :name="String(navigationTarget.name ?? '')" :label="crumbTitle" />
+      <router-view v-else v-slot="{ Component }">
+        <!-- World pages own polling and SSE subscriptions; unmount them on route exit so a deleted world cannot keep polling in the background. -->
+        <KeepAlive :include="['Overview', 'Wizard', 'MinecraftSites', 'Events', 'Settings']" :max="16">
           <component :is="Component" />
         </KeepAlive>
       </router-view>
@@ -526,7 +644,7 @@ onMounted(refreshPublic);
 
       <Modal v-if="showAbout" title="帮助与关于" size="sm" @close="showAbout = false">
         <div class="about-brand">
-          <div class="brand-mark" v-html="BLOCK_ICON_SVG" />
+          <div class="brand-mark" aria-hidden="true" v-html="BLOCK_ICON_SVG" />
           <div>
             <strong>BlockCraft {{ appVersion ? `v${appVersion}` : '' }}</strong>
             <p class="text-3 small">多世界 Minecraft 服务端管理面板</p>
@@ -574,21 +692,6 @@ onMounted(refreshPublic);
   color: var(--danger-text);
   font-size: 12.5px;
 }
-
-.world-current {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  margin: 0 4px 6px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--text-2);
-  font-size: 11.5px;
-}
-.sidebar-collapsed .world-current { display: none; }
 
 .job-chip { cursor: pointer; color: var(--text); }
 .job-chip:hover { border-color: var(--border-strong); background: var(--surface-3); }

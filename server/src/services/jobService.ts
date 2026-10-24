@@ -115,9 +115,15 @@ export function finishJob(jobId: string, error?: string): Job {
   const controller = abortControllers.get(jobId);
   const current = getJob(jobId);
   const cancelled = current.status === 'cancelling' || controller?.signal.aborted === true;
+  const stages = cancelled
+    ? current.stages.map((stage) => stage.status === 'pending' || stage.status === 'running'
+      ? { ...stage, status: 'cancelled' as const }
+      : stage)
+    : current.stages;
   const result = updateJob(jobId, {
     status: cancelled ? 'cancelled' : error ? 'failed' : 'done',
     error: cancelled ? null : error ?? null,
+    stages,
     endedAt: Date.now(),
     progress: cancelled ? current.progress : 100,
   });
@@ -131,12 +137,12 @@ export function jobSignal(jobId: string): AbortSignal | undefined {
 
 export function requestJobCancellation(jobId: string): Job {
   const job = getJob(jobId);
-  if (job.kind !== 'import') throw conflict('当前类型的任务不能取消');
+  if (job.kind !== 'create' && job.kind !== 'import') throw conflict('当前类型的任务不能取消');
   if (job.status === 'cancelling') return job;
   if (job.status !== 'running') throw conflict('任务已经结束，不能取消');
   const controller = abortControllers.get(jobId);
   if (!controller) throw conflict('任务进度已失效，请刷新后重试');
-  controller.abort(new Error('用户取消了整合包导入'));
+  controller.abort(new Error(job.kind === 'create' ? '用户取消了新建世界' : '用户取消了整合包导入'));
   return updateJob(jobId, { status: 'cancelling', error: null });
 }
 

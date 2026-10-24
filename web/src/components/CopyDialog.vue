@@ -93,7 +93,26 @@ async function submit() {
 
 <template>
   <Modal v-if="open" :title="`复制「${source?.name ?? ''}」为新世界`" size="md" @close="emit('close')">
-    <div v-if="!detail" class="row gap-2"><span class="spinner" /> 读取源世界…</div>
+    <div v-if="!detail" class="copy-dialog-skeleton" role="status" aria-label="正在读取源世界设置" aria-busy="true">
+      <span class="skeleton copy-skeleton-callout" aria-hidden="true" />
+      <div class="copy-skeleton-switch" aria-hidden="true">
+        <span class="skeleton copy-skeleton-toggle" />
+        <span class="copy-skeleton-copy">
+          <span class="skeleton copy-skeleton-label" />
+          <span class="skeleton copy-skeleton-note" />
+          <span class="skeleton copy-skeleton-note copy-skeleton-note-short" />
+        </span>
+      </div>
+      <div class="form-grid-2" aria-hidden="true">
+        <div v-for="field in 6" :key="field" class="field">
+          <span class="skeleton copy-skeleton-label" />
+          <span class="skeleton copy-skeleton-control" />
+        </div>
+      </div>
+      <div class="row gap-4 wrap" aria-hidden="true">
+        <span v-for="toggle in 4" :key="toggle" class="skeleton copy-skeleton-toggle-label" />
+      </div>
+    </div>
     <div v-else class="col gap-4">
       <div class="badge badge-accent">MOD 与配置会被完整复制到新世界（真实复制，两个世界互不影响）</div>
 
@@ -164,3 +183,16 @@ async function submit() {
     </template>
   </Modal>
 </template>
+
+<style scoped>
+.copy-dialog-skeleton { display: flex; flex-direction: column; gap: var(--sp-4); }
+.copy-skeleton-callout { width: 100%; height: 38px; border-radius: var(--r-sm); }
+.copy-skeleton-switch { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.copy-skeleton-toggle { width: 42px; height: 22px; flex: none; border-radius: 999px; }
+.copy-skeleton-copy { display: flex; width: 100%; flex-direction: column; gap: 8px; }
+.copy-skeleton-label { width: 46%; max-width: 185px; height: 12px; border-radius: 5px; }
+.copy-skeleton-note { width: 94%; height: 11px; border-radius: 5px; }
+.copy-skeleton-note-short { width: 72%; }
+.copy-skeleton-control { width: 100%; height: 36px; border-radius: var(--r-sm); }
+.copy-skeleton-toggle-label { width: 96px; height: 14px; border-radius: 5px; }
+</style>

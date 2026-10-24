@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import { fmtBytes, fmtRelative, fmtTime, STATUS_TEXT, statusClass } from '../lib/format.ts';
-import type { BackupEntry, InstanceDetail } from '../lib/types.ts';
+import type { BackupEntry, InstanceDetail, InstanceSummary } from '../lib/types.ts';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import Modal from '../components/Modal.vue';
 import Icon from '../components/Icon.vue';
@@ -46,6 +46,7 @@ const ROLLBACK_STAGES = [
   { key: 'start', label: '正在启动服务器' },
 ];
 const STAGE_MS = 5000;
+const BACKUP_CACHE_VERSION = 1;
 
 const detail = ref<InstanceDetail | null>(null);
 const backups = ref<BackupEntry[]>([]);
@@ -53,6 +54,7 @@ const usage = ref<{ bytes: number; count: number }>({ bytes: 0, count: 0 });
 const policy = ref<BackupPolicy | null>(null);
 const running = ref(false);
 const loading = ref(false);
+const hasSnapshot = ref(false);
 
 const backing = ref(false);
 const savingPolicy = ref(false);
@@ -78,6 +80,7 @@ let pollTimer: number | null = null;
 let listPollTimer: number | null = null;
 let closed = false;
 let pollingLiveState = false;
+let loadSequence = 0;
 
 const name = computed(() => detail.value?.instance?.name ?? props.id);
 const status = computed(() => detail.value?.instance?.status ?? 'stopped');
@@ -143,24 +146,96 @@ const policyText = computed(() => {
   return `每 ${p.intervalMin} 分钟 · 保留 ${p.keepN} 份`;
 });
 
-async function loadDetail(): Promise<void> {
+function cacheKey(id = props.id): string {
+  return `blockcraft:backups:v${BACKUP_CACHE_VERSION}:${id}`;
+}
+
+function persistCache(): void {
+  if (!hasSnapshot.value) return;
   try {
-    detail.value = await api.get<InstanceDetail>(`/api/instances/${props.id}`);
+    localStorage.setItem(cacheKey(), JSON.stringify({
+      version: BACKUP_CACHE_VERSION,
+      instance: detail.value?.instance ?? null,
+      backups: backups.value,
+      usage: usage.value,
+      policy: policy.value,
+      running: running.value,
+    }));
+  } catch {
+    // Browser storage can be disabled or full; the live page still works.
+  }
+}
+
+function restoreCache(): boolean {
+  try {
+    const raw = localStorage.getItem(cacheKey());
+    if (!raw) return false;
+    const cached = JSON.parse(raw) as {
+      version?: number;
+      instance?: InstanceSummary | null;
+      backups?: BackupEntry[];
+      usage?: { bytes: number; count: number };
+      policy?: BackupPolicy | null;
+      running?: boolean;
+    };
+    if (
+      cached.version !== BACKUP_CACHE_VERSION
+      || !Array.isArray(cached.backups)
+      || !cached.usage
+      || !Number.isFinite(cached.usage.bytes)
+      || !Number.isFinite(cached.usage.count)
+    ) return false;
+    detail.value = cached.instance ? { instance: cached.instance } as InstanceDetail : null;
+    backups.value = cached.backups;
+    usage.value = cached.usage;
+    policy.value = cached.policy ?? null;
+    running.value = Boolean(cached.running);
+    hasSnapshot.value = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Hydrate before the first render so a cached empty list is distinguishable from an unqueried page.
+restoreCache();
+
+function resetForWorld(): void {
+  detail.value = null;
+  backups.value = [];
+  usage.value = { bytes: 0, count: 0 };
+  policy.value = null;
+  running.value = false;
+  hasSnapshot.value = false;
+  restoreCache();
+}
+
+async function loadDetail(): Promise<void> {
+  const id = props.id;
+  try {
+    const next = await api.get<InstanceDetail>(`/api/instances/${encodeURIComponent(id)}`);
+    if (!closed && id === props.id) {
+      detail.value = next;
+      persistCache();
+    }
   } catch (err) {
-    toastError(err, '读取世界信息失败');
+    if (!closed && id === props.id) toastError(err, '读取世界信息失败');
   }
 }
 
 async function pollLiveState(): Promise<void> {
   if (pollingLiveState || closed) return;
   pollingLiveState = true;
+  const id = props.id;
   try {
     const [nextDetail, nextBackups] = await Promise.all([
-      api.get<InstanceDetail>(`/api/instances/${props.id}`),
-      api.get<BackupsPayload>(`/api/instances/${props.id}/backups`),
+      api.get<InstanceDetail>(`/api/instances/${encodeURIComponent(id)}`),
+      api.get<BackupsPayload>(`/api/instances/${encodeURIComponent(id)}/backups`),
     ]);
-    detail.value = nextDetail;
-    running.value = Boolean(nextBackups.running);
+    if (!closed && id === props.id) {
+      detail.value = nextDetail;
+      running.value = Boolean(nextBackups.running);
+    }
   } catch {
     // Background refreshes should not interrupt the page with a toast every few seconds.
   } finally {
@@ -169,17 +244,22 @@ async function pollLiveState(): Promise<void> {
 }
 
 async function load(): Promise<void> {
+  const id = props.id;
+  const sequence = ++loadSequence;
   loading.value = true;
   try {
-    const r = await api.get<BackupsPayload>(`/api/instances/${props.id}/backups`);
+    const r = await api.get<BackupsPayload>(`/api/instances/${encodeURIComponent(id)}/backups`);
+    if (closed || id !== props.id || sequence !== loadSequence) return;
     backups.value = r.backups ?? [];
     usage.value = r.usage ?? { bytes: 0, count: 0 };
     policy.value = r.policy ?? null;
     running.value = Boolean(r.running);
+    hasSnapshot.value = true;
+    persistCache();
   } catch (err) {
-    toastError(err, '读取备份列表失败');
+    if (!closed && id === props.id && sequence === loadSequence) toastError(err, '读取备份列表失败');
   } finally {
-    loading.value = false;
+    if (sequence === loadSequence) loading.value = false;
   }
 }
 
@@ -366,10 +446,8 @@ onUnmounted(() => {
 watch(
   () => props.id,
   async () => {
-    detail.value = null;
-    backups.value = [];
-    usage.value = { bytes: 0, count: 0 };
-    policy.value = null;
+    loadSequence += 1;
+    resetForWorld();
     await reload();
   },
 );
@@ -398,19 +476,23 @@ watch(
     <div class="card card-pad stat-row">
       <div class="stat">
         <span class="stat-label">备份总占用</span>
-        <span class="stat-value">{{ fmtBytes(usage.bytes) }}</span>
+        <span v-if="loading && !hasSnapshot && !policy" class="skeleton backup-stat-skeleton" aria-hidden="true" />
+        <span v-else class="stat-value">{{ fmtBytes(usage.bytes) }}</span>
       </div>
       <div class="stat">
         <span class="stat-label">备份份数</span>
-        <span class="stat-value">{{ usage.count }}</span>
+        <span v-if="loading && !hasSnapshot && !policy" class="skeleton backup-stat-skeleton backup-stat-short" aria-hidden="true" />
+        <span v-else class="stat-value">{{ usage.count }}</span>
       </div>
       <div class="stat">
         <span class="stat-label">自动备份策略</span>
-        <span class="stat-value">{{ policyText }}</span>
+        <span v-if="loading && !hasSnapshot && !policy" class="skeleton backup-stat-skeleton backup-stat-wide" aria-hidden="true" />
+        <span v-else class="stat-value">{{ policyText }}</span>
       </div>
       <div class="stat">
         <span class="stat-label">最近一次</span>
-        <span class="stat-value">{{ backups.length ? fmtRelative(backups[0].created) : '—' }}</span>
+        <span v-if="loading && !hasSnapshot && !policy" class="skeleton backup-stat-skeleton backup-stat-short" aria-hidden="true" />
+        <span v-else class="stat-value">{{ backups.length ? fmtRelative(backups[0].created) : '—' }}</span>
       </div>
     </div>
 
@@ -419,7 +501,7 @@ watch(
       <div class="card-head">
         <h2><span class="head-icon"><Icon name="backups" :size="15" /></span>备份列表</h2>
         <div class="row gap-2">
-          <span v-if="loading" class="spinner" />
+          <span v-if="loading && backups.length" class="spinner" />
           <button class="btn btn-sm" :disabled="uploading" @click="chooseBackupUpload">
             <span v-if="uploading" class="spinner" />
             {{ uploading ? '正在上传…' : '上传备份 ZIP' }}
@@ -433,10 +515,33 @@ watch(
 
       <div class="card-body col gap-3">
         <p class="text-3 small">只上传由 BlockCraft 导出的 ZIP 备份，单个文件最大 20 GB。备份只含世界存档，不含 MOD 和服务器配置；迁移后请让目标世界的 Minecraft 版本、加载器与模组保持一致。</p>
-        <div v-if="!backups.length && !loading" class="empty">
+        <div v-if="!backups.length && (!loading || hasSnapshot)" class="empty">
           <div class="empty-icon">📦</div>
           <div>还没有任何备份</div>
           <div class="small">停服后点右上角「立即备份」，或在下面打开自动备份。</div>
+        </div>
+
+        <div v-if="loading && !hasSnapshot" class="backup-skeleton-list" role="status" aria-label="正在读取备份列表" aria-busy="true">
+          <div v-for="item in 3" :key="item" class="mod-card backup-skeleton-card" aria-hidden="true">
+            <div class="backup-skeleton-main">
+              <div class="backup-skeleton-title-row">
+                <span class="skeleton backup-skeleton-file" />
+                <span class="skeleton backup-skeleton-badge" />
+                <span class="skeleton backup-skeleton-badge backup-skeleton-badge-short" />
+              </div>
+              <div class="backup-skeleton-meta">
+                <span class="skeleton backup-skeleton-meta-short" />
+                <span class="skeleton backup-skeleton-meta-wide" />
+                <span class="skeleton backup-skeleton-meta-medium" />
+                <span class="skeleton backup-skeleton-meta-wide" />
+              </div>
+            </div>
+            <div class="backup-skeleton-actions">
+              <span class="skeleton backup-skeleton-action" />
+              <span class="skeleton backup-skeleton-action" />
+              <span class="skeleton backup-skeleton-action" />
+            </div>
+          </div>
         </div>
 
         <div v-for="b in backups" :key="b.file" class="mod-card">
@@ -486,7 +591,9 @@ watch(
     <div class="card">
       <div class="card-head">
         <h2><span class="head-icon"><Icon name="clock" :size="15" /></span>自动备份</h2>
-        <span class="text-3 small">{{ policyText }}</span>
+        <span v-if="policy" class="text-3 small">{{ policyText }}</span>
+        <span v-else-if="loading && !hasSnapshot" class="skeleton backup-policy-summary-skeleton" aria-label="正在读取自动备份状态" />
+        <span v-else class="text-3 small">自动备份设置暂不可用</span>
       </div>
 
       <div v-if="policy" class="card-body col gap-4">
@@ -513,11 +620,19 @@ watch(
           </div>
         </div>
       </div>
-      <div v-else class="card-body">
-        <div class="row gap-2">
-          <span class="spinner" />
-          <span class="text-3">正在读取自动备份设置…</span>
+      <div v-else-if="loading && !hasSnapshot" class="card-body col gap-4" role="status" aria-label="正在读取自动备份设置" aria-busy="true">
+        <span class="skeleton backup-policy-switch-skeleton" />
+        <div class="form-grid backup-policy-skeleton-grid">
+          <div v-for="slot in 3" :key="slot" class="field">
+            <span class="skeleton backup-policy-label-skeleton" />
+            <span class="skeleton backup-policy-control-skeleton" />
+            <span class="skeleton backup-policy-hint-skeleton" />
+          </div>
         </div>
+      </div>
+      <div v-else class="card-body row-between wrap gap-3 text-3 small">
+        <span>自动备份设置暂不可用。</span>
+        <button class="btn btn-sm" :disabled="loading" @click="load">重试</button>
       </div>
 
       <div v-if="policy" class="card-foot row gap-2">
@@ -604,6 +719,36 @@ watch(
     </Modal>
   </div>
 </template>
+
+<style scoped>
+.backup-stat-skeleton { display: block; width: 92px; height: 18px; margin-top: 3px; }
+.backup-stat-short { width: 56px; }
+.backup-stat-wide { width: min(100%, 180px); }
+.backup-skeleton-list { display: flex; flex-direction: column; gap: var(--sp-3); }
+.backup-skeleton-card { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: var(--sp-3); min-height: 82px; }
+.backup-skeleton-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 9px; }
+.backup-skeleton-title-row, .backup-skeleton-meta, .backup-skeleton-actions { display: flex; align-items: center; gap: 8px; }
+.backup-skeleton-file, .backup-skeleton-meta > span { height: 12px; border-radius: 5px; }
+.backup-skeleton-file { width: min(40%, 260px); height: 14px; }
+.backup-skeleton-badge { width: 48px; height: 22px; border-radius: 999px; }
+.backup-skeleton-badge-short { width: 58px; }
+.backup-skeleton-meta { flex-wrap: wrap; }
+.backup-skeleton-meta-short { width: 52px; }
+.backup-skeleton-meta-medium { width: 84px; }
+.backup-skeleton-meta-wide { width: 130px; }
+.backup-skeleton-actions { flex: none; }
+.backup-skeleton-action { width: 56px; height: 29px; border-radius: var(--r-xs); }
+.backup-policy-switch-skeleton { width: 210px; height: 22px; border-radius: 999px; }
+.backup-policy-summary-skeleton { width: 160px; height: 12px; }
+.backup-policy-skeleton-grid .field { display: grid; gap: 8px; }
+.backup-policy-label-skeleton { width: min(58%, 135px); height: 11px; }
+.backup-policy-control-skeleton { height: 38px; }
+.backup-policy-hint-skeleton { width: 76%; height: 10px; }
+@media (max-width: 760px) {
+  .backup-skeleton-card { align-items: stretch; flex-direction: column; }
+  .backup-skeleton-actions { justify-content: flex-end; }
+}
+</style>
 
 <style scoped>
 /* 只做栅格与宽度微调，视觉一律来自 base.css */

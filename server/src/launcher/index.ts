@@ -133,7 +133,13 @@ export function validateInstall(
 }
 
 export function writeJvmArgsFile(serverDir: string, plan: LaunchPlan): void {
-  const content = plan.jvmArgs.join('\n') + '\n';
+  // The Java argument-file format splits tokens on whitespace. Preserve JVM
+  // arguments containing paths with spaces (such as BlockCraft's telemetry agent).
+  const tokens = plan.jvmArgs.map((argument) => {
+    if (!/[\s"#]/.test(argument)) return argument;
+    return `"${argument.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+  });
+  const content = tokens.join('\n') + '\n';
   fs.writeFileSync(path.join(serverDir, 'user_jvm_args.txt'), content);
 }
 

@@ -13,7 +13,7 @@ const logEl = ref<HTMLElement | null>(null);
 const followLog = ref(true);
 const cancelPending = ref(false);
 const active = computed(() => job.value?.status === 'running' || job.value?.status === 'cancelling');
-const canCancel = computed(() => job.value?.kind === 'import' && job.value.status === 'running' && !cancelPending.value);
+const canCancel = computed(() => ['create', 'import'].includes(job.value?.kind ?? '') && job.value?.status === 'running' && !cancelPending.value);
 let off: (() => void) | null = null;
 
 watch(
@@ -43,6 +43,16 @@ function stageClass(status: string): string {
   return 'badge-outline';
 }
 
+function stageLabel(status: string): string {
+  if (status === 'done') return '完成';
+  if (status === 'running') return '进行中';
+  if (status === 'failed') return '失败';
+  if (status === 'cancelled') return '已取消';
+  return '等待';
+}
+
+const cancelLabel = computed(() => job.value?.kind === 'create' ? '取消创建' : '取消导入');
+
 function scrollLogToBottom(): void {
   const el = logEl.value;
   if (el && followLog.value) el.scrollTop = el.scrollHeight;
@@ -54,23 +64,38 @@ function onLogScroll(event: Event): void {
   followLog.value = el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
 }
 
-async function cancelImport(): Promise<void> {
+async function cancelJob(): Promise<void> {
   if (!job.value || !canCancel.value) return;
+  const kind = job.value.kind;
   cancelPending.value = true;
   try {
     const result = await api.post<{ job: Job }>(`/api/jobs/${encodeURIComponent(job.value.id)}/cancel`);
     job.value = result.job;
-    toast('ok', '已请求取消导入', '正在停止当前下载或安装。已建世界和已下载文件会保留，可以之后在世界页删除。');
+    toast('ok', `已请求${kind === 'create' ? '取消创建' : '取消导入'}`, '正在停止当前下载或安装。已创建世界和已下载文件会保留，可以之后在总览中删除。');
   } catch (err) {
     cancelPending.value = false;
-    toastError(err, '取消导入失败');
+    toastError(err, `取消${kind === 'create' ? '创建' : '导入'}失败`);
   }
 }
 </script>
 
 <template>
   <Modal v-if="open" :title="job?.title ?? '任务进度'" size="md" :closable="!active" @close="emit('close')">
-    <div v-if="!job" class="row gap-2"><span class="spinner" /> 连接任务…</div>
+    <div v-if="!job" class="job-progress-skeleton col gap-4" role="status" aria-label="正在连接任务" aria-busy="true">
+      <div class="row gap-3">
+        <span class="skeleton job-skeleton-badge" />
+        <span class="skeleton job-skeleton-meter grow" />
+      </div>
+      <div class="col gap-2">
+        <div v-for="slot in 5" :key="slot" class="row gap-3">
+          <span class="skeleton job-skeleton-badge" />
+          <span class="skeleton job-skeleton-stage grow" />
+        </div>
+      </div>
+      <div class="job-skeleton-log" aria-hidden="true">
+        <span v-for="slot in 8" :key="slot" class="skeleton job-skeleton-log-line" />
+      </div>
+    </div>
     <div v-else class="col gap-4">
       <div class="row gap-3">
         <span class="badge" :class="job.status === 'done' ? 'badge-ok' : job.status === 'failed' ? 'badge-danger' : job.status === 'cancelled' || job.status === 'interrupted' ? 'badge-outline' : 'badge-warn'">
@@ -81,7 +106,7 @@ async function cancelImport(): Promise<void> {
 
       <div class="col gap-2">
         <div v-for="s in job.stages" :key="s.key" class="row gap-3">
-          <span class="badge" :class="stageClass(s.status)">{{ s.status === 'done' ? '完成' : s.status === 'running' ? '进行中' : s.status === 'failed' ? '失败' : '等待' }}</span>
+          <span class="badge" :class="stageClass(s.status)">{{ stageLabel(s.status) }}</span>
           <span class="grow" style="font-size: 13px">{{ s.label }}</span>
         </div>
       </div>
@@ -95,8 +120,8 @@ async function cancelImport(): Promise<void> {
     </div>
     <template #footer>
       <div v-if="active" class="row gap-2">
-        <button v-if="job?.kind === 'import'" class="btn btn-danger" :disabled="!canCancel" @click="cancelImport">
-          {{ job?.status === 'cancelling' || cancelPending ? '正在取消…' : '取消导入' }}
+        <button v-if="job?.kind === 'create' || job?.kind === 'import'" class="btn btn-danger" :disabled="!canCancel" @click="cancelJob">
+          {{ job?.status === 'cancelling' || cancelPending ? '正在取消…' : cancelLabel }}
         </button>
         <button class="btn" @click="emit('background')">后台继续</button>
       </div>
@@ -104,3 +129,15 @@ async function cancelImport(): Promise<void> {
     </template>
   </Modal>
 </template>
+
+<style scoped>
+.job-skeleton-badge { width: 74px; height: 25px; border-radius: 999px; }
+.job-skeleton-meter { height: 10px; border-radius: 999px; }
+.job-skeleton-stage { height: 14px; max-width: 72%; }
+.job-skeleton-log { display: flex; height: 200px; flex-direction: column; gap: 10px; overflow: hidden; padding: 16px; border-radius: var(--r); background: var(--skeleton-base); }
+.job-skeleton-log-line { display: block; height: 11px; flex: none; background: linear-gradient(100deg, color-mix(in srgb, var(--skeleton-highlight) 72%, var(--skeleton-base)) 25%, var(--skeleton-highlight) 48%, color-mix(in srgb, var(--skeleton-highlight) 72%, var(--skeleton-base)) 72%); background-size: 220% 100%; animation: sk 1.35s ease-in-out infinite; }
+.job-skeleton-log-line:nth-child(3n + 1) { width: 91%; }
+.job-skeleton-log-line:nth-child(3n + 2) { width: 74%; }
+.job-skeleton-log-line:nth-child(3n) { width: 84%; }
+@media (prefers-reduced-motion: reduce) { .job-skeleton-log-line { animation: none; background-position: 50% 50%; } }
+</style>

@@ -7,7 +7,7 @@ import Modal from './Modal.vue';
 import Icon from './Icon.vue';
 import { fmtBytes } from '../lib/format.ts';
 
-const props = defineProps<{ status: FrpStatus | null }>();
+const props = defineProps<{ status: FrpStatus | null; loading?: boolean }>();
 const emit = defineEmits<{ refresh: [] }>();
 
 const connectionBadge = computed(() => {
@@ -140,12 +140,34 @@ async function copyPublicAddress() {
   <div class="card frp-card">
     <div class="card-head">
       <h3><span class="head-icon"><Icon name="globe" :size="15" /></span>FRP 穿透</h3>
-      <span class="badge" :class="connectionBadge.className" :title="connectionBadge.title">
+      <span v-if="loading" class="skeleton frp-skeleton-badge" aria-label="正在读取 FRP 状态" />
+      <span v-else class="badge" :class="connectionBadge.className" :title="connectionBadge.title">
         {{ connectionBadge.label }}
       </span>
     </div>
     <div class="card-body col gap-3">
-      <template v-if="status">
+      <div v-if="loading" class="frp-skeleton-body" role="status" aria-label="正在读取 FRP 状态" aria-busy="true">
+        <div class="kv" aria-hidden="true">
+          <div v-for="row in 3" :key="row" class="kv-row">
+            <span class="skeleton frp-skeleton-key" />
+            <span class="skeleton frp-skeleton-value" />
+          </div>
+        </div>
+        <div class="divider" />
+        <div class="channels-grid" aria-hidden="true">
+          <div v-for="channel in 2" :key="channel" class="channel-row">
+            <span class="skeleton frp-skeleton-dot" />
+            <span class="grow col gap-2">
+              <span class="skeleton frp-skeleton-channel-name" />
+              <span class="skeleton frp-skeleton-channel-meta" />
+            </span>
+            <span class="skeleton frp-skeleton-button" />
+          </div>
+        </div>
+        <span class="skeleton frp-skeleton-note" aria-hidden="true" />
+        <span class="skeleton frp-skeleton-warning" aria-hidden="true" />
+      </div>
+      <template v-else-if="status">
         <div class="kv">
           <div class="kv-row">
             <span class="kv-key">服务器</span>
@@ -192,7 +214,7 @@ async function copyPublicAddress() {
         <div v-else class="text-3 small">未配置 frps Dashboard，无法做服务端侧校核（可选）</div>
         <div v-if="!status.binaryReady" class="badge badge-warn">本机还没有 frpc，可在设置页一键下载</div>
       </template>
-      <div v-else class="text-3 small">正在读取 FRP 状态…</div>
+      <div v-else class="text-3 small">FRP 状态暂时无法读取，稍后会自动重试。</div>
     </div>
     <div class="card-foot row gap-2">
       <button class="btn btn-sm" @click="openSettings">快捷设置</button>
@@ -272,6 +294,18 @@ async function copyPublicAddress() {
 <style scoped>
 .frp-card { display: flex; flex-direction: column; }
 .frp-card > .card-body { flex: 1; }
+.frp-skeleton-badge { display: block; width: 68px; height: 22px; border-radius: 999px; }
+.frp-skeleton-body { display: flex; flex-direction: column; gap: var(--sp-3); }
+.frp-skeleton-key, .frp-skeleton-value { height: 13px; border-radius: 5px; }
+.frp-skeleton-key { width: 82px; }
+.frp-skeleton-value { width: min(50%, 148px); }
+.frp-skeleton-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
+.frp-skeleton-channel-name, .frp-skeleton-channel-meta { height: 12px; border-radius: 5px; }
+.frp-skeleton-channel-name { width: 78px; }
+.frp-skeleton-channel-meta { width: min(100%, 132px); }
+.frp-skeleton-button { width: 42px; height: 29px; flex: none; border-radius: var(--r-xs); }
+.frp-skeleton-note { width: 78%; height: 12px; border-radius: 5px; }
+.frp-skeleton-warning { width: 100%; height: 24px; border-radius: 999px; }
 .channels-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
 .channel-row {
   display: flex;
@@ -290,6 +324,6 @@ async function copyPublicAddress() {
   border: 0;
   cursor: pointer;
 }
-.public-address-copy:hover { outline: 1px solid var(--accent); }
+.public-address-copy:hover { outline: 1px solid var(--focus-ring); }
 @media (max-width: 520px) { .channels-grid { grid-template-columns: 1fr; } }
 </style>

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { inflateRawSync } from 'node:zlib';
 import { STORE_DIR, instanceDir, instanceServerDir } from '../core/paths.ts';
@@ -217,6 +217,87 @@ async function ensureVanillaServerJar(mc: string, onLog: (s: string) => void, si
   return cache;
 }
 
+function readZipEntry(file: string, targetName: string): Buffer | null {
+  try {
+    const zip = fs.readFileSync(file);
+    const endMin = Math.max(0, zip.length - 65_557);
+    let end = -1;
+    for (let i = zip.length - 22; i >= endMin; i -= 1) {
+      if (zip.readUInt32LE(i) === 0x06054b50) { end = i; break; }
+    }
+    if (end < 0) return null;
+    const entries = zip.readUInt16LE(end + 10);
+    let cursor = zip.readUInt32LE(end + 16);
+    for (let i = 0; i < entries; i += 1) {
+      if (zip.readUInt32LE(cursor) !== 0x02014b50) return null;
+      const method = zip.readUInt16LE(cursor + 10);
+      const compressedSize = zip.readUInt32LE(cursor + 20);
+      const nameLength = zip.readUInt16LE(cursor + 28);
+      const extraLength = zip.readUInt16LE(cursor + 30);
+      const commentLength = zip.readUInt16LE(cursor + 32);
+      const localOffset = zip.readUInt32LE(cursor + 42);
+      const name = zip.toString('utf8', cursor + 46, cursor + 46 + nameLength);
+      if (name === targetName) {
+        if (zip.readUInt32LE(localOffset) !== 0x04034b50) return null;
+        const localNameLength = zip.readUInt16LE(localOffset + 26);
+        const localExtraLength = zip.readUInt16LE(localOffset + 28);
+        const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+        const compressed = zip.subarray(dataStart, dataStart + compressedSize);
+        if (method === 0) return Buffer.from(compressed);
+        if (method === 8) return inflateRawSync(compressed);
+        return null;
+      }
+      cursor += 46 + nameLength + extraLength + commentLength;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function sha256File(file: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk as Buffer);
+  return hash.digest('hex');
+}
+
+/**
+ * Paperclip downloads Mojang's base server jar itself on first boot, bypassing
+ * BlockCraft's selected Minecraft mirror. Pre-fill its own cache from the same
+ * SHA-1-verified jar used by Vanilla/Fabric/Forge, then verify Paperclip's SHA-256.
+ */
+export async function ensurePaperclipServerCache(
+  cfg: InstanceConfig,
+  onLog: (line: string) => void = () => undefined,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (cfg.loader !== 'paper') return;
+  const serverDir = instanceServerDir(cfg.id);
+  const paperJar = path.join(serverDir, 'paper.jar');
+  const context = fs.existsSync(paperJar) ? readZipEntry(paperJar, 'META-INF/download-context')?.toString('utf8') : null;
+  if (!context) throw new Error('Paper 服务端包缺少 META-INF/download-context，无法校验启动依赖');
+  const [expectedHash, _officialUrl, fileName] = context.trim().split(/\s+/);
+  if (!/^[a-f\d]{64}$/i.test(expectedHash ?? '') || !fileName || path.basename(fileName) !== fileName) {
+    throw new Error('Paperclip 下载清单格式无效，已停止启动以避免下载错误的服务端文件');
+  }
+
+  const cacheFile = path.join(serverDir, 'cache', fileName);
+  if (fs.existsSync(cacheFile) && (await sha256File(cacheFile)).toLowerCase() === expectedHash.toLowerCase()) {
+    onLog(`Paperclip 核心依赖已缓存并通过 SHA-256 校验：${fileName}`);
+    return;
+  }
+
+  const vanillaJar = await ensureVanillaServerJar(cfg.mc, onLog, signal);
+  const actualHash = await sha256File(vanillaJar);
+  if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new Error(`Minecraft ${cfg.mc} 服务端包与 Paperclip 所需版本不一致（SHA-256 校验失败）`);
+  }
+  fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+  fs.rmSync(cacheFile, { force: true });
+  copyIntoTarget(vanillaJar, cacheFile);
+  onLog(`已通过设置的 Minecraft 下载源预热 Paperclip 核心依赖：${fileName}（SHA-256 已校验）`);
+}
+
 /** Pass the configured HTTP(S) proxy to Java installers that ignore Node's proxy settings. */
 function javaProxyArgs(onLog: (s: string) => void): string[] {
   const value = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
@@ -359,20 +440,29 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
 
   const version = cfg.loaderVersion;
   if (!version) throw bad(`请先指定 ${neo ? 'NeoForge' : 'Forge'} 版本`);
+  const configuredForgeMirrors = (panel.mirrors.forgeMaven ?? []).filter((base) => typeof base === 'string' && base.trim());
+  // When the panel uses BMCLAPI, prefer its Forge Maven mirror even for
+  // existing configs whose persisted list still puts Forge's official host first.
+  const forgeMirrors = panel.mirrors.minecraftSource === 'bmclapi'
+    ? [
+        ...configuredForgeMirrors.filter((base) => base.includes('bmclapi2.bangbang93.com')),
+        ...configuredForgeMirrors.filter((base) => !base.includes('bmclapi2.bangbang93.com')),
+      ]
+    : configuredForgeMirrors;
+  const forgeMirrorBase = (forgeMirrors[0] ?? 'https://maven.minecraftforge.net').replace(/\/$/, '');
   let installerUrl: string;
   const fileName = neo ? `neoforge-${version}-installer.jar` : `forge-${cfg.mc}-${version}-installer.jar`;
   if (neo) {
     installerUrl = `https://maven.neoforged.net/releases/net/neoforged/neoforge/${version}/neoforge-${version}-installer.jar`;
   } else {
-    const mavenBase = panel.mirrors.forgeMaven[0] ?? 'https://maven.minecraftforge.net';
-    installerUrl = `${mavenBase.replace(/\/$/, '')}/net/minecraftforge/forge/${cfg.mc}-${version}/forge-${cfg.mc}-${version}-installer.jar`;
+    installerUrl = `${forgeMirrorBase}/net/minecraftforge/forge/${cfg.mc}-${version}/forge-${cfg.mc}-${version}-installer.jar`;
   }
   const cache = path.join(STORE_DIR, neo ? 'neoforge' : 'forge', fileName);
   if (!fs.existsSync(cache)) {
     // Forge 官方源在国内常常超时，多源依次重试
     const urls = neo
       ? [installerUrl, installerUrl.replace('maven.neoforged.net', 'bmclapi2.bangbang93.com/maven')]
-      : panel.mirrors.forgeMaven.map((b) => `${b.replace(/\/$/, '')}/net/minecraftforge/forge/${cfg.mc}-${version}/${fileName}`);
+      : forgeMirrors.map((b) => `${b.replace(/\/$/, '')}/net/minecraftforge/forge/${cfg.mc}-${version}/${fileName}`);
     let lastErr: unknown = null;
     for (const u of urls) {
       signal?.throwIfAborted();
@@ -391,13 +481,16 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
     onLog(`复用已下载的安装包 ${fileName}`);
   }
 
+  const minecraftLibrariesMirror = panel.mirrors.minecraftSource === 'bmclapi'
+    ? `${BMCLAPI_BASE}/libraries`
+    : '';
   const installerCopy = path.join(serverDir, fileName);
   copyIntoTarget(cache, installerCopy);
-  // Forge's Java installer downloads the Mojang server jar itself with a short
-  // read timeout. Fetch and checksum it through BlockCraft's retrying downloader,
-  // then let Forge reuse the expected minecraft_server.<version>.jar file.
+  // Forge and NeoForge installers otherwise download the Mojang server jar
+  // themselves with short timeouts. Their DownloadUtils cache key is
+  // minecraft/<version>/server.jar inside the installer working directory.
   const vanillaCache = await ensureVanillaServerJar(cfg.mc, onLog, signal);
-  const vanillaTarget = path.join(serverDir, `minecraft_server.${cfg.mc}.jar`);
+  const vanillaTarget = path.join(serverDir, 'minecraft', cfg.mc, 'server.jar');
   fs.rmSync(vanillaTarget, { force: true });
   copyIntoTarget(vanillaCache, vanillaTarget);
   onLog(`已预下载并校验 Minecraft ${cfg.mc} 服务端，将由 ${neo ? 'NeoForge' : 'Forge'} 安装器复用`);
@@ -411,17 +504,53 @@ async function installForgeLike(cfg: InstanceConfig, onLog: (s: string) => void,
   // is skipped.
   const forgeRunner = fileURLToPath(new URL('../java/ForgeServerInstall.java', import.meta.url));
   await new Promise<void>((resolve, reject) => {
-    const child = execFile(
+    const child = spawn(
       java.runtime!.path,
-      [...javaProxyArgs(onLog), '-cp', fileName, forgeRunner, fileName],
-      { cwd: serverDir, maxBuffer: 32 * 1024 * 1024, signal },
-      (err, stdout, stderr) => {
-        for (const line of (stdout + stderr).split('\n').slice(-40)) if (line.trim()) onLog(line.trim());
-        if (err) reject(new Error(`安装程序失败：${err.message}`));
-        else resolve();
-      },
+      [...javaProxyArgs(onLog), '-cp', fileName, forgeRunner, fileName, forgeMirrorBase, minecraftLibrariesMirror],
+      { cwd: serverDir, signal, stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    child.on('error', reject);
+    let extractedEntries = 0;
+    let reportedEntries = 0;
+    const forwardLine = (line: string): void => {
+      const clean = line.trim();
+      if (!clean) return;
+      // Forge emits one "Copying ..." line for every embedded jar resource.
+      // Keep the task log useful without synchronously rewriting it thousands
+      // of times while the installer unpacks those entries.
+      if (clean.startsWith('Copying ')) {
+        extractedEntries += 1;
+        if (extractedEntries === 1 || extractedEntries - reportedEntries >= 250) {
+          onLog(`Forge 安装器正在解包资源（已处理 ${extractedEntries} 项）`);
+          reportedEntries = extractedEntries;
+        }
+        return;
+      }
+      onLog(clean);
+    };
+    const forwardLines = (stream: Readable | null): void => {
+      if (!stream) return;
+      stream.setEncoding('utf8');
+      let pending = '';
+      stream.on('data', (chunk: string | Buffer) => {
+        pending += chunk.toString();
+        const lines = pending.split(/\r\n|\n|\r/);
+        pending = lines.pop() ?? '';
+        for (const line of lines) forwardLine(line);
+      });
+      stream.on('end', () => {
+        if (pending.trim()) forwardLine(pending);
+      });
+    };
+    forwardLines(child.stdout);
+    forwardLines(child.stderr);
+    child.once('error', reject);
+    child.once('close', (code, exitSignal) => {
+      if (extractedEntries > reportedEntries) {
+        onLog(`Forge 安装器已解包 ${extractedEntries} 项资源`);
+      }
+      if (code === 0) resolve();
+      else reject(new Error(`安装程序失败（退出码 ${code ?? 'null'}，信号 ${exitSignal ?? 'none'}）`));
+    });
   });
   const argsFile = loaderArgsPath(cfg);
   if (!hasLoaderEntry(cfg, serverDir)) {

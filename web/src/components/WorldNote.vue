@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { InstanceSummary } from '../lib/types.ts';
-import { STATUS_TEXT, statusClass } from '../lib/format.ts';
+import { STATUS_TEXT, statusClass, normalizeTimestamp } from '../lib/format.ts';
 import Icon from './Icon.vue';
 
 const props = defineProps<{ item: InstanceSummary; busy?: boolean }>();
@@ -32,8 +32,9 @@ const loaderLabel = computed(() => {
   return props.item.loaderVersion ? `${base} ${props.item.loaderVersion}` : base;
 });
 const createdLabel = computed(() => {
-  if (!props.item.createdAt) return '';
-  const date = new Date(props.item.createdAt);
+  const timestamp = normalizeTimestamp(props.item.createdAt);
+  if (timestamp === null) return '';
+  const date = new Date(timestamp);
   return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
 });
 const phaseText = computed(() => {

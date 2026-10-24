@@ -1,5 +1,6 @@
 import { computed, ref, type Ref } from 'vue';
 import { api, subscribe } from './api.ts';
+import { clearBrowserSnapshots, readBrowserSnapshot, writeBrowserSnapshot } from './browserSnapshot.ts';
 import type { InstanceSummary, SystemSnapshot } from './types.ts';
 
 /**
@@ -20,16 +21,34 @@ interface SystemStreamPayload {
 /** 世界性能采样（用于世界页的实时曲线）。 */
 export interface WorldSample {
   t: number;
-  cpu: number;
-  rss: number;
-  players: number;
+  cpu: number | null;
+  rss: number | null;
+  players: number | null;
+  latency: number | null;
+  threads: number | null;
+  storage: number | null;
+  tps: number | null;
+  msptMean: number | null;
+  msptP95: number | null;
+  msptPeak: number | null;
+  heapUsed: number | null;
+  heapMax: number | null;
+  gcCount: number | null;
+  gcPause: number | null;
+  pingMedian: number | null;
+  pingP95: number | null;
+  networkRx: number | null;
+  networkTx: number | null;
+  chunks: number | null;
+  entities: number | null;
 }
 
 const HISTORY_LIMIT = 120;
 
-export const snapshot = ref<SystemSnapshot | null>(null);
-export const instances = ref<InstanceSummary[]>([]);
-export const worldsReady = ref(false);
+const cachedSystem = readBrowserSnapshot<SystemStreamPayload>('system');
+export const snapshot = ref<SystemSnapshot | null>(cachedSystem?.snap ?? null);
+export const instances = ref<InstanceSummary[]>(cachedSystem?.instances ?? []);
+export const worldsReady = ref(Boolean(cachedSystem));
 
 let consumers = 0;
 let stopStream: (() => void) | null = null;
@@ -62,11 +81,30 @@ function recordHistory(list: InstanceSummary[], sampledAt: number): void {
     const samples = history.get(item.id) ?? [];
     const last = samples[samples.length - 1];
     if (last && sampledAt <= last.t) continue;
+    const processActive = item.pid !== null && ['running', 'starting', 'stopping', 'stuck'].includes(item.status);
+    const processObserved = processActive && item.rss > 0;
     samples.push({
       t: sampledAt,
-      cpu: Number.isFinite(item.cpu) ? item.cpu : 0,
-      rss: Number.isFinite(item.rss) ? item.rss : 0,
-      players: item.players || 0,
+      cpu: processObserved && Number.isFinite(item.cpu) ? item.cpu : null,
+      rss: processObserved && Number.isFinite(item.rss) ? item.rss : null,
+      players: item.playersKnown && Number.isFinite(item.players) ? item.players : null,
+      latency: Number.isFinite(item.queryLatencyMs) ? item.queryLatencyMs : null,
+      threads: processObserved && Number.isFinite(item.threads) ? item.threads : null,
+      storage: Number.isFinite(item.diskUsage) ? item.diskUsage : null,
+      tps: item.performance?.tps ?? null,
+      msptMean: item.performance?.msptMean ?? null,
+      msptP95: item.performance?.msptP95 ?? null,
+      msptPeak: item.performance?.msptPeak ?? null,
+      heapUsed: item.performance?.heapUsed ?? null,
+      heapMax: item.performance?.heapMax ?? null,
+      gcCount: item.performance?.gcCount ?? null,
+      gcPause: item.performance?.gcPause ?? null,
+      pingMedian: item.performance?.pingMedian ?? null,
+      pingP95: item.performance?.pingP95 ?? null,
+      networkRx: item.performance?.networkRx ?? null,
+      networkTx: item.performance?.networkTx ?? null,
+      chunks: item.performance?.chunks ?? null,
+      entities: item.performance?.entities ?? null,
     });
     if (samples.length > HISTORY_LIMIT) samples.splice(0, samples.length - HISTORY_LIMIT);
     history.set(item.id, samples);
@@ -90,6 +128,7 @@ function applyStream(data: SystemStreamPayload): void {
   snapshot.value = data.snap;
   applyInstances(data.instances, data.sampledAt);
   worldsReady.value = true;
+  writeBrowserSnapshot('system', { ...data, instances: instances.value });
 }
 
 async function fetchSystemFallback(): Promise<void> {
@@ -100,6 +139,7 @@ async function fetchSystemFallback(): Promise<void> {
     snapshot.value = data;
     applyInstances(data.instances, data.sampledAt);
     worldsReady.value = true;
+    writeBrowserSnapshot('system', { snap: data, sampledAt: data.sampledAt, instances: instances.value });
   } catch {
     // Keep the last known state; the SSE stream reconnects on its own.
   }
@@ -140,6 +180,7 @@ export function resetWorlds(): void {
   instances.value = [];
   snapshot.value = null;
   worldsReady.value = false;
+  clearBrowserSnapshots();
 }
 
 /** 启停按钮的即时反馈：先本地生效，下一条服务端快照到达后再以服务端为准。 */
@@ -161,6 +202,9 @@ export async function refreshWorlds(): Promise<void> {
     if (requestId !== refreshRequest || revisionAtRequest !== revision) return;
     applyInstances(result.instances);
     worldsReady.value = true;
+    if (snapshot.value) {
+      writeBrowserSnapshot('system', { snap: snapshot.value, sampledAt: Date.now(), instances: instances.value });
+    }
   } catch {
     // Callers surface action-specific errors; a background refresh stays quiet.
   }

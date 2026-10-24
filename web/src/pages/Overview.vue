@@ -3,6 +3,7 @@ import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import { api } from '../lib/api.ts';
 import type { FrpStatus } from '../lib/types.ts';
+import { readBrowserSnapshot, writeBrowserSnapshot } from '../lib/browserSnapshot.ts';
 import MonitorBar from '../components/MonitorBar.vue';
 import FrpCard from '../components/FrpCard.vue';
 import Icon from '../components/Icon.vue';
@@ -11,7 +12,9 @@ import { useWorlds } from '../lib/worlds.ts';
 defineOptions({ name: 'Overview' });
 
 const { snapshot, instances, acquireWorlds, releaseWorlds } = useWorlds();
-const frp = ref<FrpStatus | null>(null);
+const cachedFrp = readBrowserSnapshot<FrpStatus>('overview:frp');
+const frp = ref<FrpStatus | null>(cachedFrp);
+const frpLoaded = ref(Boolean(cachedFrp));
 const version = ref('');
 
 const hostLabel = computed(() => snapshot.value?.hostname || 'Minecraft');
@@ -36,8 +39,11 @@ let frpTimer: number | null = null;
 async function loadFrp() {
   try {
     frp.value = await api.get<FrpStatus>('/api/frp/status');
+    writeBrowserSnapshot('overview:frp', frp.value);
   } catch {
-    frp.value = null;
+    if (!frp.value) frp.value = null;
+  } finally {
+    frpLoaded.value = true;
   }
 }
 
@@ -70,12 +76,13 @@ onUnmounted(() => {
       <div class="hero-intro">
         <div class="hero-copy">
           <p class="hero-eyebrow">BlockCraft Control Center</p>
-          <h1 id="home-title" class="hero-title">你好，{{ hostLabel }}！</h1>
+          <h1 id="home-title" class="hero-title">你好，<span v-if="snapshot">{{ hostLabel }}</span><span v-else class="skeleton overview-title-skeleton" aria-label="正在读取主机名" />！</h1>
           <p class="hero-sub">方块世界，尽在掌握。启动、备份、玩家与 MOD，都在这一个面板里。</p>
         </div>
         <div class="hero-status" :class="`hero-status-${heroStatus.tone}`" role="status" aria-live="polite">
           <span class="hero-status-dot" aria-hidden="true" />
-          <span>{{ heroStatus.label }}<template v-if="version"> · v{{ version }}</template></span>
+          <span v-if="snapshot">{{ heroStatus.label }}<template v-if="version"> · v{{ version }}</template></span>
+          <span v-else class="skeleton overview-status-skeleton" aria-label="正在读取面板状态" />
         </div>
       </div>
 
@@ -83,11 +90,15 @@ onUnmounted(() => {
         <div class="hero-host">
           <span class="hero-mark" aria-hidden="true"><Icon name="server" :size="21" /></span>
           <div class="hero-host-copy">
-            <h2 class="hero-host-name">{{ hostLabel }}</h2>
+            <h2 v-if="snapshot" class="hero-host-name">{{ hostLabel }}</h2>
+            <span v-else class="skeleton overview-host-name-skeleton" aria-hidden="true" />
             <p class="hero-host-meta">
-              <span>{{ snapshot ? `${snapshot.platform} / ${snapshot.arch}` : '正在读取主机信息' }}</span>
-              <span aria-hidden="true"> · </span>
-              <span>{{ instances.length }} 个世界</span>
+              <template v-if="snapshot">
+                <span>{{ `${snapshot.platform} / ${snapshot.arch}` }}</span>
+                <span aria-hidden="true"> · </span>
+                <span>{{ instances.length }} 个世界</span>
+              </template>
+              <span v-else class="skeleton overview-host-meta-skeleton" aria-hidden="true" />
             </p>
           </div>
         </div>
@@ -95,12 +106,14 @@ onUnmounted(() => {
         <div class="hero-metrics" aria-label="面板数据摘要">
           <div class="hero-metric">
             <span class="hero-metric-icon" aria-hidden="true"><Icon name="overview" :size="15" /></span>
-            <span class="hero-metric-value">{{ instances.length }}</span>
+            <span v-if="snapshot" class="hero-metric-value">{{ instances.length }}</span>
+            <span v-else class="skeleton overview-metric-skeleton" aria-hidden="true" />
             <span class="hero-metric-label">世界</span>
           </div>
           <div class="hero-metric">
             <span class="hero-metric-icon" aria-hidden="true"><Icon name="players" :size="15" /></span>
-            <span class="hero-metric-value">{{ totalPlayers }}<small>/{{ totalMaxPlayers }}</small></span>
+            <span v-if="snapshot" class="hero-metric-value">{{ totalPlayers }}<small>/{{ totalMaxPlayers }}</small></span>
+            <span v-else class="skeleton overview-metric-skeleton" aria-hidden="true" />
             <span class="hero-metric-label">在线玩家</span>
           </div>
         </div>
@@ -121,7 +134,7 @@ onUnmounted(() => {
     <!-- 上半：资源监控 + FRP -->
     <div class="top-grid">
       <MonitorBar :snap="snapshot" :instances="instances" />
-      <FrpCard :status="frp" @refresh="loadFrp" />
+      <FrpCard :status="frp" :loading="!frpLoaded" @refresh="loadFrp" />
     </div>
 
   </div>
@@ -190,6 +203,11 @@ onUnmounted(() => {
   font-weight: 650;
   letter-spacing: -0.035em;
 }
+.overview-title-skeleton { display: inline-block; width: 132px; height: 28px; vertical-align: -2px; border-radius: 6px; }
+.overview-host-name-skeleton { display: block; width: 92px; height: 21px; border-radius: 5px; }
+.overview-host-meta-skeleton { display: inline-block; width: 174px; height: 12px; border-radius: 5px; }
+.overview-status-skeleton { display: inline-block; width: 116px; height: 12px; border-radius: 5px; }
+.overview-metric-skeleton { display: block; width: 42px; height: 20px; border-radius: 5px; }
 .hero-sub {
   max-width: 46rem;
   margin-top: 8px;
@@ -253,7 +271,7 @@ onUnmounted(() => {
   border: 1px solid var(--accent-border);
   border-radius: 14px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 .hero-host-copy { min-width: 0; }
@@ -290,7 +308,7 @@ onUnmounted(() => {
   justify-content: center;
   border-radius: 9px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .hero-metric-value {
   font-size: 18px;
@@ -332,7 +350,7 @@ onUnmounted(() => {
   place-items: center;
   border-radius: 9px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .hero-action-copy { display: block; min-width: 0; }
 .hero-action-copy > span,
@@ -340,7 +358,7 @@ onUnmounted(() => {
 .hero-action-copy > span { font-size: 12.5px; font-weight: 650; }
 .hero-action-copy > small { color: var(--text-3); font-size: 10.5px; }
 .hero-action-arrow { color: var(--text-3); transition: transform 0.18s var(--ease), color 0.18s; }
-.hero-action:hover .hero-action-arrow { color: var(--accent); transform: translateX(2px); }
+.hero-action:hover .hero-action-arrow { color: var(--accent-text); transform: translateX(2px); }
 
 
 .top-grid {

@@ -57,7 +57,22 @@ async function reassign() {
 
 <template>
   <Modal v-if="open" :title="`${name} · 端口`" size="sm" @close="emit('close')">
-    <div v-if="!ports" class="row gap-2"><span class="spinner" /> 读取中…</div>
+    <div v-if="!ports" class="ports-dialog-skeleton" role="status" aria-label="正在读取端口信息" aria-busy="true">
+      <div v-for="field in 2" :key="field" class="field" aria-hidden="true">
+        <span class="skeleton ports-skeleton-label" />
+        <div class="row gap-2">
+          <span class="skeleton ports-skeleton-address" />
+          <span class="skeleton ports-skeleton-button" />
+        </div>
+        <span class="skeleton ports-skeleton-hint" />
+      </div>
+      <div class="kv" aria-hidden="true">
+        <div v-for="row in 2" :key="row" class="kv-row">
+          <span class="skeleton ports-skeleton-kv-key" />
+          <span class="skeleton ports-skeleton-kv-value" />
+        </div>
+      </div>
+    </div>
     <div v-else class="col gap-3">
       <div class="field">
         <label class="field-label">游戏端口（本地）</label>
@@ -85,3 +100,14 @@ async function reassign() {
     </template>
   </Modal>
 </template>
+
+<style scoped>
+.ports-dialog-skeleton { display: flex; flex-direction: column; gap: var(--sp-4); }
+.ports-skeleton-label { width: 152px; height: 12px; border-radius: 5px; }
+.ports-skeleton-address { width: 100%; height: 38px; border-radius: var(--r-sm); }
+.ports-skeleton-button { width: 52px; height: 29px; flex: none; border-radius: var(--r-xs); }
+.ports-skeleton-hint { width: 88%; height: 11px; border-radius: 5px; }
+.ports-skeleton-kv-key, .ports-skeleton-kv-value { height: 12px; border-radius: 5px; }
+.ports-skeleton-kv-key { width: 158px; }
+.ports-skeleton-kv-value { width: 74px; }
+</style>

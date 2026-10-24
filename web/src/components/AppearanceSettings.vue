@@ -202,7 +202,7 @@ function chooseTheme(mode: ThemeMode): void {
 .theme-card-copy strong { display: flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 650; }
 .theme-card-copy strong .badge { height: 17px; padding: 0 5px; font-size: 9.5px; }
 .theme-card-copy small { overflow: hidden; color: var(--text-3); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
-.theme-card-check { color: var(--accent); }
+.theme-card-check { color: var(--accent-text); }
 
 .wallpaper-row { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
 .wallpaper-thumb {

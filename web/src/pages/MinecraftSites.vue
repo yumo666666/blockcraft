@@ -95,7 +95,7 @@ const sites = [
 .websites-page { padding-top: clamp(18px, 3vh, 34px); }
 .websites-intro { display: grid; gap: 7px; }
 .websites-intro h1, .websites-intro p { margin: 0; }
-.eyebrow { color: var(--accent); font-size: 11px; font-weight: 750; letter-spacing: .14em; }
+.eyebrow { color: var(--accent-text); font-size: 11px; font-weight: 750; letter-spacing: .14em; }
 .websites-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: var(--sp-4); align-items: stretch; }
 .website-card { display: flex; flex-direction: column; gap: 12px; padding: var(--sp-4); min-width: 0; }
 .website-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

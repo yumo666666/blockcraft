@@ -328,6 +328,9 @@ describeIfPanel('世界配置弹窗', () => {
       cpu: 0,
       rss: 0,
       players: 0,
+      playersKnown: false,
+      queryLatencyMs: null,
+      threads: null,
       maxPlayers: 20,
       modCount: 0,
       diskUsage: 0,
@@ -335,6 +338,7 @@ describeIfPanel('世界配置弹窗', () => {
       intentionalStop: false,
       createdAt: 0,
       javaMajor: 17,
+      performance: null,
       lastError: null,
     };
     const on = mount(WorldNote, { props: { item: { ...base, autostart: true } } });
@@ -355,9 +359,11 @@ describe('世界卡片的崩溃提示', () => {
       id: 'unit-crash', name: '测试世界', note: '', color: '#e9e2d0', mc: '1.20.1',
       loader: 'forge', loaderVersion: '47.4.20', port: 25565, frpPort: 26000, frpEnabled: true,
       memoryMb: 4096, minMemoryMb: 1024, autostart: false, status: 'crashed', phase: '崩溃',
-      progress: null, pid: null, uptime: 0, cpu: 0, rss: 0, players: 0, maxPlayers: 20,
+      progress: null, pid: null, uptime: 0, cpu: 0, rss: 0, players: 0, playersKnown: false,
+      queryLatencyMs: null, threads: null, maxPlayers: 20,
       modCount: 244, diskUsage: 0, lastBackup: null, intentionalStop: false, createdAt: 0,
       javaMajor: 17,
+      performance: null,
       lastError: '单个 tick 卡了 60.00 秒，被服务端自带看门狗判定为卡死并强制关闭',
     };
     const w = mount(WorldNote, { props: { item: base } });
