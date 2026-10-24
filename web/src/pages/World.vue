@@ -75,10 +75,9 @@ watch(
 async function start(item: InstanceSummary) {
   busyId.value = item.id;
   try {
-    await api.post(`/api/instances/${item.id}/start`);
-    // 启动接口对长启动返回 202；先显示 accepted 状态，后续以 SSE 快照为准。
-    setWorldStatus(item.id, 'starting', '正在启动');
-    toast('ok', `${item.name} 正在启动`, '状态会自己刷新，进度看卡片上的说明');
+    const r = await api.post<{ status?: string; jobId?: string }>(`/api/instances/${item.id}/start`);
+    if (r.status !== 'queued') setWorldStatus(item.id, 'starting', '正在启动');
+    toast('ok', r.status === 'queued' ? `${item.name} 已加入启动队列` : `${item.name} 正在启动`, r.status === 'queued' ? '前面任务结束后会自动启动，可在任务中心查看排队进度。' : '状态会自己刷新，进度看卡片上的说明');
   } catch (err) {
     toastError(err, '启动失败');
   } finally {
@@ -89,9 +88,9 @@ async function start(item: InstanceSummary) {
 async function stop(item: InstanceSummary) {
   busyId.value = item.id;
   try {
-    const r = await api.post<{ message?: string }>(`/api/instances/${item.id}/stop`, { message: '服务器正在关闭，感谢游玩' });
-    setWorldStatus(item.id, 'stopping', '正在保存并关闭');
-    toast('ok', `${item.name} 正在关闭`, r?.message ?? '保存完成后会自动停止，状态会自己刷新');
+    const r = await api.post<{ message?: string; status?: string }>(`/api/instances/${item.id}/stop`, { message: '服务器正在关闭，感谢游玩' });
+    if (r.status !== 'queued') setWorldStatus(item.id, 'stopping', '正在保存并关闭');
+    toast('ok', r.status === 'queued' ? `${item.name} 已加入停止队列` : `${item.name} 正在关闭`, r.status === 'queued' ? '前面任务结束后会自动停止，可在任务中心查看排队进度。' : r?.message ?? '保存完成后会自动停止，状态会自己刷新');
   } catch (err) {
     toastError(err, '停止失败');
   } finally {

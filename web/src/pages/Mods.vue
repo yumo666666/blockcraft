@@ -39,7 +39,7 @@ const pages = ref(cachedMods?.pages ?? 1);
 const pageSize = ref(cachedMods?.pageSize ?? 24);
 const modsDir = ref(cachedMods?.dir ?? '');
 const hasSnapshot = ref(Boolean(cachedMods));
-const loading = ref(false);
+const loading = ref(!hasSnapshot.value);
 const busyFile = ref<string | null>(null);
 
 const q = ref(cachedMods?.query ?? '');

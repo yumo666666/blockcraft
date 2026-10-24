@@ -2,7 +2,6 @@ import type { Express } from 'express';
 import { bad } from '../core/errors.ts';
 import * as I from '../services/instanceService.ts';
 import * as sup from '../services/supervisor.ts';
-import { describe, nextRun, tickNow } from '../services/scheduler.ts';
 
 /**
  * 快捷命令：中文标签 + 分组。带 needsArg 的点了不直接发，而是把前缀填进输入框、光标落到参数位，
@@ -182,60 +181,4 @@ export function registerConsoleRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/instances/:id/schedule', (req, res) => {
-    const cfg = I.getConfig(req.params.id);
-    const state = I.getState(req.params.id);
-    res.json({
-      schedule: cfg.schedule,
-      describe: describe(cfg),
-      nextStart: nextRun(cfg.schedule.start),
-      nextStop: nextRun(cfg.schedule.stop),
-      pendingStop: state.pendingStop,
-      fired: state.fired,
-    });
-  });
-
-  app.put('/api/instances/:id/schedule', (req, res) => {
-    const id = req.params.id;
-    const body = req.body as Record<string, unknown>;
-    const cfg = I.getConfig(id);
-    const next = {
-      ...cfg.schedule,
-      ...(body as unknown as typeof cfg.schedule),
-    } as typeof cfg.schedule;
-    I.saveConfig(id, { schedule: next });
-    const saved = I.getConfig(id);
-    res.json({ ok: true, schedule: saved.schedule, describe: describe(saved), nextStart: nextRun(saved.schedule.start), nextStop: nextRun(saved.schedule.stop) });
-  });
-
-  app.post('/api/instances/:id/schedule/test-warn', async (req, res) => {
-    const id = req.params.id;
-    const cfg = I.getConfig(id);
-    const n = Number((req.body as { minutes?: number })?.minutes ?? cfg.schedule.warnMinutes);
-    const text = (cfg.schedule.warnText || '服务器将在 {n} 分钟后关闭').replace('{n}', String(n));
-    const cmd = cfg.schedule.warnCommand ? cfg.schedule.warnCommand.replace('{n}', String(n)).replace('{text}', text) : `say ${text}`;
-    if (!sup.isRunning(id)) throw bad('世界没有在运行，无法测试公告');
-    await sup.rcon(id, cmd);
-    res.json({ ok: true, text });
-  });
-
-  app.get('/api/scheduler/upcoming', (_req, res) => {
-    const out = I.listInstanceIds().map((id) => {
-      const cfg = I.getConfig(id);
-      return {
-        id,
-        name: cfg.name,
-        describe: describe(cfg),
-        nextStart: nextRun(cfg.schedule.start),
-        nextStop: nextRun(cfg.schedule.stop),
-        pendingStop: I.getState(id).pendingStop,
-      };
-    });
-    res.json({ instances: out });
-  });
-
-  app.post('/api/scheduler/tick', async (_req, res) => {
-    await tickNow();
-    res.json({ ok: true });
-  });
 }

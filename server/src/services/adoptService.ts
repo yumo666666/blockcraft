@@ -280,7 +280,6 @@ export async function adopt(opts: AdoptOptions): Promise<InstanceConfig> {
     gamerules: { ...I.DEFAULT_GAMERULES },
     frp: { enabled: true, remotePort: remote, mode: 'auto' },
     backup: I.defaultBackupPolicy(),
-    schedule: I.defaultSchedule(),
     created: now,
     createdAt: now,
     createdFrom: { type: 'adopt', source: det.dir },

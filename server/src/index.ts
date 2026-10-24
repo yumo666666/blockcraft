@@ -20,6 +20,7 @@ import * as playerService from './services/playerService.ts';
 import { registerPackRoutes } from './routes/packs.ts';
 import { registerPerformanceRoutes } from './routes/performance.ts';
 import { registerFileRoutes } from './routes/files.ts';
+import { registerTaskRoutes } from './routes/tasks.ts';
 import { startScheduler } from './services/scheduler.ts';
 import { startPerformanceHistory } from './services/performanceHistory.ts';
 import { startFrpService } from './services/frpService.ts';
@@ -132,7 +133,7 @@ export function boot(): void {
   });
 
   app.get('/api/ping', (_req, res) => {
-    res.json({ ok: true, name: 'BlockCraft', version: '0.0.1' });
+    res.json({ ok: true, name: 'BlockCraft', version: '0.0.2' });
   });
 
   // ---- 鉴权中间件
@@ -207,6 +208,7 @@ export function boot(): void {
   registerPackRoutes(app);
   registerPerformanceRoutes(app);
   registerFileRoutes(app);
+  registerTaskRoutes(app);
 
   // ---- 带 token 的链接自动登录（登录后立刻从地址栏清掉 token，避免留在浏览器历史里）
   app.get('/', (req, res, next) => {
@@ -271,7 +273,8 @@ export function boot(): void {
     void sup.startAutostartWorlds().catch((err) => logger.warn('autostart 执行异常', String(err)));
   }, 3000);
   ports.reconcile(new Set(I.listInstanceIds()));
-  createJob({ id: 'boot', kind: 'install', title: '面板启动', instanceId: null, status: 'done', stages: [], lines: [`面板启动于 ${new Date().toLocaleString('zh-CN')}`], progress: 100, error: null, startedAt: Date.now(), endedAt: Date.now() }).catch(() => undefined);
+  const panelStartedAt = Date.now();
+  createJob({ kind: 'panel', title: '面板启动', instanceId: null, status: 'done', source: 'system', stages: [], lines: [`面板启动于 ${new Date(panelStartedAt).toLocaleString('zh-CN')}`], progress: 100, error: null, startedAt: panelStartedAt, endedAt: panelStartedAt }).catch(() => undefined);
 
   // 启动时清一遍过期会话，之后每小时一次
   const pruned = prune(cfg.panel.sessionHours);

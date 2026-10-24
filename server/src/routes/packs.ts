@@ -5,7 +5,7 @@ import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { STORE_DIR } from '../core/paths.ts';
 import { bad, conflict, notFound } from '../core/errors.ts';
-import { createJob, finishJob, jobSignal, logJob, setStage } from '../services/jobService.ts';
+import { createJob, enqueueJob, finishJob, jobSignal, logJob, setStage } from '../services/jobService.ts';
 import { installServer } from '../services/installService.ts';
 import * as I from '../services/instanceService.ts';
 import * as sup from '../services/supervisor.ts';
@@ -179,7 +179,7 @@ export function registerPackRoutes(app: Express): void {
       createdFrom: { type: 'import' },
     });
     const job = await createJob({
-      kind: 'import',
+      kind: 'pack-import',
       title: `导入整合包 →「${cfg.name}」`,
       instanceId: cfg.id,
       stages: [
@@ -190,7 +190,7 @@ export function registerPackRoutes(app: Express): void {
         { key: 'start', label: '启动世界', status: 'pending' },
       ],
     });
-    void (async () => {
+    enqueueJob(job.id, async () => {
       const signal = jobSignal(job.id);
       try {
         setStage(job.id, 'install', 'running');
@@ -248,7 +248,7 @@ export function registerPackRoutes(app: Express): void {
         logJob(job.id, `失败：${String(err)}`);
         finishJob(job.id, String(err));
       }
-    })();
+    });
     res.json({ ok: true, instanceId: cfg.id, jobId: job.id });
   });
 }

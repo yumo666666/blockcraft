@@ -14,5 +14,6 @@ bin/*.tar.gz
 
 # 发布件（不属于源码）
 dist-release/
+.playwright-cli/
 *.tar.gz
 *.bundle

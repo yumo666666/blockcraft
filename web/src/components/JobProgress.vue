@@ -12,8 +12,8 @@ const job = ref<Job | null>(null);
 const logEl = ref<HTMLElement | null>(null);
 const followLog = ref(true);
 const cancelPending = ref(false);
-const active = computed(() => job.value?.status === 'running' || job.value?.status === 'cancelling');
-const canCancel = computed(() => ['create', 'import'].includes(job.value?.kind ?? '') && job.value?.status === 'running' && !cancelPending.value);
+const active = computed(() => job.value?.status === 'queued' || job.value?.status === 'running' || job.value?.status === 'cancelling');
+const canCancel = computed(() => ['create', 'import', 'pack-import'].includes(job.value?.kind ?? '') && ['queued', 'running'].includes(job.value?.status ?? '') && !cancelPending.value);
 let off: (() => void) | null = null;
 
 watch(
@@ -71,7 +71,7 @@ async function cancelJob(): Promise<void> {
   try {
     const result = await api.post<{ job: Job }>(`/api/jobs/${encodeURIComponent(job.value.id)}/cancel`);
     job.value = result.job;
-    toast('ok', `已请求${kind === 'create' ? '取消创建' : '取消导入'}`, '正在停止当前下载或安装。已创建世界和已下载文件会保留，可以之后在总览中删除。');
+    toast('ok', `已请求${kind === 'create' ? '取消创建' : '取消导入'}`, job.value.status === 'cancelled' ? '任务已从等待队列移除。已创建世界和下载文件会保留。' : '正在停止当前下载或安装。已创建世界和已下载文件会保留，可以之后在总览中删除。');
   } catch (err) {
     cancelPending.value = false;
     toastError(err, `取消${kind === 'create' ? '创建' : '导入'}失败`);
@@ -99,7 +99,7 @@ async function cancelJob(): Promise<void> {
     <div v-else class="col gap-4">
       <div class="row gap-3">
         <span class="badge" :class="job.status === 'done' ? 'badge-ok' : job.status === 'failed' ? 'badge-danger' : job.status === 'cancelled' || job.status === 'interrupted' ? 'badge-outline' : 'badge-warn'">
-          {{ job.status === 'done' ? '已完成' : job.status === 'failed' ? '失败' : job.status === 'cancelled' ? '已取消' : job.status === 'cancelling' ? '正在取消' : job.status === 'interrupted' ? '已中断' : '进行中' }}
+          {{ job.status === 'done' ? '已完成' : job.status === 'failed' ? '失败' : job.status === 'skipped' ? '已跳过' : job.status === 'queued' ? '排队中' : job.status === 'cancelled' ? '已取消' : job.status === 'cancelling' ? '正在取消' : job.status === 'interrupted' ? '已中断' : '进行中' }}
         </span>
         <div class="grow meter"><div class="meter-fill" :style="{ width: job.progress + '%' }" /></div>
       </div>
@@ -120,7 +120,7 @@ async function cancelJob(): Promise<void> {
     </div>
     <template #footer>
       <div v-if="active" class="row gap-2">
-        <button v-if="job?.kind === 'create' || job?.kind === 'import'" class="btn btn-danger" :disabled="!canCancel" @click="cancelJob">
+        <button v-if="job?.kind === 'create' || job?.kind === 'import' || job?.kind === 'pack-import'" class="btn btn-danger" :disabled="!canCancel" @click="cancelJob">
           {{ job?.status === 'cancelling' || cancelPending ? '正在取消…' : cancelLabel }}
         </button>
         <button class="btn" @click="emit('background')">后台继续</button>
@@ -135,7 +135,7 @@ async function cancelJob(): Promise<void> {
 .job-skeleton-meter { height: 10px; border-radius: 999px; }
 .job-skeleton-stage { height: 14px; max-width: 72%; }
 .job-skeleton-log { display: flex; height: 200px; flex-direction: column; gap: 10px; overflow: hidden; padding: 16px; border-radius: var(--r); background: var(--skeleton-base); }
-.job-skeleton-log-line { display: block; height: 11px; flex: none; background: linear-gradient(100deg, color-mix(in srgb, var(--skeleton-highlight) 72%, var(--skeleton-base)) 25%, var(--skeleton-highlight) 48%, color-mix(in srgb, var(--skeleton-highlight) 72%, var(--skeleton-base)) 72%); background-size: 220% 100%; animation: sk 1.35s ease-in-out infinite; }
+.job-skeleton-log-line { display: block; height: 11px; flex: none; background: linear-gradient(100deg, color-mix(in srgb, var(--skeleton-highlight) 72%, var(--skeleton-base)) 25%, var(--skeleton-highlight) 48%, color-mix(in srgb, var(--skeleton-highlight) 72%, var(--skeleton-base)) 72%); background-size: 180% 100%; animation: sk 2.4s ease-in-out infinite; }
 .job-skeleton-log-line:nth-child(3n + 1) { width: 91%; }
 .job-skeleton-log-line:nth-child(3n + 2) { width: 74%; }
 .job-skeleton-log-line:nth-child(3n) { width: 84%; }

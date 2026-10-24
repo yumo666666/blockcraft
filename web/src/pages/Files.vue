@@ -58,7 +58,6 @@ const projectRoot = ref(cachedFiles?.projectRoot ?? '');
 const readOnly = ref(true);
 const accessChecking = ref(true);
 const accessUnavailable = ref(false);
-const loading = ref(false);
 const loadingError = ref('');
 const currentPath = ref(cachedFiles?.currentPath ?? '');
 const currentWorldId = ref<string | null | undefined>(cachedFiles?.worldId);
@@ -74,6 +73,7 @@ const currentEntries = ref<FileEntry[]>(archiveContext.value
 const hasCurrentSnapshot = computed(() => archiveContext.value
   ? archiveChildren.has(`${archiveContext.value.archivePath}::${archiveContext.value.path}`)
   : treeChildren.has(currentPath.value));
+const loading = ref(!hasCurrentSnapshot.value);
 const accessLabel = computed(() => {
   if (accessChecking.value) return '正在读取目录状态';
   if (accessUnavailable.value) return '目录状态暂不可用 · 只读';

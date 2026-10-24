@@ -30,6 +30,12 @@ defineProps<{ name: string; label?: string }>();
       </div>
     </template>
 
+    <template v-else-if="name === 'tasks'">
+      <header class="row-between wrap gap-3" aria-hidden="true"><div class="col gap-2"><span class="skeleton route-title" /><span class="skeleton route-line route-line-wide" /></div><span class="skeleton route-button route-button-primary" /></header>
+      <section class="card"><div class="card-head row-between"><span class="skeleton route-heading" /><span class="skeleton route-line route-line-sm" /></div><div class="route-task-schedule" aria-hidden="true"><div v-for="item in 3" :key="item" class="route-task-schedule-row"><div class="col gap-2"><span class="skeleton route-line route-line-md" /><span class="skeleton route-line route-line-wide" /></div><span class="skeleton route-line route-line-sm" /><div class="row gap-2"><span v-for="button in 3" :key="button" class="skeleton route-button" /></div></div></div></section>
+      <section class="card"><div class="card-head"><span class="skeleton route-heading" /></div><div class="card-body route-task-filters"><span v-for="item in 4" :key="item" class="skeleton route-control" /></div><div class="card-body col gap-2" aria-hidden="true"><span v-for="item in 6" :key="item" class="skeleton route-row" /></div></section>
+    </template>
+
     <template v-else-if="name === 'websites'">
       <header class="col gap-2" aria-hidden="true"><span class="skeleton route-eyebrow" /><span class="skeleton route-title" /><span class="skeleton route-line route-line-wide" /></header>
       <section class="route-website-grid" aria-hidden="true"><article v-for="item in 6" :key="item" class="card route-website-card"><span class="skeleton route-icon-lg" /><span class="skeleton route-title route-title-sm" /><span class="skeleton route-line route-line-wide" /><span class="skeleton route-line" /><div class="route-website-list"><span v-for="line in 3" :key="line" class="skeleton route-line" /></div><span class="skeleton route-button" /></article></section>
@@ -103,6 +109,9 @@ defineProps<{ name: string; label?: string }>();
 
 <style scoped>
 .route-skeleton { min-width: 0; }
+.route-task-schedule { padding: 0 16px; }
+.route-task-schedule-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(140px, .7fr) auto; align-items: center; gap: 14px; padding: 14px 4px; border-top: 1px solid var(--border); }
+.route-task-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .route-title, .route-heading, .route-line, .route-label, .route-control, .route-note, .route-row, .route-pill, .route-button, .route-icon, .route-icon-lg { display: block; }
 .route-title { width: min(34%, 220px); height: 26px; border-radius: 6px; }
 .route-title-lg { width: 260px; height: 34px; }
@@ -123,6 +132,7 @@ defineProps<{ name: string; label?: string }>();
 .route-icon { width: 32px; height: 32px; border-radius: 9px; }
 .route-icon-lg { width: 46px; height: 46px; border-radius: 13px; }
 .route-note { width: 100%; height: 62px; border-radius: var(--r-sm); }
+@media (max-width: 700px) { .route-task-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .route-task-schedule-row { grid-template-columns: 1fr; } }
 .route-row { width: 100%; height: 36px; border-radius: var(--r-sm); }
 .route-overview-hero { overflow: hidden; }
 .route-overview-intro, .route-overview-summary { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 23px 24px; }

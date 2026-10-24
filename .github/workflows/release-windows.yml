@@ -42,10 +42,28 @@ jobs:
         working-directory: dist-release
         run: sha256sum BlockCraft-Windows-x64.zip > BlockCraft-Windows-x64.zip.sha256
 
+      - name: Prepare release notes from changelog
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { join } from 'node:path';
+
+          const tag = process.env.RELEASE_TAG;
+          const lines = (await readFile('CHANGELOG.md', 'utf8')).split(/\r?\n/);
+          const start = lines.findIndex((line) => line === `## ${tag}` || line.startsWith(`## ${tag} `));
+          if (start < 0) throw new Error(`CHANGELOG.md has no section for ${tag}`);
+          const end = lines.findIndex((line, index) => index > start && line.startsWith('## '));
+          const body = lines.slice(start + 1, end < 0 ? undefined : end).join('\n').trim();
+          await writeFile(join(process.env.RUNNER_TEMP, 'release-notes.md'), `${body}\n`);
+          NODE
+
       - name: Attach package to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
+          body_path: ${{ runner.temp }}/release-notes.md
           files: |
             dist-release/BlockCraft-Windows-x64.zip
             dist-release/BlockCraft-Windows-x64.zip.sha256

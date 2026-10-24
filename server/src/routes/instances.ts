@@ -9,13 +9,16 @@ import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
 import * as ports from '../services/portService.ts';
 import { summarize, summarizeAll, invalidateModCount } from '../services/overview.ts';
-import { createJob, finishJob, jobSignal, listRunningJobs, logJob, setStage } from '../services/jobService.ts';
+import { createJob, enqueueJob, finishJob, getJob, jobSignal, listRunningJobs, logJob, setStage, updateJob, waitForJob } from '../services/jobService.ts';
 import { installServer, copyInstance } from '../services/installService.ts';
 import { validateInstall } from '../launcher/index.ts';
 import { loadConfig } from '../config.ts';
 import { memoryInfo } from '../services/systemService.ts';
 import { ensureSkinSupport, skinSupportInstallStageLabel } from '../services/skinSupportService.ts';
 import { importWorldArchive, MAX_WORLD_ARCHIVE_UPLOAD_BYTES, writeWorldArchive } from '../services/worldArchiveService.ts';
+import { enqueueActionTask } from '../services/taskRunner.ts';
+import { listScheduledTasks, setScheduledTaskEnabled } from '../services/scheduledTasks.ts';
+import type { InstanceConfig } from '../types.ts';
 
 function requireId(id: string): string {
   if (!INSTANCE_ID_RE.test(id)) throw bad('世界 id 不合法');
@@ -89,7 +92,29 @@ export function registerInstanceRoutes(app: Express): void {
       res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: '世界 ZIP 超过 20 GB 上传限制' } });
       return;
     }
-    const cfg = await importWorldArchive(originalName, req);
+    const importResult: { config: InstanceConfig | null } = { config: null };
+    const job = await createJob({
+      kind: 'world-import',
+      title: `导入世界「${path.basename(originalName)}」`,
+      instanceId: null,
+      stages: [{ key: 'import', label: '接收、解压并校验世界', status: 'pending' }],
+    });
+    enqueueJob(job.id, async () => {
+      setStage(job.id, 'import', 'running');
+      try {
+        importResult.config = await importWorldArchive(originalName, req, (line) => logJob(job.id, line));
+        updateJob(job.id, { instanceId: importResult.config.id, title: `导入世界「${importResult.config.name}」` });
+        setStage(job.id, 'import', 'done');
+        logJob(job.id, `世界已导入：${importResult.config.name}（${importResult.config.id}）`);
+        finishJob(job.id);
+      } catch (err) {
+        logJob(job.id, `失败：${String(err)}`);
+        finishJob(job.id, String(err));
+      }
+    });
+    const importJob = await waitForJob(job.id);
+    if (importJob.status !== 'done' || !importResult.config) throw bad(importJob.error ?? '世界导入失败');
+    const cfg = importResult.config;
     await frp.ensureRemotePort(cfg.id);
     await frp.syncWorlds().catch(() => undefined);
     invalidateModCount(cfg.id);
@@ -174,7 +199,7 @@ export function registerInstanceRoutes(app: Express): void {
         finishJob(job.id, String(err));
       }
     };
-    void run();
+    enqueueJob(job.id, run);
     res.json({ ok: true, instance: await summarize(cfg.id), jobId: job.id });
   });
 
@@ -231,11 +256,12 @@ export function registerInstanceRoutes(app: Express): void {
     const confirm = String(req.query.confirm ?? '');
     if (confirm !== id) throw bad('请输入完整的世界 id 以确认删除');
     if (listRunningJobs().some((job) => job.instanceId === id)) {
-      throw conflict('这个世界仍有创建、导入或安装任务在运行。请等任务结束后再删除。 / A create, import, or install task is still running for this world. Wait for it to finish before deleting it.');
+      throw conflict('这个世界仍有任务排队或执行中。请等任务结束后再删除。 / A task for this world is queued or running. Wait for it to finish before deleting it.');
     }
     if (sup.isRunning(id) || await sup.hasActiveProcessEvidence(id)) {
-      const stopped = await sup.stop(id, { message: '这个世界即将被删除' }).catch((err) => ({ ok: false, error: String(err) }));
-      if (!stopped.ok || await sup.hasActiveProcessEvidence(id)) {
+      const stopJob = await enqueueActionTask({ instanceId: id, action: 'stop', stopOptions: { message: '这个世界即将被删除' } });
+      const stopped = await waitForJob(stopJob.id);
+      if (stopped.status !== 'done' || await sup.hasActiveProcessEvidence(id)) {
         throw conflict(stopped.error ?? '世界还没有完全停止，暂时不能删除。请等待保存和进程退出后重试。 / The world is still stopping; wait for its process to exit before deleting it.');
       }
     }
@@ -244,6 +270,9 @@ export function registerInstanceRoutes(app: Express): void {
     // that handle prevents renaming the stopped world's directory into the trash.
     await sup.closeConsoleFile(id);
     await I.deleteInstance(id, purge);
+    for (const task of listScheduledTasks()) {
+      if (task.instanceId === id && task.enabled) setScheduledTaskEnabled(task.id, false);
+    }
     await frp.removeInstance(id).catch(() => undefined);
     invalidateModCount(id);
     audit({ ip: req.ip, action: 'instance.delete', target: id, detail: { purge } });
@@ -266,57 +295,42 @@ export function registerInstanceRoutes(app: Express): void {
     if (usedMb > memoryBudget()) {
       throw conflict(`启动后总内存需求 ${usedMb}MB 会超过预算 ${memoryBudget()}MB，可能把机器拖垮。请降低某个世界的 Xmx，或在设置里调大预算。`);
     }
-    const wait = String(req.query.wait ?? '0') === '1';
-    if (wait) {
-      const result = await sup.start(id, { wait: true });
-      if (!result.ok) {
+    const job = await enqueueActionTask({ instanceId: id, action: 'start' });
+    audit({ ip: req.ip, action: 'instance.start', target: id, detail: { jobId: job.id } });
+    if (String(req.query.wait ?? '0') === '1') {
+      const result = await waitForJob(job.id);
+      if (result.status !== 'done') {
         res.status(409).json({ error: { code: 'CONFLICT', message: result.error ?? '启动失败' } });
         return;
       }
-      await frp.syncWorlds().catch(() => undefined);
-      audit({ ip: req.ip, action: 'instance.start', target: id });
-      res.json({ ok: true, jobId: null });
+      res.json({ ok: true, jobId: job.id });
       return;
     }
-    // 后台执行：立刻回 202，前端靠轮询看 phase / status
-    void sup
-      .start(id, { wait: true })
-      .then(async (result) => {
-        if (!result.ok) {
-          I.saveState(id, { lastError: result.error ?? '启动失败', phase: result.error ?? '启动失败' });
-          return;
-        }
-        await frp.syncWorlds().catch(() => undefined);
-      })
-      .catch((err) => I.saveState(id, { lastError: String(err), phase: `启动异常：${String(err)}` }));
-    audit({ ip: req.ip, action: 'instance.start', target: id, detail: { async: true } });
-    res.status(202).json({ ok: true, accepted: true });
+    res.status(202).json({ ok: true, accepted: true, jobId: job.id, status: getJob(job.id).status });
   });
 
   app.post('/api/instances/:id/stop', async (req, res) => {
     const id = requireId(req.params.id);
     const body = (req.body ?? {}) as { message?: string; kick?: boolean; timeoutSec?: number };
-    const wait = String(req.query.wait ?? '0') === '1';
-    if (wait) {
-      const result = await sup.stop(id, { message: body.message, kick: body.kick, timeoutSec: body.timeoutSec });
-      audit({ ip: req.ip, action: 'instance.stop', target: id, detail: { graceful: result.graceful } });
-      res.json(result);
+    const job = await enqueueActionTask({ instanceId: id, action: 'stop', stopOptions: body });
+    audit({ ip: req.ip, action: 'instance.stop', target: id, detail: { jobId: job.id } });
+    if (String(req.query.wait ?? '0') === '1') {
+      const result = await waitForJob(job.id);
+      if (result.status !== 'done') {
+        res.status(409).json({ error: { code: 'CONFLICT', message: result.error ?? '停止失败' } });
+        return;
+      }
+      res.json({ ok: true, graceful: true, message: '世界已停止', jobId: job.id });
       return;
     }
-    // 同上：优雅停止要等保存+踢人+关服，同步等会被代理判超时
-    void sup
-      .stop(id, { message: body.message, kick: body.kick, timeoutSec: body.timeoutSec })
-      .then((result) =>
-        audit({ ip: req.ip, action: 'instance.stop', target: id, detail: { graceful: result.graceful, async: true } }),
-      )
-      .catch((err) => I.saveState(id, { lastError: String(err), phase: `停止异常：${String(err)}` }));
-    res.status(202).json({ ok: true, accepted: true, message: '已开始关闭，稍等几秒看状态' });
+    res.status(202).json({ ok: true, accepted: true, jobId: job.id, status: getJob(job.id).status, message: '已提交停止操作' });
   });
 
   app.post('/api/instances/:id/restart', async (req, res) => {
     const id = requireId(req.params.id);
-    const result = await sup.restart(id);
-    res.json(result);
+    const job = await enqueueActionTask({ instanceId: id, action: 'restart' });
+    audit({ ip: req.ip, action: 'instance.restart', target: id, detail: { jobId: job.id } });
+    res.status(202).json({ ok: true, accepted: true, jobId: job.id, status: getJob(job.id).status });
   });
 
   app.get('/api/instances/:id/ports', async (req, res) => {
@@ -358,7 +372,7 @@ export function registerInstanceRoutes(app: Express): void {
       instanceId: id,
       stages: [{ key: 'install', label: '下载并安装服务端', status: 'pending' }],
     });
-    void (async () => {
+    enqueueJob(job.id, async () => {
       try {
         setStage(job.id, 'install', 'running');
         await installServer(id, (line) => logJob(job.id, line), { force: true });
@@ -368,7 +382,7 @@ export function registerInstanceRoutes(app: Express): void {
         logJob(job.id, `失败：${String(err)}`);
         finishJob(job.id, String(err));
       }
-    })();
+    });
     res.json({ ok: true, jobId: job.id });
   });
 
@@ -397,10 +411,11 @@ export function registerInstanceRoutes(app: Express): void {
         { key: 'frp', label: '映射远端端口', status: 'pending' },
       ],
     });
-    void (async () => {
+    enqueueJob(job.id, async () => {
       try {
         setStage(job.id, 'meta', 'running');
         const created = await copyInstance(id, body as never, (line) => logJob(job.id, line));
+        updateJob(job.id, { instanceId: created.id, title: `复制「${I.getConfig(id).name}」为「${created.name}」` });
         setStage(job.id, 'meta', 'done');
         setStage(job.id, 'copy', 'done');
         setStage(job.id, 'skin', 'running');
@@ -419,7 +434,7 @@ export function registerInstanceRoutes(app: Express): void {
         logJob(job.id, `失败：${String(err)}`);
         finishJob(job.id, String(err));
       }
-    })();
+    });
     res.json({ ok: true, jobId: job.id });
   });
 

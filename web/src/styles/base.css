@@ -113,7 +113,7 @@
   --scrollbar-thumb-hover: rgba(70, 112, 152, 0.48);
   --player-skin-bg: linear-gradient(160deg, rgba(255, 255, 255, 0.6), rgba(226, 239, 250, 0.45));
   --skeleton-base: #dfe3e8;
-  --skeleton-highlight: #f6f7f8;
+  --skeleton-highlight: #edf0f3;
 
   --sh-1: 0 6px 18px rgba(52, 105, 160, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.55);
   --sh-2: 0 16px 40px rgba(52, 105, 160, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.6);
@@ -200,7 +200,7 @@
   --scrollbar-thumb-hover: rgba(230, 213, 184, 0.38);
   --player-skin-bg: linear-gradient(160deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03));
   --skeleton-base: #5b5358;
-  --skeleton-highlight: #797176;
+  --skeleton-highlight: #6a6267;
 
   --sh-1: 0 8px 22px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.07);
   --sh-2: 0 20px 46px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.09);
@@ -816,17 +816,17 @@ a.nav-item:hover { text-decoration: none; }
 .btn:active { transform: translateY(0); box-shadow: none; }
 .btn:disabled, .btn[disabled] { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
-.btn-primary {
-  border-color: transparent;
-  background: var(--accent-strong);
-  color: var(--accent-contrast);
-  box-shadow: 0 6px 18px var(--accent-glow);
+.btn-primary,
+.btn-soft {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-text-hover);
 }
-.btn-primary:hover {
-  border-color: transparent;
-  background: var(--accent-strong-hover);
-  color: var(--accent-contrast);
-  box-shadow: 0 10px 26px var(--accent-glow);
+.btn-primary:hover,
+.btn-soft:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-soft);
+  color: var(--accent-text-hover);
 }
 
 .btn-danger {
@@ -845,9 +845,6 @@ a.nav-item:hover { text-decoration: none; }
 
 .btn-ghost { border-color: transparent; background: transparent; color: var(--text-2); }
 .btn-ghost:hover { border-color: var(--border); background: var(--surface-2); color: var(--text); }
-
-.btn-soft { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-text-hover); }
-.btn-soft:hover { border-color: var(--accent-strong); background: var(--accent-soft); color: var(--accent-text-hover); }
 
 .btn-sm { height: 29px; padding: 0 10px; font-size: 12.5px; border-radius: var(--r-xs); }
 .btn-lg { height: 40px; padding: 0 18px; font-size: 14.5px; border-radius: 11px; }
@@ -1418,14 +1415,14 @@ a.nav-item:hover { text-decoration: none; }
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
-.spinner-on-accent { border-color: color-mix(in srgb, var(--accent-contrast) 35%, transparent); border-top-color: var(--accent-contrast); }
+.spinner-on-accent { border-color: color-mix(in srgb, var(--accent-strong) 35%, transparent); border-top-color: var(--accent-strong); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .skeleton {
   border-radius: var(--r-xs);
   background: linear-gradient(100deg, var(--skeleton-base) 25%, var(--skeleton-highlight) 48%, var(--skeleton-base) 72%);
-  background-size: 220% 100%;
-  animation: sk 1.35s ease-in-out infinite;
+  background-size: 180% 100%;
+  animation: sk 2.4s ease-in-out infinite;
 }
 @keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 @media (prefers-reduced-motion: reduce) {

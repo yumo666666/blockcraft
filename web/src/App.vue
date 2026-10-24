@@ -12,7 +12,7 @@ import RoutePageSkeleton from './components/RoutePageSkeleton.vue';
 import Modal from './components/Modal.vue';
 import { backgroundJobId, setBackgroundJob } from './lib/backgroundJob.ts';
 import { useWorlds } from './lib/worlds.ts';
-import { clearBrowserSnapshots } from './lib/browserSnapshot.ts';
+import { clearBrowserSnapshots, readBrowserSnapshot } from './lib/browserSnapshot.ts';
 import { STATUS_TEXT, statusClass } from './lib/format.ts';
 import type { InstanceSummary, Job } from './lib/types.ts';
 
@@ -21,6 +21,19 @@ const route = useRoute();
 type PendingNavigation = { fullPath: string; path: string; name: string | symbol | null | undefined; params: Record<string, unknown> };
 const pendingNavigation = shallowRef<PendingNavigation | null>(null);
 const navigationTarget = computed(() => pendingNavigation.value ?? route);
+const visitedRoutes = new Set<string>();
+const navigationSkeletonReady = ref(false);
+let navigationSkeletonTimer: number | null = null;
+const routeKey = (target: Pick<PendingNavigation, 'name' | 'path'>) => `${String(target.name ?? '')}:${target.path}`;
+const showNavigationSkeleton = computed(() => {
+  const target = pendingNavigation.value;
+  if (!target || !navigationSkeletonReady.value || visitedRoutes.has(routeKey(target))) return false;
+  if (target.name === 'tasks') {
+    const cached = readBrowserSnapshot<{ scheduled?: unknown; records?: unknown }>('tasks');
+    if (Array.isArray(cached?.scheduled) && Array.isArray(cached?.records)) return false;
+  }
+  return true;
+});
 const ready = ref(false);
 const authed = ref(false);
 const token = ref('');
@@ -28,6 +41,7 @@ const loginBusy = ref(false);
 const loginError = ref('');
 const addresses = ref<{ label: string; value: string; kind: string }[]>([]);
 const publicAddr = ref<string | null>(null);
+const queueSummary = ref({ running: 0, queued: 0, limit: 5 });
 const showBackgroundJob = ref(false);
 const backgroundJob = ref<Job | null>(null);
 const appVersion = ref('');
@@ -35,14 +49,31 @@ const showAbout = ref(false);
 const mainEl = ref<HTMLElement | null>(null);
 
 router.beforeEach((to) => {
+  if (navigationSkeletonTimer !== null) window.clearTimeout(navigationSkeletonTimer);
+  navigationSkeletonReady.value = false;
   pendingNavigation.value = { fullPath: to.fullPath, path: to.path, name: to.name, params: to.params };
+  navigationSkeletonTimer = window.setTimeout(() => {
+    if (pendingNavigation.value?.fullPath === to.fullPath) navigationSkeletonReady.value = true;
+  }, 160);
   if (mainEl.value) mainEl.value.scrollTop = 0;
 });
 router.afterEach((to, _from, failure) => {
-  if (pendingNavigation.value?.fullPath === to.fullPath && (!failure || router.currentRoute.value.fullPath === to.fullPath)) pendingNavigation.value = null;
+  if (pendingNavigation.value?.fullPath !== to.fullPath) return;
+  if (navigationSkeletonTimer !== null) window.clearTimeout(navigationSkeletonTimer);
+  navigationSkeletonTimer = null;
+  if (!failure || router.currentRoute.value.fullPath === to.fullPath) {
+    visitedRoutes.add(routeKey({ name: to.name, path: to.path }));
+  }
+  navigationSkeletonReady.value = false;
+  pendingNavigation.value = null;
 });
 router.onError((_error, to) => {
-  if (pendingNavigation.value?.fullPath === to.fullPath) pendingNavigation.value = null;
+  if (pendingNavigation.value?.fullPath === to.fullPath) {
+    if (navigationSkeletonTimer !== null) window.clearTimeout(navigationSkeletonTimer);
+    navigationSkeletonTimer = null;
+    navigationSkeletonReady.value = false;
+    pendingNavigation.value = null;
+  }
 });
 
 const SIDEBAR_KEY = 'blockcraft.sidebar.collapsed';
@@ -52,6 +83,7 @@ const mobileLayoutActive = ref(false);
 const sidebarEl = ref<HTMLElement | null>(null);
 const mobileNavTrigger = ref<HTMLButtonElement | null>(null);
 let mobileLayoutQuery: MediaQueryList | null = null;
+let queueSummaryTimer: number | null = null;
 
 function closeMobileNav(restoreFocus = true): void {
   if (!mobileNavOpen.value) return;
@@ -156,7 +188,7 @@ const navGroups = computed(() => [
     label: '工作台',
     items: [
       { label: '总览', to: '/', icon: 'overview', active: navigationTarget.value.name === 'overview' },
-      { label: '事件日志', to: '/events', icon: 'events', active: navigationTarget.value.name === 'events' },
+      { label: '任务中心', to: '/tasks', icon: 'clock', active: navigationTarget.value.name === 'tasks' },
       { label: '文件管理', to: '/files', icon: 'folder', active: navigationTarget.value.name === 'files' },
       { label: '相关网站', to: '/new', icon: 'globe', active: navigationTarget.value.name === 'websites' },
     ],
@@ -214,8 +246,8 @@ const crumbTitle = computed(() => {
   switch (navigationTarget.value.name) {
     case 'overview':
       return '总览';
-    case 'events':
-      return '事件日志';
+    case 'tasks':
+      return '任务中心';
     case 'websites':
       return '相关网站';
     case 'wizard-create':
@@ -244,7 +276,7 @@ const crumbTitle = computed(() => {
 });
 
 const crumbSection = computed(() => {
-  if (['overview', 'events', 'websites', 'files'].includes(String(navigationTarget.value.name))) return '工作台';
+  if (['overview', 'tasks', 'websites', 'files'].includes(String(navigationTarget.value.name))) return '工作台';
   return currentWorldId.value ? '世界' : '控制台';
 });
 const showWorldCrumb = computed(() => navigationTarget.value.name !== 'overview' && Boolean(currentWorldId.value));
@@ -252,6 +284,7 @@ const showWorldCrumb = computed(() => navigationTarget.value.name !== 'overview'
 const backgroundJobLabel = computed(() => {
   if (!backgroundJobId.value) return '';
   if (!backgroundJob.value) return '后台任务';
+  if (backgroundJob.value.status === 'queued') return '任务排队中';
   return backgroundJob.value.status === 'running' ? '任务进行中' : '查看任务结果';
 });
 
@@ -267,6 +300,8 @@ watch(
       releaseWorlds();
       resetWorlds();
     }
+    if (loggedIn) startQueueSummaryPolling();
+    else stopQueueSummaryPolling();
   },
   { immediate: true },
 );
@@ -305,6 +340,26 @@ async function loadShell() {
     '/api/panel',
   );
   addresses.value = res.addresses;
+}
+
+async function refreshQueueSummary(): Promise<void> {
+  try {
+    queueSummary.value = await api.get<{ running: number; queued: number; limit: number }>('/api/jobs/summary');
+  } catch {
+    // Preserve the last known queue count while the panel reconnects.
+  }
+}
+
+function startQueueSummaryPolling(): void {
+  if (queueSummaryTimer !== null) return;
+  void refreshQueueSummary();
+  queueSummaryTimer = window.setInterval(() => void refreshQueueSummary(), 5000);
+}
+
+function stopQueueSummaryPolling(): void {
+  if (queueSummaryTimer !== null) window.clearInterval(queueSummaryTimer);
+  queueSummaryTimer = null;
+  queueSummary.value = { running: 0, queued: 0, limit: 5 };
 }
 
 async function loadVersion() {
@@ -363,8 +418,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (navigationSkeletonTimer !== null) window.clearTimeout(navigationSkeletonTimer);
   mobileLayoutQuery?.removeEventListener('change', updateMobileLayout);
   document.removeEventListener('keydown', onMobileNavKeydown);
+  stopQueueSummaryPolling();
 });
 
 async function refreshPublic() {
@@ -614,10 +671,22 @@ onMounted(refreshPublic);
 
         <div class="topbar-right">
           <button v-if="backgroundJobId" type="button" class="topbar-chip job-chip" @click="showBackgroundJob = true">
-            <span v-if="backgroundJob?.status === 'running'" class="spinner" style="width: 12px; height: 12px" />
+            <span v-if="backgroundJob?.status === 'running' || backgroundJob?.status === 'queued'" class="spinner" style="width: 12px; height: 12px" />
             {{ backgroundJobLabel }}
           </button>
           <span v-if="publicAddr" class="badge badge-accent hide-sm" :title="publicAddr">公网已映射</span>
+          <RouterLink
+            to="/tasks"
+            class="topbar-chip queue-chip"
+            :title="`当前任务 ${queueSummary.running}/${queueSummary.limit}，排队 ${queueSummary.queued} 项。打开任务中心`"
+            :aria-label="`当前任务 ${queueSummary.running}/${queueSummary.limit}，排队 ${queueSummary.queued} 项。打开任务中心`"
+          >
+            <Icon class="queue-chip-icon" name="clock" :size="14" />
+            <span class="queue-chip-label">当前任务</span>
+            <strong>{{ queueSummary.running }}/{{ queueSummary.limit }}</strong>
+            <span class="queue-chip-separator" aria-hidden="true">·</span>
+            <span>排队 {{ queueSummary.queued }}</span>
+          </RouterLink>
           <span v-if="addresses[0]" class="topbar-chip addr-chip mono">{{ addresses[0].value }}</span>
           <ThemeSwitcher />
           <button type="button" class="icon-btn" title="退出登录" aria-label="退出登录" @click="doLogout">
@@ -626,13 +695,22 @@ onMounted(refreshPublic);
         </div>
       </header>
 
-      <RoutePageSkeleton v-if="pendingNavigation" :name="String(navigationTarget.name ?? '')" :label="crumbTitle" />
-      <router-view v-else v-slot="{ Component }">
-        <!-- World pages own polling and SSE subscriptions; unmount them on route exit so a deleted world cannot keep polling in the background. -->
-        <KeepAlive :include="['Overview', 'Wizard', 'MinecraftSites', 'Events', 'Settings']" :max="16">
-          <component :is="Component" />
-        </KeepAlive>
-      </router-view>
+      <div class="route-stage">
+        <router-view v-slot="{ Component }">
+          <!-- World pages own polling and SSE subscriptions; unmount them on route exit so a deleted world cannot keep polling in the background. -->
+          <KeepAlive :include="['Overview', 'Wizard', 'MinecraftSites', 'Tasks', 'Settings']" :max="16">
+            <component :is="Component" />
+          </KeepAlive>
+        </router-view>
+        <Transition name="route-mask">
+          <RoutePageSkeleton
+            v-if="showNavigationSkeleton"
+            class="route-transition-mask"
+            :name="String(navigationTarget.name ?? '')"
+            :label="crumbTitle"
+          />
+        </Transition>
+      </div>
 
       <ToastHost />
       <JobProgress
@@ -677,6 +755,12 @@ onMounted(refreshPublic);
 </template>
 
 <style scoped>
+.route-stage { position: relative; flex: 1; min-width: 0; min-height: calc(100dvh - var(--topbar-h)); }
+.route-transition-mask { position: absolute; inset: 0; z-index: 20; overflow-y: auto; background: var(--bg); }
+.route-mask-enter-active, .route-mask-leave-active { transition: opacity 140ms ease; }
+.route-mask-enter-from, .route-mask-leave-to { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .route-mask-enter-active, .route-mask-leave-active { transition: none; } }
+
 .login-lede {
   margin: 0 0 20px;
   color: var(--text-2);
@@ -695,6 +779,9 @@ onMounted(refreshPublic);
 
 .job-chip { cursor: pointer; color: var(--text); }
 .job-chip:hover { border-color: var(--border-strong); background: var(--surface-3); }
+.queue-chip { color: var(--text); text-decoration: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.queue-chip strong { font-weight: 700; }
+.queue-chip:hover { border-color: var(--border-strong); background: var(--surface-3); text-decoration: none; }
 
 .about-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .about-brand strong { display: block; font-size: 15px; }
@@ -716,4 +803,9 @@ onMounted(refreshPublic);
 }
 .about-row:hover { border-color: var(--border-strong); background: var(--surface-3); color: var(--text); text-decoration: none; }
 .about-credit { margin-top: 14px; color: var(--text-3); font-size: 11px; line-height: 1.6; }
+
+@media (max-width: 720px) {
+  .queue-chip { gap: 4px; padding-inline: 7px; font-size: 10.5px; }
+  .queue-chip-icon, .queue-chip-label { display: none; }
+}
 </style>

@@ -110,22 +110,6 @@ export interface ConsoleLine {
   text: string;
 }
 
-export interface ScheduleInfo {
-  schedule: {
-    start: { enabled: boolean; times: string[]; days: number[] };
-    stop: { enabled: boolean; times: string[]; days: number[] };
-    warnMinutes: number;
-    warnText: string;
-    warnCommand: string;
-    skipIfPlayers: boolean;
-    graceMinutes: number;
-  };
-  describe: string;
-  nextStart: number | null;
-  nextStop: number | null;
-  pendingStop: { since: number; deadline: number; at: string } | null;
-}
-
 export interface BackupEntry {
   file: string;
   created: number;
@@ -152,6 +136,9 @@ export interface Job {
   error: string | null;
   startedAt: number;
   endedAt: number | null;
+  createdAt?: number;
+  source?: 'operation' | 'scheduled' | 'system';
+  scheduledTaskId?: string | null;
 }
 
 export interface ModInfo {

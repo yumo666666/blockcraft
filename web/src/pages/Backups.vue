@@ -199,6 +199,7 @@ function restoreCache(): boolean {
 
 // Hydrate before the first render so a cached empty list is distinguishable from an unqueried page.
 restoreCache();
+loading.value = !hasSnapshot.value;
 
 function resetForWorld(): void {
   detail.value = null;
@@ -208,6 +209,7 @@ function resetForWorld(): void {
   running.value = false;
   hasSnapshot.value = false;
   restoreCache();
+  loading.value = !hasSnapshot.value;
 }
 
 async function loadDetail(): Promise<void> {

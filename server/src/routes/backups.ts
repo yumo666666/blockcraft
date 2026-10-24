@@ -4,7 +4,8 @@ import { audit } from '../core/logger.ts';
 import * as I from '../services/instanceService.ts';
 import * as sup from '../services/supervisor.ts';
 import * as B from '../services/backupService.ts';
-import { getJob, requestJobCancellation } from '../services/jobService.ts';
+import { createJob, enqueueJob, finishJob, getJob, logJob, requestJobCancellation, setStage, waitForJob } from '../services/jobService.ts';
+import { enqueueActionTask } from '../services/taskRunner.ts';
 
 export function registerBackupRoutes(app: Express): void {
   app.get('/api/instances/:id/backups', (req, res) => {
@@ -59,11 +60,27 @@ export function registerBackupRoutes(app: Express): void {
       });
       return;
     }
-    const entry = await B.importBackup(id, originalName, req, {
-      name: cfg.name,
-      mc: cfg.mc,
-      loader: cfg.loader,
+    const importResult: { entry: Awaited<ReturnType<typeof B.importBackup>> | null } = { entry: null };
+    const job = await createJob({
+      kind: 'backup-import',
+      title: `导入备份到「${cfg.name}」`,
+      instanceId: id,
+      stages: [{ key: 'upload', label: '接收并校验备份', status: 'pending' }],
     });
+    enqueueJob(job.id, async () => {
+      setStage(job.id, 'upload', 'running');
+      try {
+        importResult.entry = await B.importBackup(id, originalName, req, { name: cfg.name, mc: cfg.mc, loader: cfg.loader });
+        logJob(job.id, `备份已导入：${importResult.entry.file}`);
+        setStage(job.id, 'upload', 'done');
+        finishJob(job.id);
+      } catch (err) {
+        finishJob(job.id, String(err));
+      }
+    });
+    const importedJob = await waitForJob(job.id);
+    if (importedJob.status !== 'done' || !importResult.entry) throw bad(importedJob.error ?? '备份导入失败');
+    const entry = importResult.entry;
     audit({ ip: req.ip, action: 'backup.upload', target: `${id}/${entry.file}`, detail: { bytes: entry.bytes, regions: entry.regions } });
     res.json({ ok: true, entry });
   });
@@ -71,22 +88,16 @@ export function registerBackupRoutes(app: Express): void {
   app.post('/api/instances/:id/backups', async (req, res) => {
     const id = req.params.id;
     const cfg = I.getConfig(id);
-    try {
-      const entry = await B.createBackup({
-        instanceId: id,
-        name: cfg.name,
-        mc: cfg.mc,
-        loader: cfg.loader,
-        levelName: cfg.levelName,
-        policy: cfg.backup,
-        isRunning: () => sup.isRunning(id),
-      }, 'manual');
-      audit({ ip: req.ip, action: 'backup.create', target: id, detail: { file: entry.file } });
-      res.json({ ok: true, entry });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(425).json({ error: { code: 'NOT_READY', message: msg } });
+    const job = await enqueueActionTask({ instanceId: id, action: 'backup' });
+    const completed = await waitForJob(job.id);
+    if (completed.status !== 'done') {
+      res.status(425).json({ error: { code: 'NOT_READY', message: completed.error ?? '备份失败' } });
+      return;
     }
+    const entry = B.listBackups(id)[0];
+    if (!entry) throw notFound('备份任务已结束，但没有找到生成的备份文件');
+    audit({ ip: req.ip, action: 'backup.create', target: id, detail: { file: entry.file, jobId: job.id } });
+    res.json({ ok: true, entry, jobId: job.id });
   });
 
   app.delete('/api/instances/:id/backups/:file', (req, res) => {
@@ -105,22 +116,42 @@ export function registerBackupRoutes(app: Express): void {
     const entry = B.listBackups(id).find((b) => b.file === file);
     if (!entry) throw notFound('备份不存在');
     const stages: string[] = [];
-    const result = await B.rollback(id, file, {
-      levelName: cfg.levelName,
-      stop: async () => {
-        await sup.stop(id, { message: '服务器正在回档，即将关闭' });
-      },
-      start: async () => {
-        const r = await sup.start(id, { wait: true });
-        if (!r.ok) throw new Error(r.error ?? '回退后启动失败');
-      },
-      onStage: (stage) => stages.push(stage),
+    const rollbackOutput: { value: Awaited<ReturnType<typeof B.rollback>> | null } = { value: null };
+    const job = await createJob({
+      kind: 'rollback',
+      title: `回退「${cfg.name}」到 ${file}`,
+      instanceId: id,
+      stages: [{ key: 'rollback', label: '停止、恢复并校验世界', status: 'pending' }],
     });
-    audit({ ip: req.ip, action: 'backup.rollback', target: `${id}/${file}`, detail: result });
-    res.json({ ok: true, ...result, stages });
+    enqueueJob(job.id, async () => {
+      setStage(job.id, 'rollback', 'running');
+      try {
+        rollbackOutput.value = await B.rollback(id, file, {
+          levelName: cfg.levelName,
+          stop: async () => { await sup.stop(id, { message: '服务器正在回档，即将关闭' }); },
+          start: async () => {
+            const started = await sup.start(id, { wait: true });
+            if (!started.ok) throw new Error(started.error ?? '回退后启动失败');
+          },
+          onStage: (key, label, detail) => {
+            const line = `${label}${detail ? `：${detail}` : ''}`;
+            stages.push(line);
+            logJob(job.id, `[${key}] ${line}`);
+          },
+        });
+        setStage(job.id, 'rollback', 'done');
+        finishJob(job.id);
+      } catch (err) {
+        finishJob(job.id, String(err));
+      }
+    });
+    const completed = await waitForJob(job.id);
+    if (completed.status !== 'done' || !rollbackOutput.value) throw bad(completed.error ?? '备份回退失败');
+    audit({ ip: req.ip, action: 'backup.rollback', target: `${id}/${file}`, detail: { ...rollbackOutput.value, jobId: job.id } });
+    res.json({ ok: true, ...rollbackOutput.value, stages, jobId: job.id });
   });
 
-  app.post('/api/instances/:id/backups/cleanup', (req, res) => {
+  app.post('/api/instances/:id/backups/cleanup', async (req, res) => {
     const id = req.params.id;
     const cfg = I.getConfig(id);
     const dryRun = Boolean((req.body as { dryRun?: boolean })?.dryRun);
@@ -129,9 +160,30 @@ export function registerBackupRoutes(app: Express): void {
       res.json({ ok: true, plan });
       return;
     }
-    void B.runCleanup(id, cfg.backup)
-      .then((r) => res.json({ ok: true, result: r }))
-      .catch((err) => res.status(500).json({ error: { code: 'INTERNAL', message: String(err) } }));
+    const output: { value: Awaited<ReturnType<typeof B.runCleanup>> | null } = { value: null };
+    const job = await createJob({
+      kind: 'backup',
+      title: `清理「${cfg.name}」的备份`,
+      instanceId: id,
+      stages: [{ key: 'cleanup', label: '按保留策略清理备份', status: 'pending' }],
+    });
+    enqueueJob(job.id, async () => {
+      setStage(job.id, 'cleanup', 'running');
+      try {
+        output.value = await B.runCleanup(id, cfg.backup);
+        logJob(job.id, `清理完成：删除 ${output.value.removed.length} 份备份，释放 ${output.value.freed} 字节`);
+        setStage(job.id, 'cleanup', 'done');
+        finishJob(job.id);
+      } catch (err) {
+        finishJob(job.id, String(err));
+      }
+    });
+    const completed = await waitForJob(job.id);
+    if (completed.status !== 'done' || !output.value) {
+      res.status(500).json({ error: { code: 'INTERNAL', message: completed.error ?? '备份清理失败' } });
+      return;
+    }
+    res.json({ ok: true, result: output.value, jobId: job.id });
   });
 
   app.get('/api/jobs', (_req, res) => {
@@ -139,7 +191,12 @@ export function registerBackupRoutes(app: Express): void {
       jobs: m.listJobs(),
       runningJobs: m.listRunningJobs(),
       pendingSetups: m.pendingJobSetups(),
+      maxConcurrent: m.MAX_CONCURRENT_JOBS,
     }));
+  });
+
+  app.get('/api/jobs/summary', (_req, res) => {
+    import('../services/jobService.ts').then((m) => res.json(m.jobQueueSummary()));
   });
 
   app.get('/api/jobs/:jobId', (req, res) => {

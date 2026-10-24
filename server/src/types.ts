@@ -17,29 +17,6 @@ export interface Gamerules {
   [key: string]: boolean;
 }
 
-export interface ScheduleRule {
-  enabled: boolean;
-  /** `HH:MM` 形式，多个时间点 */
-  times: string[];
-  /** 1=周一 … 7=周日；空数组 = 每天 */
-  days: number[];
-}
-
-export interface ScheduleConfig {
-  start: ScheduleRule;
-  stop: ScheduleRule;
-  /** 停服前多少分钟公告 */
-  warnMinutes: number;
-  /** 公告文案，支持 {n} 占位 */
-  warnText: string;
-  /** 自定义公告命令（留空则用 say） */
-  warnCommand: string;
-  /** 到点有玩家在线就等最后一人下线 */
-  skipIfPlayers: boolean;
-  /** 最多等多久（分钟），0 = 一直等 */
-  graceMinutes: number;
-}
-
 export interface BackupPolicy {
   autoEnabled: boolean;
   intervalMin: number;
@@ -100,7 +77,6 @@ export interface InstanceConfig {
   gamerules: Gamerules;
   frp: FrpBinding;
   backup: BackupPolicy;
-  schedule: ScheduleConfig;
   created: number;
   createdAt: number;
   createdFrom: { type: 'new' | 'copy' | 'import' | 'adopt'; source?: string } | null;
@@ -123,8 +99,6 @@ export interface InstanceState {
   restarts: number;
   intentionalStop: boolean;
   schedule: { lastSave: number; lastBackup: number };
-  fired: Record<string, string>;
-  pendingStop: { since: number; deadline: number; at: string } | null;
 }
 
 export interface InstanceSummary {
@@ -250,16 +224,42 @@ export interface PanelConfig {
 
 export interface Job {
   id: string;
-  kind: 'create' | 'import' | 'copy' | 'backup' | 'rollback' | 'install';
+  kind: 'create' | 'import' | 'world-import' | 'pack-import' | 'backup-import' | 'copy' | 'backup' | 'rollback' | 'install' | 'start' | 'stop' | 'save' | 'broadcast' | 'restart' | 'command' | 'panel';
   title: string;
   instanceId: string | null;
-  status: 'running' | 'cancelling' | 'cancelled' | 'done' | 'failed' | 'interrupted';
+  status: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'done' | 'failed' | 'skipped' | 'interrupted';
+  source?: 'operation' | 'scheduled' | 'system';
+  scheduledTaskId?: string | null;
+  createdAt?: number;
   stages: { key: string; label: string; status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled' }[];
   lines: string[];
   progress: number;
   error: string | null;
   startedAt: number;
   endedAt: number | null;
+}
+
+export type ScheduledAction = 'start' | 'stop' | 'save' | 'broadcast' | 'restart' | 'backup' | 'command';
+
+export interface ScheduledTask {
+  id: string;
+  name: string;
+  instanceId: string;
+  action: ScheduledAction;
+  message: string;
+  command: string;
+  recurrence: {
+    mode: 'daily' | 'weekdays' | 'once' | 'interval';
+    time: string;
+    date: string;
+    intervalDays: number;
+    weekdays?: number[];
+  };
+  announcement: { enabled: boolean; minutes: number; text: string };
+  enabled: boolean;
+  createdAt: number;
+  lastOccurrence: string | null;
+  lastAnnouncementOccurrence: string | null;
 }
 
 export interface BackupEntry {

@@ -34,7 +34,7 @@ const jobId = ref<string | null>(null);
 const cachedVersions = readBrowserSnapshot<{ id: string; type: string }[]>('wizard:minecraft-versions');
 const versions = ref<{ id: string; type: string }[]>(cachedVersions ?? []);
 const versionsLoaded = ref(cachedVersions !== null);
-const loadingMinecraftVersions = ref(false);
+const loadingMinecraftVersions = ref(!versionsLoaded.value);
 const form = ref({
   name: '',
   mc: '1.20.1',
@@ -62,7 +62,7 @@ const form = ref({
 const cachedLoaders = readBrowserSnapshot<{ mc: string; loaders: LoaderAvailability[] }>(`wizard:loaders:${form.value.mc}`);
 const loaders = ref<LoaderAvailability[]>(cachedLoaders?.loaders ?? []);
 const loaderSnapshotMc = ref(cachedLoaders?.mc ?? '');
-const loadingVersions = ref(false);
+const loadingVersions = ref(loaderSnapshotMc.value !== form.value.mc);
 let versionsRequest = 0;
 let loadersRequest = 0;
 
@@ -71,7 +71,7 @@ type PackInfo = { id: string; file: string; bytes: number; uploadedAt: number; f
 const cachedPacks = readBrowserSnapshot<PackInfo[]>('wizard:packs');
 const packs = ref<PackInfo[]>(cachedPacks ?? []);
 const packsLoaded = ref(cachedPacks !== null);
-const packsLoading = ref(false);
+const packsLoading = ref(!packsLoaded.value);
 const cachedCurseForgeKeyConfigured = readBrowserSnapshot<boolean>('wizard:curseforge-key-configured');
 const curseForgeKeyConfigured = ref(cachedCurseForgeKeyConfigured ?? false);
 const hasImportSettingsSnapshot = ref(cachedCurseForgeKeyConfigured !== null);

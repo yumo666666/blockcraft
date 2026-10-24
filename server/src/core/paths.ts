@@ -32,6 +32,7 @@ export const MODS_CACHE_FILE = path.join(DATA_DIR, 'mods-cache.json');
 export const PLAYERS_CACHE_FILE = path.join(DATA_DIR, 'players-cache.json');
 export const SKIN_BINDINGS_FILE = path.join(DATA_DIR, 'skin-bindings.json');
 export const JOBS_DIR = path.join(DATA_DIR, 'jobs');
+export const SCHEDULED_TASKS_FILE = path.join(DATA_DIR, 'scheduled-tasks.json');
 export const AUDIT_FILE = path.join(LOG_DIR, 'audit.jsonl');
 
 export function instanceDir(id: string): string {

@@ -381,7 +381,7 @@ export async function writeWorldArchive(id: string, output: Writable): Promise<v
 }
 
 /** Stream upload to a private staging area, validate/extract it and register a stopped instance. */
-export async function importWorldArchive(originalName: string, input: AsyncIterable<Uint8Array>): Promise<InstanceConfig> {
+export async function importWorldArchive(originalName: string, input: AsyncIterable<Uint8Array>, onLog?: (line: string) => void): Promise<InstanceConfig> {
   const uploadedName = archiveName(originalName);
   const importRoot = path.join(INSTANCES_DIR, `.import-${crypto.randomUUID()}`);
   const uploadDir = path.join(STORE_DIR, 'world-imports');
@@ -393,7 +393,9 @@ export async function importWorldArchive(originalName: string, input: AsyncItera
   let tooLarge = false;
   let created: InstanceConfig | null = null;
   try {
+    onLog?.(`开始接收世界压缩包：${uploadedName}`);
     handle = await fs.promises.open(uploadFile, 'wx');
+    let nextLogAt = 512 * 1024 * 1024;
     for await (const value of input) {
       const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
       bytes += chunk.length;
@@ -402,11 +404,16 @@ export async function importWorldArchive(originalName: string, input: AsyncItera
         continue;
       }
       await handle.writeFile(chunk);
+      if (bytes >= nextLogAt) {
+        onLog?.(`已接收 ${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`);
+        nextLogAt += 512 * 1024 * 1024;
+      }
     }
     await handle.close();
     handle = undefined;
     if (tooLarge) throw payloadTooLarge('世界 ZIP 超过 20 GB 上传限制', 'World ZIP exceeds the 20 GB upload limit.');
     if (bytes < 22) throw bad('上传的文件不是有效 ZIP 文件');
+    onLog?.(`上传完成：${(bytes / 1024 / 1024).toFixed(1)} MB，开始校验压缩包`);
 
     let inspected: { entries: ArchiveEntryInfo[]; prefix: string; config: ArchiveConfig };
     try {
@@ -414,6 +421,7 @@ export async function importWorldArchive(originalName: string, input: AsyncItera
     } catch (err) {
       throw bad(`世界 ZIP 校验失败：${err instanceof Error ? err.message : String(err)}`);
     }
+    onLog?.(`校验通过：${inspected.entries.length} 个条目，开始解压世界文件`);
     await extractArchive(uploadFile, importRoot, inspected.entries);
     const id = uniqueInstanceId(inspected.config.id, inspected.config.name);
     const loader = inspected.config.loader;
@@ -428,6 +436,7 @@ export async function importWorldArchive(originalName: string, input: AsyncItera
       createdFrom: { type: 'import', source: inspected.config.id },
       importedFrom: { file: uploadedName, format: 'blockcraft-instance' },
     });
+    onLog?.(`世界文件已解压并登记：${created.name}（${created.id}）`);
 
     const newRoot = instanceDir(created.id);
     const rootItems = await fs.promises.readdir(importRoot, { withFileTypes: true });

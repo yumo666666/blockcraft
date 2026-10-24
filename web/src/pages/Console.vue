@@ -3,8 +3,8 @@ import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } f
 import { useRouter } from 'vue-router';
 import { api, subscribe } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
-import { fmtDuration, fmtTime, STATUS_TEXT, statusClass } from '../lib/format.ts';
-import type { ConsoleLine, InstanceDetail, InstanceSummary, ScheduleInfo } from '../lib/types.ts';
+import { fmtDuration, STATUS_TEXT, statusClass } from '../lib/format.ts';
+import type { ConsoleLine, InstanceDetail, InstanceSummary } from '../lib/types.ts';
 import { applySuggestion, suggest, type Suggestion } from '../lib/commands.ts';
 import { ANNOUNCE_COLORS, DEFAULT_ANNOUNCE_COLOR, buildAnnounce, previewAnnounce } from '../lib/announce.ts';
 import { readBrowserSnapshot, writeBrowserSnapshot } from '../lib/browserSnapshot.ts';
@@ -19,7 +19,6 @@ const router = useRouter();
 const MAX_LINES = 200;
 /** 重连等待时间 */
 const RETRY_MS = 1500;
-const WEEK = ['一', '二', '三', '四', '五', '六', '日'];
 const RUNNING_STATUS = ['running', 'starting', 'stopping', 'stuck'];
 
 interface Shortcut {
@@ -36,7 +35,6 @@ interface ConsoleSnapshot {
   lines: ConsoleLine[];
   logsLoaded: boolean;
   shortcuts: Shortcut[];
-  schedule: ScheduleInfo | null;
   onlinePlayers: string[];
   serverCommands: string[];
 }
@@ -192,13 +190,6 @@ const announceHex = computed(
   () => ANNOUNCE_COLORS.find((c) => c.id === announceColor.value)?.hex ?? '#ffffff',
 );
 
-const sched = ref<ScheduleInfo | null>(cachedConsole?.schedule ?? null);
-const scheduleLoading = ref(!sched.value);
-const startTimesText = ref('');
-const stopTimesText = ref('');
-const savingSchedule = ref(false);
-const testingWarn = ref(false);
-
 let offStream: (() => void) | null = null;
 let retryTimer: number | null = null;
 let pollTimer: number | null = null;
@@ -212,7 +203,6 @@ function persistConsoleSnapshot(id = props.id): void {
     lines: lines.value.slice(-MAX_LINES),
     logsLoaded: hasConsoleSnapshot.value,
     shortcuts: shortcuts.value,
-    schedule: sched.value,
     onlinePlayers: onlinePlayers.value,
     serverCommands: serverCommands.value,
   });
@@ -232,16 +222,9 @@ function restoreConsoleSnapshot(id: string): void {
   lines.value = cached?.lines ?? [];
   hasConsoleSnapshot.value = Boolean(cached?.logsLoaded);
   shortcuts.value = cached?.shortcuts ?? [];
-  sched.value = cached?.schedule ?? null;
-  if (sched.value) fillTimes(sched.value);
-  else {
-    startTimesText.value = '';
-    stopTimesText.value = '';
-  }
   onlinePlayers.value = cached?.onlinePlayers ?? [];
   serverCommands.value = cached?.serverCommands ?? [];
   lastSeq = lines.value.at(-1)?.seq ?? 0;
-  scheduleLoading.value = !sched.value;
 }
 
 const instance = computed(() => detail.value?.instance ?? null);
@@ -493,81 +476,6 @@ async function loadShortcuts(): Promise<void> {
   }
 }
 
-function parseTimes(text: string): string[] {
-  return text
-    .split(/[,，\s]+/)
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-
-function fillTimes(r: ScheduleInfo): void {
-  startTimesText.value = (r.schedule.start.times ?? []).join(', ');
-  stopTimesText.value = (r.schedule.stop.times ?? []).join(', ');
-}
-
-async function loadSchedule(): Promise<void> {
-  const id = props.id;
-  try {
-    const r = await api.get<ScheduleInfo>(`/api/instances/${encodeURIComponent(id)}/schedule`);
-    if (id !== props.id || closed) return;
-    sched.value = r;
-    fillTimes(r);
-    persistConsoleSnapshot(id);
-  } catch (err) {
-    if (id === props.id && !closed) toastError(err, '读取定时设置失败');
-  } finally {
-    if (id === props.id) scheduleLoading.value = false;
-  }
-}
-
-function toggleDay(which: 'start' | 'stop', day: number): void {
-  const cur = sched.value;
-  if (!cur) return;
-  const days = cur.schedule[which].days;
-  const i = days.indexOf(day);
-  if (i >= 0) days.splice(i, 1);
-  else days.push(day);
-  days.sort((a, b) => a - b);
-}
-
-async function saveSchedule(): Promise<void> {
-  const cur = sched.value;
-  if (!cur) return;
-  savingSchedule.value = true;
-  try {
-    const payload = {
-      ...cur.schedule,
-      start: { ...cur.schedule.start, times: parseTimes(startTimesText.value) },
-      stop: { ...cur.schedule.stop, times: parseTimes(stopTimesText.value) },
-    };
-    const r = await api.put<{ ok: boolean; schedule: ScheduleInfo['schedule']; describe: string; nextStart: number | null; nextStop: number | null }>(
-      `/api/instances/${props.id}/schedule`,
-      payload,
-    );
-    sched.value = { ...cur, schedule: r.schedule, describe: r.describe, nextStart: r.nextStart, nextStop: r.nextStop };
-    fillTimes(sched.value);
-    persistConsoleSnapshot();
-    toast('ok', '定时设置已保存', r.describe);
-  } catch (err) {
-    toastError(err, '保存定时设置失败');
-  } finally {
-    savingSchedule.value = false;
-  }
-}
-
-async function testWarn(): Promise<void> {
-  testingWarn.value = true;
-  try {
-    const minutes = Number(sched.value?.schedule.warnMinutes ?? 5);
-    const r = await api.post<{ ok: boolean; text: string }>(`/api/instances/${props.id}/schedule/test-warn`, { minutes });
-    toast('ok', '测试公告已发送', r.text);
-  } catch (err) {
-    toastError(err, '测试公告失败');
-  } finally {
-    testingWarn.value = false;
-  }
-}
-
 // ---------------------------------------------------------------- 生命周期
 
 function reset(): void {
@@ -591,9 +499,8 @@ function reset(): void {
 
 async function boot(): Promise<void> {
   booting.value = !hasConsoleSnapshot.value;
-  scheduleLoading.value = !sched.value;
   try {
-    await Promise.all([loadDetail(), loadShortcuts(), loadSchedule(), loadOnlinePlayers()]);
+    await Promise.all([loadDetail(), loadShortcuts(), loadOnlinePlayers()]);
     void loadServerCommands();
     await fetchConsole();
     if (closed) return;
@@ -830,143 +737,6 @@ watch(
       </div>
     </div>
 
-    <!-- 定时开服 / 停服 -->
-    <div class="card">
-      <div class="card-head">
-        <h2><span class="head-icon"><Icon name="clock" :size="15" /></span>定时开服 / 停服</h2>
-        <span v-if="sched" class="text-3 small ellipsis">{{ sched.describe }}</span>
-        <span v-else-if="scheduleLoading" class="skeleton console-schedule-summary-skeleton" aria-label="正在读取定时设置状态" />
-        <span v-else class="text-3 small ellipsis">定时设置暂不可用</span>
-      </div>
-
-      <div v-if="sched" class="card-body col gap-4">
-        <div class="form-grid-2">
-          <!-- 开服 -->
-          <div class="col gap-3">
-            <label class="switch">
-              <input v-model="sched.schedule.start.enabled" type="checkbox" />
-              <span class="switch-track" />
-              <span class="switch-text">定时开服</span>
-            </label>
-            <div class="field">
-              <label class="field-label">开服时间点</label>
-              <input v-model="startTimesText" class="input mono" placeholder="08:00, 20:30" />
-              <span class="field-hint">24 小时制，多个时间点用逗号分隔</span>
-            </div>
-            <div class="field">
-              <label class="field-label">星期（都不选 = 每天）</label>
-              <div class="seg">
-                <button
-                  v-for="(w, i) in WEEK"
-                  :key="`s${w}`"
-                  :class="{ active: sched.schedule.start.days.includes(i + 1) }"
-                  @click="toggleDay('start', i + 1)"
-                >
-                  {{ w }}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- 停服 -->
-          <div class="col gap-3">
-            <label class="switch">
-              <input v-model="sched.schedule.stop.enabled" type="checkbox" />
-              <span class="switch-track" />
-              <span class="switch-text">定时停服</span>
-            </label>
-            <div class="field">
-              <label class="field-label">停服时间点</label>
-              <input v-model="stopTimesText" class="input mono" placeholder="23:30" />
-              <span class="field-hint">24 小时制，多个时间点用逗号分隔</span>
-            </div>
-            <div class="field">
-              <label class="field-label">星期（都不选 = 每天）</label>
-              <div class="seg">
-                <button
-                  v-for="(w, i) in WEEK"
-                  :key="`e${w}`"
-                  :class="{ active: sched.schedule.stop.days.includes(i + 1) }"
-                  @click="toggleDay('stop', i + 1)"
-                >
-                  {{ w }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="divider" />
-
-        <div class="form-grid">
-          <div class="field">
-            <label class="field-label">停服前几分钟公告</label>
-            <input v-model.number="sched.schedule.warnMinutes" class="input" type="number" min="0" max="120" />
-          </div>
-          <div class="field">
-            <label class="field-label">公告文案</label>
-            <input v-model="sched.schedule.warnText" class="input" placeholder="服务器将在 {n} 分钟后关闭" />
-            <span class="field-hint">用 {n} 表示剩余分钟数</span>
-          </div>
-          <div class="field">
-            <label class="field-label">自定义公告命令（可选）</label>
-            <input v-model="sched.schedule.warnCommand" class="input mono" placeholder="say 服务器将在 {n} 分钟后关闭" />
-            <span class="field-hint">留空则用 say 发送公告文案</span>
-          </div>
-        </div>
-
-        <div class="row gap-4 wrap">
-          <label class="switch">
-            <input v-model="sched.schedule.skipIfPlayers" type="checkbox" />
-            <span class="switch-track" />
-            <span class="switch-text">到点还有玩家在线就等最后一人下线</span>
-          </label>
-          <div class="row gap-2">
-            <span class="text-2 small">最多等</span>
-            <input v-model.number="sched.schedule.graceMinutes" class="input grace-input" type="number" min="0" max="720" />
-            <span class="text-2 small">分钟（0 = 一直等）</span>
-          </div>
-        </div>
-
-        <div class="divider" />
-
-        <div class="kv">
-          <div class="kv-row">
-            <span class="kv-key">下次开服</span>
-            <span class="kv-val">{{ fmtTime(sched.nextStart) }}</span>
-          </div>
-          <div class="kv-row">
-            <span class="kv-key">下次停服</span>
-            <span class="kv-val">{{ fmtTime(sched.nextStop) }}</span>
-          </div>
-          <div v-if="sched.pendingStop" class="kv-row">
-            <span class="kv-key">挂起中</span>
-            <span class="kv-val">已挂起，等最后一名玩家下线，最晚 {{ fmtTime(sched.pendingStop.deadline) }}</span>
-          </div>
-        </div>
-      </div>
-
-      <div v-else-if="scheduleLoading" class="card-body console-schedule-skeleton" role="status" aria-label="正在读取定时设置" aria-busy="true">
-        <div v-for="row in 4" :key="row" class="console-schedule-skeleton-row">
-          <span class="skeleton console-schedule-skeleton-label" />
-          <span class="skeleton console-schedule-skeleton-control" />
-        </div>
-        <span class="skeleton console-schedule-skeleton-note" />
-      </div>
-      <div v-else class="card-body text-3 small">暂时无法读取定时设置。</div>
-
-      <div v-if="sched" class="card-foot row gap-2">
-        <button class="btn btn-soft" :disabled="testingWarn" @click="testWarn">
-          <span v-if="testingWarn" class="spinner" />
-          立即测试公告
-        </button>
-        <div class="grow" />
-        <button class="btn btn-primary" :disabled="savingSchedule" @click="saveSchedule">
-          <span v-if="savingSchedule" class="spinner spinner-on-accent" />
-          保存定时设置
-        </button>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -987,7 +757,6 @@ watch(
 .console-status-skeleton { width: 72px; height: 24px; border-radius: 999px; }
 .console-stat-skeleton { display: block; width: 72px; height: 17px; }
 .console-stat-skeleton.short { width: 48px; }
-.console-schedule-summary-skeleton { display: block; width: 180px; height: 12px; flex: none; }
 .filter-input { width: 150px; }
 .console-skeleton-lines { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
 .console-skeleton-line { display: block; width: 74%; height: 12px; border-radius: 4px; }
@@ -995,12 +764,6 @@ watch(
 .console-skeleton-line-1 { width: 61%; }
 .console-skeleton-line-2 { width: 79%; }
 .console-skeleton-line-3 { width: 47%; }
-.console-schedule-skeleton { display: flex; flex-direction: column; gap: var(--sp-3); }
-.console-schedule-skeleton-row { display: grid; grid-template-columns: minmax(78px, 0.35fr) minmax(0, 1fr); align-items: center; gap: var(--sp-3); }
-.console-schedule-skeleton-label { width: 68px; height: 12px; border-radius: 5px; }
-.console-schedule-skeleton-control { width: 100%; height: 36px; border-radius: var(--r-sm); }
-.console-schedule-skeleton-note { width: 74%; height: 12px; margin-top: 4px; border-radius: 5px; }
-.grace-input { width: 84px; }
 
 /* 两栏同高、高度固定：日志在窗口内滚动，永远不会被内容撑长。
    （之前用「弹性高度」的两头都被坑过：设上限会露出空白，不设上限则无限延长。） */

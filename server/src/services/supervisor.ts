@@ -11,6 +11,7 @@ import { withLock } from '../core/lock.ts';
 import { detectFailure, detectPhase, planLaunch, stripAnsi, validateInstall, writeJvmArgsFile } from '../launcher/index.ts';
 import { ensureSkinSupport } from './skinSupportService.ts';
 import { ensurePaperclipServerCache } from './installService.ts';
+import { createJob, enqueueJob, finishJob, logJob, setStage, waitForJob } from './jobService.ts';
 import { processCommandLine, processStat } from './systemService.ts';
 import { latestCrashReport } from '../core/crashReport.ts';
 import { evCrash, evReady, evStart, evStop } from './eventLog.ts';
@@ -979,13 +980,32 @@ export async function startAutostartWorlds(): Promise<void> {
       logger.warn(`autostart 拉起 ${id}：可用内存 ${avail}MB 偏紧（堆 ${cfg.memoryMb}MB），可能走 swap 而变卡`);
     }
     logger.info(`autostart 拉起 ${id}（可用内存 ${avail}MB / 需要 ${cfg.memoryMb}MB）`);
-    try {
-      const r = await start(id, { wait: false });
-      if (!r.ok) logger.warn(`autostart 拉起 ${id} 失败：${r.error ?? '未知'}`);
-      await frp.syncWorlds().catch(() => undefined);
-    } catch (err) {
-      logger.warn(`autostart 拉起 ${id} 异常`, String(err));
+    const job = await createJob({
+      kind: 'start',
+      title: `面板启动时自动启动「${cfg.name}」`,
+      instanceId: id,
+      source: 'system',
+      stages: [{ key: 'start', label: '启动世界', status: 'pending' }],
+    });
+    enqueueJob(job.id, async () => {
+      setStage(job.id, 'start', 'running');
+      try {
+        const result = await start(id, { wait: false });
+        if (!result.ok) throw new Error(result.error ?? '世界启动失败');
+        logJob(job.id, '世界启动进程已创建，后续就绪状态会在世界详情中更新');
+        setStage(job.id, 'start', 'done');
+        finishJob(job.id);
+      } catch (err) {
+        logJob(job.id, `失败：${String(err)}`);
+        finishJob(job.id, String(err));
+      }
+    });
+    const result = await waitForJob(job.id);
+    if (result.status !== 'done') {
+      logger.warn(`autostart 拉起 ${id} 失败：${result.error ?? '未知'}`);
+      continue;
     }
+    await frp.syncWorlds().catch(() => undefined);
     // 错开：等上一个把内存吃住再起下一个
     await new Promise((r) => setTimeout(r, 15000));
   }

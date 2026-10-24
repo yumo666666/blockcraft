@@ -4,221 +4,109 @@ import { createLogger } from '../core/logger.ts';
 import { instanceConfigFile } from '../core/paths.ts';
 import * as I from './instanceService.ts';
 import * as sup from './supervisor.ts';
-import { createBackup } from './backupService.ts';
 import { loadConfig } from '../config.ts';
-import type { InstanceConfig } from '../types.ts';
+import { listScheduledTasks, markScheduledOccurrence } from './scheduledTasks.ts';
+import { enqueueActionTask } from './taskRunner.ts';
+import { createJob } from './jobService.ts';
 
 const logger = createLogger('scheduler');
-const TICK_MS = 60_000;
+const TICK_MS = 5000;
 
-function hhmm(d: Date): string {
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+function dateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-/** 1=周一 … 7=周日 */
-function isoDay(d: Date): number {
-  const day = d.getDay();
-  return day === 0 ? 7 : day;
+function localDateTime(date: string, time: string): Date | null {
+  const [year, month, day] = date.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+  if (![year, month, day, hour, minute].every(Number.isFinite)) return null;
+  const result = new Date(year, month - 1, day, hour, minute, 0, 0);
+  return dateKey(result) === date ? result : null;
 }
 
-export function normalizeTimes(input: unknown): string[] {
-  const arr = Array.isArray(input) ? input : String(input ?? '').split(/[,，、\s]+/);
-  const out = new Set<string>();
-  for (const raw of arr) {
-    const m = String(raw).trim().match(/^(\d{1,2}):(\d{2})$/);
-    if (!m) continue;
-    const h = Number(m[1]);
-    const min = Number(m[2]);
-    if (h > 23 || min > 59) continue;
-    out.add(`${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`);
+function occurrenceFor(task: ReturnType<typeof listScheduledTasks>[number], now: Date): { key: string; at: Date } | null {
+  const today = dateKey(now);
+  const { mode, time, date, intervalDays } = task.recurrence;
+  if (mode === 'once') {
+    if (today !== date) return null;
+    const at = localDateTime(date, time);
+    return at ? { key: `${date}T${time}`, at } : null;
   }
-  return [...out].sort();
-}
-
-export function normalizeDays(input: unknown): number[] {
-  const arr = Array.isArray(input) ? input : String(input ?? '').split(/[,，、\s]+/);
-  const out = new Set<number>();
-  for (const raw of arr) {
-    const n = Number(String(raw).trim());
-    if (n >= 1 && n <= 7) out.add(n);
+  if (mode === 'interval') {
+    if (!date) return null;
+    const anchor = new Date(`${date}T00:00:00`);
+    const current = new Date(`${today}T00:00:00`);
+    const dayDiff = Math.floor((Date.UTC(current.getFullYear(), current.getMonth(), current.getDate()) - Date.UTC(anchor.getFullYear(), anchor.getMonth(), anchor.getDate())) / 86400000);
+    if (dayDiff < 0 || dayDiff % Math.max(1, intervalDays) !== 0) return null;
   }
-  return [...out].sort();
-}
-
-function matches(rule: { enabled: boolean; times: string[]; days: number[] }, now: Date): boolean {
-  if (!rule.enabled || !rule.times.length) return false;
-  if (!rule.times.includes(hhmm(now))) return false;
-  if (rule.days.length && !rule.days.includes(isoDay(now))) return false;
-  return true;
-}
-
-/** 下一次命中时间（用于「延迟关闭」的上界与界面倒计时） */
-export function nextRun(rule: { enabled: boolean; times: string[]; days: number[] }, from = new Date()): number | null {
-  if (!rule.enabled || !rule.times.length) return null;
-  const probe = new Date(from.getTime());
-  probe.setSeconds(0, 0);
-  probe.setMinutes(probe.getMinutes() + 1);
-  for (let i = 0; i < 60 * 24 * 8; i++) {
-    if (rule.times.includes(hhmm(probe)) && (!rule.days.length || rule.days.includes(isoDay(probe)))) {
-      return probe.getTime();
-    }
-    probe.setMinutes(probe.getMinutes() + 1);
+  if (mode === 'weekdays') {
+    const weekday = now.getDay() === 0 ? 7 : now.getDay();
+    if (!task.recurrence.weekdays?.includes(weekday)) return null;
   }
-  return null;
+  const at = localDateTime(today, time);
+  return at ? { key: `${today}T${time}`, at } : null;
 }
 
-export function describe(cfg: InstanceConfig): string {
-  const fmt = (r: { enabled: boolean; times: string[]; days: number[] }) => {
-    if (!r.enabled || !r.times.length) return '未启用';
-    const days = r.days.length ? '周' + r.days.join('/') : '每天';
-    return `${days} ${r.times.join('、')}`;
-  };
-  return `开服：${fmt(cfg.schedule.start)}；停服：${fmt(cfg.schedule.stop)}`;
+function isInsideDueMinute(at: Date, now: Date): boolean {
+  const delta = now.getTime() - at.getTime();
+  return delta >= 0 && delta < 60_000;
 }
 
-interface WarnState {
-  /** `${action}:${YYYY-MM-DD HH:MM}` → 已发出的阶段，避免重复公告 */
-  warned: Map<string, Set<number>>;
-}
-const warns: WarnState = { warned: new Map() };
-
-async function tick(): Promise<void> {
-  const now = new Date();
-  const stamp = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()} ${hhmm(now)}`;
-  for (const id of I.listInstanceIds()) {
-    let cfg: InstanceConfig;
-    try {
-      cfg = I.getConfig(id);
-    } catch {
+async function tickScheduledTasks(now: Date): Promise<void> {
+  for (const task of listScheduledTasks()) {
+    if (!task.enabled) continue;
+    if (task.recurrence.mode === 'once' && task.recurrence.date < dateKey(now)) {
+      const occurrence = `${task.recurrence.date}T${task.recurrence.time}`;
+      markScheduledOccurrence(task.id, occurrence);
+      const skippedAt = Date.now();
+      await createJob({
+        kind: task.action,
+        title: `错过执行时间：${task.name}`,
+        instanceId: task.instanceId,
+        source: 'scheduled',
+        scheduledTaskId: task.id,
+        status: 'skipped',
+        stages: [{ key: 'action', label: '定时操作', status: 'cancelled' }],
+        lines: [`已跳过：面板在指定执行时间 ${task.recurrence.date} ${task.recurrence.time} 未运行。`],
+        progress: 0,
+        error: '错过指定执行时间',
+        startedAt: skippedAt,
+        endedAt: skippedAt,
+      });
       continue;
     }
-    const state = I.getState(id);
-    const running = sup.isRunning(id);
+    if (!I.exists(task.instanceId)) continue;
+    const occurrence = occurrenceFor(task, now);
+    if (!occurrence) continue;
 
-    // ---- 停服前 N 分钟公告
-    const stopAt = nextRun(cfg.schedule.stop, now);
-    if (cfg.schedule.stop.enabled && stopAt && cfg.schedule.warnMinutes > 0 && running) {
-      const minutesLeft = Math.round((stopAt - now.getTime()) / 60000);
-      if (minutesLeft > 0 && minutesLeft <= cfg.schedule.warnMinutes) {
-        const key = `stop:${new Date(stopAt).getFullYear()}-${new Date(stopAt).getMonth() + 1}-${new Date(stopAt).getDate()} ${hhmm(new Date(stopAt))}`;
-        const sent = warns.warned.get(key) ?? new Set<number>();
-        if (!sent.has(minutesLeft)) {
-          sent.add(minutesLeft);
-          warns.warned.set(key, sent);
-          const text = (cfg.schedule.warnText || '服务器将在 {n} 分钟后关闭，请及时下线').replace('{n}', String(minutesLeft));
-          try {
-            const cmd = cfg.schedule.warnCommand
-              ? cfg.schedule.warnCommand.replace('{n}', String(minutesLeft)).replace('{text}', text)
-              : `say ${text}`;
-            await sup.rcon(id, cmd);
-            logger.info(`[${id}] 停服公告 ${minutesLeft} 分钟`, { text });
-          } catch (err) {
-            logger.debug(`[${id}] 公告下发失败（RCON 可能没开）`, String(err));
-          }
-        }
+    if (task.announcement.enabled && task.announcement.minutes > 0 && task.lastAnnouncementOccurrence !== occurrence.key) {
+      const announceAt = new Date(occurrence.at.getTime() - task.announcement.minutes * 60_000);
+      if (isInsideDueMinute(announceAt, now)) {
+        markScheduledOccurrence(task.id, occurrence.key, true);
+        const message = (task.announcement.text || '服务器将在 {n} 分钟后执行预定操作').replaceAll('{n}', String(task.announcement.minutes));
+        void enqueueActionTask({
+          instanceId: task.instanceId,
+          action: 'broadcast',
+          message,
+          source: 'scheduled',
+          scheduledTaskId: task.id,
+          title: `执行前公告「${task.name}」`,
+        }).catch((err) => logger.warn(`定时公告任务创建失败：${task.name}`, String(err)));
       }
     }
 
-    // ---- 到点执行
-    const startHit = matches({ ...cfg.schedule.start, times: normalizeTimes(cfg.schedule.start.times) }, now);
-    const stopHit = matches({ ...cfg.schedule.stop, times: normalizeTimes(cfg.schedule.stop.times) }, now);
-    let fired: Record<string, string> = { ...state.fired };
-
-    if (stopHit) {
-      const key = `stop:${stamp}`;
-      if (!fired[key]) {
-        if (!running) {
-          fired[key] = 'skip(already-stopped)';
-        } else {
-          const info = await sup.listPlayers(id).catch(() => ({ online: 0, max: 0, names: [] as string[] }));
-          if (cfg.schedule.skipIfPlayers && info.online > 0) {
-            const deadline = nextRun(cfg.schedule.start, now) ?? now.getTime() + 24 * 3600 * 1000;
-            const capped =
-              cfg.schedule.graceMinutes > 0 ? Math.min(deadline, now.getTime() + cfg.schedule.graceMinutes * 60000) : deadline;
-            I.saveState(id, { pendingStop: { since: now.getTime(), deadline: capped, at: hhmm(now) } });
-            fired[key] = `deferred(${info.online}-players-online)`;
-            logger.info(`[${id}] 到点停服但因有玩家在线而挂起`, { online: info.online });
-          } else {
-            logger.info(`[${id}] 定时停服`);
-            await sup.stop(id, { message: '定时停服时间到，服务器正在关闭' });
-            fired[key] = 'stopped';
-          }
-        }
-      }
+    if (task.lastOccurrence !== occurrence.key && isInsideDueMinute(occurrence.at, now)) {
+      markScheduledOccurrence(task.id, occurrence.key);
+      void enqueueActionTask({
+        instanceId: task.instanceId,
+        action: task.action,
+        message: task.message,
+        command: task.command,
+        source: 'scheduled',
+        scheduledTaskId: task.id,
+        title: `定时${task.name}`,
+      }).catch((err) => logger.warn(`定时任务创建失败：${task.name}`, String(err)));
     }
-
-    if (startHit) {
-      const key = `start:${stamp}`;
-      if (!fired[key]) {
-        if (running) {
-          fired[key] = 'skip(already-running)';
-        } else {
-          logger.info(`[${id}] 定时开服`);
-          const res = await sup.start(id, { wait: true });
-          fired[key] = res.ok ? 'started' : `failed(${res.error ?? ''})`;
-        }
-      }
-    }
-
-    // ---- 挂起的延迟关闭
-    const pending = I.getState(id).pendingStop;
-    if (pending) {
-      if (!running) {
-        I.saveState(id, { pendingStop: null });
-      } else if (Date.now() > pending.deadline) {
-        logger.info(`[${id}] 延迟关闭已过期，取消`);
-        I.saveState(id, { pendingStop: null });
-      } else {
-        const info = await sup.listPlayers(id).catch(() => ({ online: 0, max: 0, names: [] as string[] }));
-        if (info.online === 0) {
-          logger.info(`[${id}] 最后一名玩家已下线，执行挂起的关闭`);
-          I.saveState(id, { pendingStop: null });
-          await sup.stop(id, { message: '服务器关闭中' });
-        }
-      }
-    }
-
-    // ---- 自动保存 / 自动备份
-    const policy = cfg.backup;
-    const nowSec = Date.now() / 1000;
-    if (running && policy.autoEnabled && policy.intervalMin > 0 && nowSec - state.schedule.lastBackup > policy.intervalMin * 60) {
-      const worldReady = checkWorldReady(id, cfg.levelName);
-      if (!worldReady) {
-        logger.info(`[${id}] 世界还没生成完，跳过这次自动备份（不推进计时）`);
-      } else {
-        try {
-          await createBackup(
-            {
-              instanceId: id,
-              name: cfg.name,
-              mc: cfg.mc,
-              loader: cfg.loader,
-              levelName: cfg.levelName,
-              policy,
-              isRunning: () => sup.isRunning(id),
-            },
-            'auto',
-          );
-          logger.info(`[${id}] 自动备份完成`);
-        } catch (err) {
-          logger.warn(`[${id}] 自动备份失败`, String(err));
-        }
-        I.saveState(id, { schedule: { ...state.schedule, lastBackup: nowSec } });
-      }
-    }
-
-    if (Object.keys(fired).length > 200) {
-      const keys = Object.keys(fired).slice(-200);
-      fired = Object.fromEntries(keys.map((k) => [k, fired[k]]));
-    }
-    if (JSON.stringify(fired) !== JSON.stringify(state.fired)) I.saveState(id, { fired });
-  }
-
-  // ---- 全局限额：超过同时运行数时给手机推一条通知
-  const panel = loadConfig();
-  const runningIds = I.listInstanceIds().filter((id) => sup.isRunning(id));
-  if (runningIds.length > panel.limits.maxRunningInstances) {
-    logger.warn(`同时在运行的世界数（${runningIds.length}）超过限额（${panel.limits.maxRunningInstances}）`);
   }
 }
 
@@ -230,7 +118,6 @@ function checkWorldReady(id: string, levelName: string): boolean {
   } catch {
     return false;
   }
-  // 至少要有一个区域文件（.mca/.mcr）
   const stack = [dir];
   let scanned = 0;
   while (stack.length) {
@@ -241,20 +128,59 @@ function checkWorldReady(id: string, levelName: string): boolean {
     } catch {
       continue;
     }
-    for (const e of entries) {
-      if (++scanned > 20000) return false;
-      const full = path.join(cur, e.name);
-      let st: fs.Stats;
+    for (const entry of entries) {
+      if (++scanned > 20_000) return false;
+      const full = path.join(cur, entry.name);
+      let stat: fs.Stats;
       try {
-        st = fs.lstatSync(full);
+        stat = fs.lstatSync(full);
       } catch {
         continue;
       }
-      if (st.isDirectory()) stack.push(full);
-      else if (/\.(mca|mcr)$/.test(e.name)) return true;
+      if (stat.isDirectory()) stack.push(full);
+      else if (/\.(mca|mcr)$/.test(entry.name)) return true;
     }
   }
   return false;
+}
+
+async function tickAutomaticBackups(): Promise<void> {
+  for (const id of I.listInstanceIds()) {
+    let cfg: ReturnType<typeof I.getConfig>;
+    try {
+      cfg = I.getConfig(id);
+    } catch {
+      continue;
+    }
+    const state = I.getState(id);
+    const policy = cfg.backup;
+    const nowSec = Date.now() / 1000;
+    if (!sup.isRunning(id) || !policy.autoEnabled || policy.intervalMin <= 0 || nowSec - state.schedule.lastBackup <= policy.intervalMin * 60) continue;
+    if (!checkWorldReady(id, cfg.levelName)) {
+      logger.info(`[${id}] 世界还没生成完，跳过本次自动备份（不推进计时）`);
+      continue;
+    }
+    void enqueueActionTask({
+      instanceId: id,
+      action: 'backup',
+      backupType: 'auto',
+      source: 'system',
+      title: `自动备份「${cfg.name}」`,
+    }).then(() => {
+      I.saveState(id, { schedule: { ...state.schedule, lastBackup: nowSec } });
+    }).catch((err) => logger.warn(`[${id}] 自动备份任务创建失败`, String(err)));
+  }
+}
+
+async function tick(): Promise<void> {
+  const now = new Date();
+  await tickScheduledTasks(now);
+  await tickAutomaticBackups();
+  const panel = loadConfig();
+  const runningIds = I.listInstanceIds().filter((id) => sup.isRunning(id));
+  if (runningIds.length > panel.limits.maxRunningInstances) {
+    logger.warn(`同时在运行的世界数（${runningIds.length}）超过限额（${panel.limits.maxRunningInstances}）`);
+  }
 }
 
 let timer: NodeJS.Timeout | null = null;
@@ -262,12 +188,11 @@ let timer: NodeJS.Timeout | null = null;
 export function startScheduler(): void {
   if (timer) return;
   timer = setInterval(() => {
-    tick().catch((err) => logger.error('调度轮询失败', String(err)));
+    tick().catch((err) => logger.error('任务调度轮询失败', String(err)));
   }, TICK_MS);
   timer.unref();
-  logger.info('定时调度器已启动（60 秒轮询）');
-  // 启动时也跑一次，便于立刻接上挂起的任务
-  setTimeout(() => tick().catch((err) => logger.error('调度首轮失败', String(err))), 5000);
+  logger.info('任务调度器已启动（5 秒轮询）');
+  setTimeout(() => tick().catch((err) => logger.error('任务调度首轮失败', String(err))), 5000).unref();
 }
 
 export async function tickNow(): Promise<void> {

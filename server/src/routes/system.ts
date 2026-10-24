@@ -5,7 +5,8 @@ import { dirSizeSync } from '../core/fsx.ts';
 import { loadConfig, publicConfig, saveConfig, randomToken } from '../config.ts';
 import * as sup from '../services/supervisor.ts';
 import * as frp from '../services/frpService.ts';
-import { listRunningJobs, pendingJobSetups } from '../services/jobService.ts';
+import { createJob, listRunningJobs, pendingJobSetups, waitForJob } from '../services/jobService.ts';
+import { enqueueActionTask } from '../services/taskRunner.ts';
 import { evSystem, listEvents as evList } from '../services/eventLog.ts';
 import { bad } from '../core/errors.ts';
 import { destroyAllSessions, sessionCount } from '../core/sessions.ts';
@@ -206,7 +207,9 @@ export function registerSystemRoutes(app: Express): void {
 
 
   /** 让面板自己退出（给启动脚本与升级操作用；不会结束正在运行的世界） */
-  app.post('/api/panel/shutdown', (_req, res) => {
+  app.post('/api/panel/shutdown', async (_req, res) => {
+    const stoppedAt = Date.now();
+    await createJob({ kind: 'panel', title: '面板关闭', instanceId: null, status: 'done', source: 'system', stages: [], lines: [`面板关闭于 ${new Date(stoppedAt).toLocaleString('zh-CN')}`], progress: 100, error: null, startedAt: stoppedAt, endedAt: stoppedAt });
     res.json({ ok: true, message: '面板即将退出（不会结束正在运行的世界）' });
     setTimeout(() => process.exit(0), 300);
   });
@@ -257,16 +260,21 @@ export function registerSystemRoutes(app: Express): void {
         return statusActive || await sup.hasActiveProcessEvidence(world.id) ? world : null;
       }))).filter((world): world is (typeof worlds)[number] => Boolean(world));
       shutdownLogger.info('托盘关机：发现活动世界', { worlds: active.map((world) => world.name) });
-      const results = await Promise.all(
-        active.map(async (world) => ({
-          world,
-          result: await sup.stop(world.id, { message: 'BlockCraft 正在关闭，服务器即将停止', timeoutSec: 120, safeOnly: true }).catch((error) => ({
-            ok: false,
-            graceful: false,
-            error: String(error),
-          })),
-        })),
-      );
+      const results = await Promise.all(active.map(async (world) => {
+        try {
+          const task = await enqueueActionTask({
+            instanceId: world.id,
+            action: 'stop',
+            source: 'system',
+            title: `面板关闭时停止「${world.name}」`,
+            stopOptions: { message: 'BlockCraft 正在关闭，服务器即将停止', timeoutSec: 120, safeOnly: true },
+          });
+          const completed = await waitForJob(task.id);
+          return { world, result: { ok: completed.status === 'done' || completed.status === 'skipped', graceful: completed.status === 'done', error: completed.error ?? undefined } };
+        } catch (error) {
+          return { world, result: { ok: false, graceful: false, error: String(error) } };
+        }
+      }));
       const failed = results.filter(({ result }) => !result.ok);
       if (failed.length) {
         shutdownAfterWorldsInProgress = false;
@@ -312,6 +320,8 @@ export function registerSystemRoutes(app: Express): void {
         return;
       }
       shutdownLogger.info('托盘关机：世界已停止，两个 FRP 通道已确认退出，正在关闭面板', { stopped: active.length });
+      const stoppedAt = Date.now();
+      await createJob({ kind: 'panel', title: '面板关闭', instanceId: null, status: 'done', source: 'system', stages: [], lines: [`面板安全关闭于 ${new Date(stoppedAt).toLocaleString('zh-CN')}`], progress: 100, error: null, startedAt: stoppedAt, endedAt: stoppedAt });
       res.json({ ok: true, stopped: active.length });
       setTimeout(() => process.exit(0), 350);
     } catch (error) {

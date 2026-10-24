@@ -8,7 +8,7 @@ import { createLogger } from '../core/logger.ts';
 import { loadConfig } from '../config.ts';
 import * as ports from './portService.ts';
 import { autoJava } from './javaService.ts';
-import type { BackupPolicy, Gamerules, InstanceConfig, InstanceState, Loader, ScheduleConfig } from '../types.ts';
+import type { BackupPolicy, Gamerules, InstanceConfig, InstanceState, Loader } from '../types.ts';
 
 const logger = createLogger('instance');
 
@@ -29,18 +29,6 @@ export const DEFAULT_GAMERULES: Gamerules = {
   block_drops: true,
   elytra_movement_check: true,
 };
-
-export function defaultSchedule(): ScheduleConfig {
-  return {
-    start: { enabled: false, times: [], days: [] },
-    stop: { enabled: false, times: [], days: [] },
-    warnMinutes: 10,
-    warnText: '服务器将在 {n} 分钟后关闭，请及时下线',
-    warnCommand: '',
-    skipIfPlayers: true,
-    graceMinutes: 30,
-  };
-}
 
 export function defaultBackupPolicy(): BackupPolicy {
   return {
@@ -69,8 +57,6 @@ export function defaultState(): InstanceState {
     restarts: 0,
     intentionalStop: false,
     schedule: { lastSave: 0, lastBackup: 0 },
-    fired: {},
-    pendingStop: null,
   };
 }
 
@@ -109,8 +95,9 @@ export function getConfig(id: string): InstanceConfig {
 }
 
 function normalizeConfig(cfg: InstanceConfig, id: string): InstanceConfig {
+  const normalized = Object.fromEntries(Object.entries(cfg).filter(([key]) => key !== 'schedule')) as unknown as InstanceConfig;
   return {
-    ...cfg,
+    ...normalized,
     id,
     schemaVersion: 2,
     note: cfg.note ?? '',
@@ -124,7 +111,6 @@ function normalizeConfig(cfg: InstanceConfig, id: string): InstanceConfig {
     allowFlight: cfg.allowFlight ?? false,
     frp: cfg.frp ?? { enabled: true, remotePort: null, mode: 'auto' },
     backup: { ...defaultBackupPolicy(), ...(cfg.backup ?? {}) },
-    schedule: { ...defaultSchedule(), ...(cfg.schedule ?? {}) },
     tags: cfg.tags ?? [],
   };
 }
@@ -402,7 +388,6 @@ export async function createInstance(params: CreateParams): Promise<InstanceConf
     gamerules: { ...DEFAULT_GAMERULES, ...(params.gamerules ?? {}) },
     frp: { enabled: true, remotePort: remote, mode: 'auto' },
     backup: defaultBackupPolicy(),
-    schedule: defaultSchedule(),
     created: now,
     createdAt: now,
     createdFrom: params.createdFrom ?? { type: 'new' },
