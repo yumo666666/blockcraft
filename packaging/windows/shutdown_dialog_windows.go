@@ -24,6 +24,7 @@ const (
 
 	textSingleLine = 0x0020
 	textVCenter    = 0x0004
+	textCenter     = 0x0001
 	textWordBreak  = 0x0010
 	textNoPrefix   = 0x0800
 	bkTransparent  = 1

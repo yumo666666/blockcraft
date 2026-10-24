@@ -83,8 +83,8 @@ func paintShutdownConfirmation(hwnd uintptr) uintptr {
 	paintShutdownRoundedRect(hdc, noRect, shutdownRGB(58, 47, 55), shutdownRGB(111, 91, 105), 9)
 	paintShutdownRoundedRect(hdc, yesRect, shutdownRGB(216, 169, 171), shutdownRGB(216, 169, 171), 9)
 	labelFont, oldLabelFont := selectedShutdownFont(hdc, -15, fontWeightBold)
-	drawShutdownText(hdc, "否 (N)", noRect, shutdownRGB(246, 239, 227), textSingleLine|textVCenter)
-	drawShutdownText(hdc, "是 (Y)", yesRect, shutdownRGB(42, 31, 36), textSingleLine|textVCenter)
+	drawShutdownText(hdc, "否 (N)", noRect, shutdownRGB(246, 239, 227), textSingleLine|textVCenter|textCenter)
+	drawShutdownText(hdc, "是 (Y)", yesRect, shutdownRGB(42, 31, 36), textSingleLine|textVCenter|textCenter)
 	restoreShutdownFont(hdc, labelFont, oldLabelFont)
 
 	for _, brush := range []uintptr{background, headerBrush, border, accent} {
