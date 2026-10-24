@@ -317,7 +317,7 @@ function closeJob() {
 }
 
 function backgroundJob() {
-  if (jobId.value) setBackgroundJob(jobId.value);
+  if (jobId.value && mode.value !== 'new') setBackgroundJob(jobId.value);
   showJob.value = false;
 }
 </script>
@@ -722,7 +722,7 @@ function backgroundJob() {
             <template v-else>
               <p>支持 CurseForge、Modrinth 以及 BlockCraft 导出的备份包。</p>
               <p>CurseForge 整合包需要先在设置页保存 API Key；Modrinth 不需要。</p>
-              <p>导入是后台任务，离开本页不会中断，可从顶部的任务入口查看进度。</p>
+              <p>导入会在后台继续，离开本页不会中断，可在任务中心查看进度。</p>
               <button class="btn btn-soft" @click="router.push('/create')">
                 <Icon name="plus" :size="15" /> 改为新建世界
               </button>

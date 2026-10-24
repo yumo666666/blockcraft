@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import UiSelect from '../components/UiSelect.vue';
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api } from '../lib/api.ts';
 import { toast, toastError } from '../lib/toast.ts';
 import type { InstanceSummary, Job } from '../lib/types.ts';
@@ -127,9 +127,33 @@ const busy = ref(false);
 const formOpen = ref(false);
 const detailOpen = ref(false);
 const selectedRecord = ref<Job | null>(null);
+const taskLogEl = ref<HTMLElement | null>(null);
 let refreshTimer: number | null = null;
 let worldsHeld = false;
 let firstActivation = true;
+
+function isActiveTaskStatus(status: Job['status'] | undefined): boolean {
+  return status === 'queued' || status === 'waiting' || status === 'running' || status === 'cancelling';
+}
+
+watch(
+  [
+    detailOpen,
+    () => selectedRecord.value?.id,
+    () => selectedRecord.value?.status,
+    () => selectedRecord.value?.lines.length,
+  ],
+  async ([open, id, status], [wasOpen, previousId, previousStatus]) => {
+    const justFinished = wasOpen && open && id === previousId && isActiveTaskStatus(previousStatus) && status !== previousStatus;
+    if (!open || !id || (!isActiveTaskStatus(status) && !justFinished)) return;
+    await nextTick();
+    if (selectedRecord.value?.id !== id) return;
+    if (isActiveTaskStatus(status) && !isActiveTaskStatus(selectedRecord.value.status)) return;
+    const log = taskLogEl.value;
+    if (log) log.scrollTop = log.scrollHeight;
+  },
+  { flush: 'post' },
+);
 
 function holdWorlds(): void {
   if (worldsHeld) return;
@@ -523,7 +547,7 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
           <div><span>结束</span><strong>{{ formatTime(selectedRecord.endedAt) }}</strong></div>
         </div>
         <section class="task-detail-section"><h3>执行阶段</h3><div v-if="selectedRecord.stages.length" class="task-detail-stages"><div v-for="stage in selectedRecord.stages" :key="stage.key"><span class="task-stage-dot" :class="`stage-${stage.status}`" /><span>{{ stage.label }}</span><small>{{ stage.status === 'done' ? '完成' : stage.status === 'running' ? '执行中' : stage.status === 'failed' ? '失败' : stage.status === 'cancelled' ? '跳过/取消' : '等待' }}</small></div></div><p v-else class="text-3 small">没有分阶段信息。</p></section>
-        <section class="task-detail-section"><h3>执行日志</h3><pre class="task-log">{{ selectedRecord.lines.length ? selectedRecord.lines.join('\n') : '暂无日志' }}</pre></section>
+        <section class="task-detail-section"><h3>执行日志</h3><pre ref="taskLogEl" class="task-log">{{ selectedRecord.lines.length ? selectedRecord.lines.join('\n') : '暂无日志' }}</pre></section>
         <p v-if="selectedRecord.error" class="task-error">{{ selectedRecord.error }}</p>
       </div>
     </Modal>

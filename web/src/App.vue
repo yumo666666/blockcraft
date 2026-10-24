@@ -673,7 +673,7 @@ onMounted(refreshPublic);
         </div>
 
         <div class="topbar-right">
-          <button v-if="backgroundJobId" type="button" class="topbar-chip job-chip" @click="showBackgroundJob = true">
+          <button v-if="backgroundJobId && backgroundJob?.kind !== 'create'" type="button" class="topbar-chip job-chip" @click="showBackgroundJob = true">
             <span v-if="backgroundJob?.status === 'running' || backgroundJob?.status === 'queued'" class="spinner" style="width: 12px; height: 12px" />
             {{ backgroundJobLabel }}
           </button>
