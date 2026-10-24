@@ -21,6 +21,8 @@ import { registerPackRoutes } from './routes/packs.ts';
 import { registerPerformanceRoutes } from './routes/performance.ts';
 import { registerFileRoutes } from './routes/files.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
+import { registerNotificationRoutes } from './routes/notifications.ts';
+import { startNotificationMonitor } from './services/notificationService.ts';
 import { startScheduler } from './services/scheduler.ts';
 import { startPerformanceHistory } from './services/performanceHistory.ts';
 import { startFrpService } from './services/frpService.ts';
@@ -133,7 +135,7 @@ export function boot(): void {
   });
 
   app.get('/api/ping', (_req, res) => {
-    res.json({ ok: true, name: 'BlockCraft', version: '0.0.2' });
+    res.json({ ok: true, name: 'BlockCraft', version: '0.1' });
   });
 
   // ---- 鉴权中间件
@@ -209,6 +211,8 @@ export function boot(): void {
   registerPerformanceRoutes(app);
   registerFileRoutes(app);
   registerTaskRoutes(app);
+  registerNotificationRoutes(app);
+  startNotificationMonitor();
 
   // ---- 带 token 的链接自动登录（登录后立刻从地址栏清掉 token，避免留在浏览器历史里）
   app.get('/', (req, res, next) => {

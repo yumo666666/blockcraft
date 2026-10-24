@@ -8,6 +8,7 @@ export const router = createRouter({
     { path: '/create', name: 'wizard-create', component: () => import('./pages/Wizard.vue') },
     { path: '/import', name: 'wizard-import', component: () => import('./pages/Wizard.vue') },
     { path: '/tasks', name: 'tasks', component: () => import('./pages/Tasks.vue') },
+    { path: '/notifications', name: 'notifications', component: () => import('./pages/Notifications.vue') },
     { path: '/files', name: 'files', component: () => import('./pages/Files.vue') },
     { path: '/settings', name: 'settings', component: () => import('./pages/Settings.vue') },
     { path: '/w/:id', name: 'world', component: () => import('./pages/World.vue'), props: true },

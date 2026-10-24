@@ -16,7 +16,7 @@ const POLL_MS = 5000;
 interface PanelEvent {
   seq: number;
   ts: number;
-  kind: 'start' | 'ready' | 'stop' | 'crash' | 'system';
+  kind: 'start' | 'ready' | 'stop' | 'crash' | 'startup_failed' | 'backup_success' | 'backup_failed' | 'player_join' | 'player_leave' | 'disk_low' | 'system';
   worldId: string | null;
   worldName: string | null;
   text: string;
@@ -35,6 +35,12 @@ const KIND_LABEL: Record<string, string> = {
   ready: '就绪',
   stop: '关闭',
   crash: '崩溃',
+  startup_failed: '启动失败',
+  backup_success: '备份成功',
+  backup_failed: '备份失败',
+  player_join: '玩家加入',
+  player_leave: '玩家退出',
+  disk_low: '磁盘不足',
   system: '系统',
 };
 
@@ -163,6 +169,18 @@ onUnmounted(() => {
 .console-line.ev-stop .ev-kind { color: #9aa5b1; }
 .console-line.ev-crash .ev-text,
 .console-line.ev-crash .ev-kind { color: #ff8f85; font-weight: 600; }
+.console-line.ev-startup_failed .ev-text,
+.console-line.ev-startup_failed .ev-kind,
+.console-line.ev-backup_failed .ev-text,
+.console-line.ev-backup_failed .ev-kind,
+.console-line.ev-disk_low .ev-text,
+.console-line.ev-disk_low .ev-kind { color: #ffb36c; font-weight: 600; }
+.console-line.ev-backup_success .ev-text,
+.console-line.ev-backup_success .ev-kind,
+.console-line.ev-player_join .ev-text,
+.console-line.ev-player_join .ev-kind { color: #6ee7a8; }
+.console-line.ev-player_leave .ev-text,
+.console-line.ev-player_leave .ev-kind { color: #a9b6c3; }
 .console-line.ev-system .ev-text,
 .console-line.ev-system .ev-kind { color: #c8b6ff; }
 .console-line.ev-start .ev-world { color: #9ecbff; }

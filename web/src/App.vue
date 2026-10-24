@@ -189,6 +189,7 @@ const navGroups = computed(() => [
     items: [
       { label: '总览', to: '/', icon: 'overview', active: navigationTarget.value.name === 'overview' },
       { label: '任务中心', to: '/tasks', icon: 'clock', active: navigationTarget.value.name === 'tasks' },
+      { label: '通知中心', to: '/notifications', icon: 'bell', active: navigationTarget.value.name === 'notifications' },
       { label: '文件管理', to: '/files', icon: 'folder', active: navigationTarget.value.name === 'files' },
       { label: '相关网站', to: '/new', icon: 'globe', active: navigationTarget.value.name === 'websites' },
     ],
@@ -248,6 +249,8 @@ const crumbTitle = computed(() => {
       return '总览';
     case 'tasks':
       return '任务中心';
+    case 'notifications':
+      return '通知中心';
     case 'websites':
       return '相关网站';
     case 'wizard-create':
@@ -276,7 +279,7 @@ const crumbTitle = computed(() => {
 });
 
 const crumbSection = computed(() => {
-  if (['overview', 'tasks', 'websites', 'files'].includes(String(navigationTarget.value.name))) return '工作台';
+  if (['overview', 'tasks', 'notifications', 'websites', 'files'].includes(String(navigationTarget.value.name))) return '工作台';
   return currentWorldId.value ? '世界' : '控制台';
 });
 const showWorldCrumb = computed(() => navigationTarget.value.name !== 'overview' && Boolean(currentWorldId.value));
@@ -698,7 +701,7 @@ onMounted(refreshPublic);
       <div class="route-stage">
         <router-view v-slot="{ Component }">
           <!-- World pages own polling and SSE subscriptions; unmount them on route exit so a deleted world cannot keep polling in the background. -->
-          <KeepAlive :include="['Overview', 'Wizard', 'MinecraftSites', 'Tasks', 'Settings']" :max="16">
+          <KeepAlive :include="['Overview', 'Wizard', 'MinecraftSites', 'Tasks', 'Settings', 'Notifications']" :max="16">
             <component :is="Component" />
           </KeepAlive>
         </router-view>

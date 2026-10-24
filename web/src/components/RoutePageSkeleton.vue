@@ -30,6 +30,29 @@ defineProps<{ name: string; label?: string }>();
       </div>
     </template>
 
+    <template v-else-if="name === 'notifications'">
+      <header class="row-between wrap gap-3" aria-hidden="true">
+        <div class="col gap-2"><span class="skeleton route-title" /><span class="skeleton route-line route-line-wide" /></div>
+        <span class="skeleton route-button route-button-primary" />
+      </header>
+      <section class="card route-notification-summary" aria-hidden="true">
+        <span class="skeleton route-icon-lg" />
+        <div class="col gap-2 grow"><span class="skeleton route-line route-line-md" /><span class="skeleton route-line route-line-wide" /></div>
+        <span class="skeleton route-pill route-notification-provider" />
+      </section>
+      <section class="card">
+        <div class="card-head row-between"><span class="skeleton route-heading" /><span class="skeleton route-line route-line-xs" /></div>
+        <div class="route-notification-channel" aria-hidden="true">
+          <div class="route-notification-main">
+            <div class="row gap-3"><span class="skeleton route-icon" /><div class="col gap-2 grow"><span class="skeleton route-line route-line-sm" /><span class="skeleton route-line route-line-md" /></div></div>
+            <div class="row gap-2"><span v-for="item in 4" :key="item" class="skeleton route-pill" /></div>
+          </div>
+          <div class="route-notification-actions"><span v-for="item in 4" :key="item" class="skeleton route-button" /></div>
+        </div>
+      </section>
+      <section class="card route-notification-note" aria-hidden="true"><span class="skeleton route-icon" /><div class="col gap-2 grow"><span class="skeleton route-line route-line-sm" /><span class="skeleton route-line route-line-wide" /></div></section>
+    </template>
+
     <template v-else-if="name === 'tasks'">
       <header class="row-between wrap gap-3" aria-hidden="true"><div class="col gap-2"><span class="skeleton route-title" /><span class="skeleton route-line route-line-wide" /></div><span class="skeleton route-button route-button-primary" /></header>
       <section class="card"><div class="card-head row-between"><span class="skeleton route-heading" /><span class="skeleton route-line route-line-sm" /></div><div class="route-task-schedule" aria-hidden="true"><div v-for="item in 3" :key="item" class="route-task-schedule-row"><div class="col gap-2"><span class="skeleton route-line route-line-md" /><span class="skeleton route-line route-line-wide" /></div><span class="skeleton route-line route-line-sm" /><div class="row gap-2"><span v-for="button in 3" :key="button" class="skeleton route-button" /></div></div></div></section>
@@ -109,6 +132,13 @@ defineProps<{ name: string; label?: string }>();
 
 <style scoped>
 .route-skeleton { min-width: 0; }
+.route-notification-summary { display: flex; align-items: center; gap: 14px; padding: 15px 18px; }
+.route-notification-provider { width: 132px; height: 22px; flex: none; }
+.route-notification-channel { display: flex; min-height: 144px; align-items: center; justify-content: space-between; gap: 20px; padding: 17px 18px; }
+.route-notification-main { display: grid; min-width: 0; gap: 12px; }
+.route-notification-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.route-notification-actions .route-button { width: 82px; height: 34px; }
+.route-notification-note { display: flex; align-items: flex-start; gap: 11px; padding: 14px 16px; }
 .route-task-schedule { padding: 0 16px; }
 .route-task-schedule-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(140px, .7fr) auto; align-items: center; gap: 14px; padding: 14px 4px; border-top: 1px solid var(--border); }
 .route-task-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
@@ -174,6 +204,7 @@ defineProps<{ name: string; label?: string }>();
 .route-event-row > span { display: block; height: 10px; border-radius: 4px; }
 .route-event-time { width: 102px; flex: none; }.route-event-kind { width: 36px; flex: none; }.route-event-world { width: 76px; flex: none; }.route-event-text { width: min(58%, 480px); }.route-event-text-0 { width: min(72%, 620px); }.route-event-text-1 { width: min(42%, 360px); }
 .route-appearance { min-height: 190px; }.route-appearance-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(250px, 1fr); gap: 22px; align-items: start; }.route-theme-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }.route-theme-card { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 9px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-2); }.route-theme-preview { display: block; height: 54px; border-radius: 8px; }.route-wallpaper { display: flex; align-items: flex-start; gap: 12px; }.route-wallpaper-thumb { display: block; width: 88px; height: 64px; flex: none; border-radius: var(--r-sm); }
+.route-wallpaper-thumb { width: min(220px, 44%); height: 118px; }
 .route-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: 'access source' 'skins java' 'limits frp' 'ports storage' 'about about'; gap: var(--sp-4); }
 .route-settings-grid > section { min-height: 165px; }.route-settings-grid > section:nth-child(1) { grid-area: access; }.route-settings-grid > section:nth-child(2) { grid-area: source; }.route-settings-grid > section:nth-child(3) { grid-area: skins; }.route-settings-grid > section:nth-child(4) { grid-area: java; }.route-settings-grid > section:nth-child(5) { grid-area: limits; }.route-settings-grid > section:nth-child(6) { grid-area: frp; }.route-settings-grid > section:nth-child(7) { grid-area: ports; }.route-settings-grid > section:nth-child(8) { grid-area: storage; }.route-settings-grid > section:nth-child(9) { grid-area: about; }
 .route-console-stats { display: flex; gap: 20px; }.route-console-stats .route-stat { width: 86px; height: 38px; }
@@ -187,5 +218,7 @@ defineProps<{ name: string; label?: string }>();
 .route-files-shell { display: grid; min-height: min(700px, calc(100vh - 240px)); grid-template-columns: minmax(210px, 250px) minmax(0, 1fr); overflow: hidden; }.route-files-tree { display: flex; min-width: 0; flex-direction: column; gap: 12px; padding-bottom: 12px; border-right: 1px solid var(--border); background: var(--surface-2); }.route-files-pane-head { display: flex; min-height: 51px; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--border); }.route-files-tree-rows { display: flex; flex-direction: column; gap: 6px; padding: 8px; }.route-tree-row { display: block; width: 88%; height: 30px; border-radius: var(--r-sm); }.route-tree-row.nested { width: 72%; margin-left: 20px; }.route-files-tree > .route-line { margin-inline: 12px; }.route-files-content { display: flex; min-width: 0; flex-direction: column; }.route-files-breadcrumb, .route-files-selection, .route-files-table-head { display: flex; min-height: 44px; align-items: center; gap: 12px; padding: 6px 14px; border-bottom: 1px solid var(--border); }.route-files-breadcrumb { min-height: 51px; justify-content: space-between; }.route-files-selection { justify-content: space-between; }.route-files-table-head { display: grid; grid-template-columns: 28px minmax(155px, 1fr) minmax(78px, 105px) minmax(115px, 145px) minmax(188px, 230px); }.route-files-table-head .route-line { width: 72%; }.route-files-table-head .route-line:first-child { width: 16px; }.route-files-row { display: grid; min-height: 61px; grid-template-columns: 28px minmax(155px, 1fr) minmax(78px, 105px) minmax(115px, 145px) minmax(188px, 230px); align-items: center; gap: 10px; padding: 0 13px; border-bottom: 1px solid var(--border); }.route-files-row .route-line { height: 12px; }.route-checkbox { width: 16px; height: 16px; border: 1px solid var(--border-strong); border-radius: 3px; background: var(--surface-strong); }
 @media (max-width: 940px) { .route-overview-grid, .route-console-grid { grid-template-columns: 1fr; } .route-website-grid, .route-mod-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .route-wizard-grid { grid-template-columns: minmax(0, 1.5fr) minmax(240px, 1fr); } }
 @media (max-width: 760px) { .route-overview-intro, .route-overview-summary { align-items: flex-start; flex-direction: column; padding: 17px; }.route-overview-summary { gap: 14px; }.route-overview-actions { width: 100%; flex-wrap: wrap; }.route-action { flex: 1 1 110px; }.route-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.route-website-grid, .route-mod-grid { grid-template-columns: 1fr; }.route-wizard-grid { display: flex; flex-direction: column; }.route-wizard-grid > section { min-height: 190px; }.route-wizard-main { min-height: 338px !important; }.route-step-pills { display: none; }.route-appearance-grid { grid-template-columns: 1fr; }.route-settings-grid { grid-template-columns: 1fr; grid-template-areas: none; }.route-settings-grid > section { grid-area: auto !important; }.route-mod-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }.route-mod-filters > :first-child { grid-column: 1 / -1; }.route-mod-filters > :last-child { width: 100%; }.route-backup-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }.route-backup-row { align-items: stretch; flex-direction: column; }.route-files-shell { display: flex; min-height: 0; flex-direction: column; }.route-files-tree { max-height: 210px; border-right: 0; border-bottom: 1px solid var(--border); }.route-files-tree-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }.route-tree-row.nested { margin-left: 0; }.route-files-content { min-height: 440px; }.route-files-table-head, .route-files-row { grid-template-columns: 24px minmax(0, 1fr) minmax(110px, auto); gap: 6px; padding-inline: 9px; }.route-files-table-head > :nth-child(3), .route-files-table-head > :nth-child(4), .route-files-row > :nth-child(3), .route-files-row > :nth-child(4) { display: none; }.route-performance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.route-performance-chart { height: 280px; }.route-console-log { min-height: 300px; }.route-console-toolbar .route-switch, .route-console-toolbar .route-filter { display: none; } }
+@media (max-width: 620px) { .route-theme-card { flex-direction: row; align-items: center; }.route-theme-preview { width: 88px; flex: none; }.route-wallpaper { flex-direction: column; }.route-wallpaper-thumb { width: 100%; height: 74px; } }
+@media (max-width: 840px) { .route-notification-channel { align-items: flex-start; flex-direction: column; }.route-notification-actions { justify-content: flex-start; } .route-notification-provider { display: none; } }
 @media (prefers-reduced-motion: reduce) { .route-skeleton :deep(.skeleton) { animation: none; background-position: 50% 50%; } }
 </style>

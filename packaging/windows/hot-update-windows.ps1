@@ -30,6 +30,12 @@ function Get-PanelPort {
   return $port
 }
 
+function Normalize-PackageVersion([string]$Value) {
+  $normalized = $Value.Trim().TrimStart('v')
+  if ($normalized -match '^\d+\.\d+$') { return "$normalized.0" }
+  return $normalized
+}
+
 function Test-PanelVersion([string]$ExpectedVersion, [int]$TimeoutSeconds = 90) {
   $uri = "http://127.0.0.1:$(Get-PanelPort)/api/ping"
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -117,7 +123,7 @@ try {
   $manifestPath = Join-Path $releaseDir 'app\server-runtime\package.json'
   if (Test-Path -LiteralPath $manifestPath) {
     $installed = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ([string]$installed.version -eq $version) {
+    if ((Normalize-PackageVersion ([string]$installed.version)) -eq (Normalize-PackageVersion $version)) {
       Write-Host "当前已经是最新版本 $version。"
       exit 0
     }
@@ -143,7 +149,7 @@ try {
     throw 'Windows 更新包目录结构不完整。'
   }
   $stagedManifest = Get-Content -LiteralPath $stagedManifestPath -Raw | ConvertFrom-Json
-  if ([string]$stagedManifest.version -ne $version) { throw '更新包内部版本和 GitHub Release 版本不一致。' }
+  if ((Normalize-PackageVersion ([string]$stagedManifest.version)) -ne (Normalize-PackageVersion $version)) { throw '更新包内部版本和 GitHub Release 版本不一致。' }
   Set-Content -LiteralPath $markerPath -Value (@{ version = $version; tag = $release.tag_name; stagedAt = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress) -Encoding UTF8
   Write-UpdateLog "已下载 $($release.tag_name)，SHA-256 校验通过，等待托盘“仅重启面板”操作。"
   Write-Host "已从 GitHub 下载并校验 $version。请在系统托盘中右键 BlockCraft，选择“仅重启面板”应用更新；运行中的世界会继续运行。"

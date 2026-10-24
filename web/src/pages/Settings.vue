@@ -335,10 +335,12 @@ async function killWorld(id: string) {
         <div class="card settings-java">
           <div class="card-head"><h3>Java 环境</h3></div>
           <div class="card-body col gap-2">
-            <div v-if="!panel.java.installed.length" class="badge badge-warn">本机未检测到 Java；安装或启动世界时会自动下载所需版本</div>
-            <div v-for="j in panel.java.installed" :key="j.path" class="row gap-2">
-              <span class="badge badge-ok">Java {{ j.major }}</span>
-              <span class="mono small ellipsis">{{ j.path }}</span>
+            <div class="java-runtime-list col gap-2">
+              <div v-if="!panel.java.installed.length" class="badge badge-warn">本机未检测到 Java；安装或启动世界时会自动下载所需版本</div>
+              <div v-for="j in panel.java.installed" :key="j.path" class="row gap-2">
+                <span class="badge badge-ok">Java {{ j.major }}</span>
+                <span class="mono small ellipsis">{{ j.path }}</span>
+              </div>
             </div>
             <p class="text-3 small">面板按世界版本自动选择兼容 Java；本机没有时会从 Eclipse Adoptium 下载并安装到面板数据目录。</p>
           </div>
@@ -593,6 +595,7 @@ async function killWorld(id: string) {
 .settings-storage { grid-area: storage; }
 .settings-about { grid-area: about; }
 .settings-java > .card-body { justify-content: space-between; }
+.java-runtime-list { gap: 8px; }
 .storage-body { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(215px, 0.95fr); align-content: start; gap: var(--sp-4); }
 .storage-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 20px; }
 .storage-instance-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 7px; }

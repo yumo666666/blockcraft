@@ -14,7 +14,8 @@ import { ensurePaperclipServerCache } from './installService.ts';
 import { createJob, enqueueJob, finishJob, logJob, setStage, waitForJob } from './jobService.ts';
 import { processCommandLine, processStat } from './systemService.ts';
 import { latestCrashReport } from '../core/crashReport.ts';
-import { evCrash, evReady, evStart, evStop } from './eventLog.ts';
+import { evCrash, evPlayerJoin, evPlayerLeave, evReady, evStart, evStop } from './eventLog.ts';
+import type { NotificationTopic } from './notificationService.ts';
 import { pingServer, type PingResult } from '../core/mcping.ts';
 import * as systemService from './systemService.ts';
 import { ensureJava, inspectJava, selectCompatibleJava } from './javaService.ts';
@@ -258,6 +259,7 @@ interface RunningProc {
 }
 
 const procs = new Map<string, RunningProc>();
+const startSuccessTopics = new Map<string, NotificationTopic>();
 const javaPreparing = new Map<string, string>();
 let panelShutdownRequested = false;
 
@@ -525,6 +527,7 @@ function attachOutput(child: ChildProcess, id: string): void {
     } else {
       logger.info(`世界 ${id} 已停止`, { code });
     }
+    startSuccessTopics.delete(id);
   });
 }
 
@@ -557,7 +560,16 @@ export function startTail(id: string): void {
       offset = st.size;
       const buf = console_(id);
       const chunk = `${raw.toString('utf8')}`;
-      for (const line of chunk.split(/\r?\n/)) buf.push(line);
+      for (const line of chunk.split(/\r?\n/)) {
+        buf.push(line);
+        const join = line.match(/:\s*([A-Za-z0-9_]{1,16}) joined the game\b/i);
+        const leave = line.match(/:\s*([A-Za-z0-9_]{1,16}) (?:left the game\b|lost connection:)/i);
+        if (join || leave) {
+          const world = { id, name: I.getConfig(id).name };
+          if (join) evPlayerJoin(world, join[1]);
+          else if (leave) evPlayerLeave(world, leave[1]);
+        }
+      }
       // 服务端报「Done」时立刻把状态落成 running：
       // 启动等待是有超时的，重整合包加载动辄一两分钟（实测 123 秒），
       // 超时之后如果没有这一步，state.json 会一直停在「启动中」。
@@ -567,7 +579,9 @@ export function startTail(id: string): void {
           const took = st.startedAt ? Math.round(Date.now() / 1000 - st.startedAt) : 0;
           I.saveState(id, { status: 'running', phase: '服务端已就绪', progress: null, startedAt: st.startedAt || Date.now() / 1000 });
           logger.info(`世界 ${id} 已就绪（从日志里看到 Done）`);
-          evReady({ id, name: I.getConfig(id).name }, took > 0 ? `耗时 ${took} 秒` : '');
+          const successTopic = startSuccessTopics.get(id) ?? 'world_start_success';
+          startSuccessTopics.delete(id);
+          evReady({ id, name: I.getConfig(id).name }, took > 0 ? `耗时 ${took} 秒` : '', successTopic);
         }
       }
     } catch {
@@ -592,7 +606,7 @@ export interface StartResult {
   error?: string;
 }
 
-export async function start(id: string, opts: { wait?: boolean; signal?: AbortSignal } = {}): Promise<StartResult> {
+export async function start(id: string, opts: { wait?: boolean; signal?: AbortSignal; successTopic?: NotificationTopic } = {}): Promise<StartResult> {
   return withLock(`instance:${id}`, async () => {
     opts.signal?.throwIfAborted();
     if (panelShutdownRequested) return { ok: false, error: 'BlockCraft 正在关闭，暂时不能启动世界' };
@@ -712,6 +726,7 @@ export async function start(id: string, opts: { wait?: boolean; signal?: AbortSi
     const pid = child.pid;
     const startedAt = Date.now() / 1000;
     procs.set(id, { child, pid, startedAt, logSeqAtStart, intentional: false });
+    startSuccessTopics.set(id, opts.successTopic ?? 'world_start_success');
     atomicWriteFileSync(pidFile(id), String(pid));
     attachOutput(child, id);
     I.saveState(id, { status: 'starting', pid, startedAt, phase: '正在启动', lastError: null, intentionalStop: false, players: 0 });
@@ -877,7 +892,7 @@ export async function stop(id: string, opts: StopOptions = {}): Promise<{ ok: bo
 
 export async function restart(id: string): Promise<StartResult> {
   await stop(id, { message: '服务器正在重启' });
-  return start(id);
+  return start(id, { successTopic: 'world_restart_success' });
 }
 
 /** 清掉卡住的进程（看门狗用）：先停再拉起 */

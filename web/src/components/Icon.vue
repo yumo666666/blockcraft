@@ -11,6 +11,9 @@ const props = withDefaults(defineProps<{ name: string; size?: number; strokeWidt
 const ICONS: Record<string, string> = {
   overview: '<rect x="3.2" y="3.2" width="7.6" height="7.6" rx="2.2"/><rect x="13.2" y="3.2" width="7.6" height="7.6" rx="2.2"/><rect x="3.2" y="13.2" width="7.6" height="7.6" rx="2.2"/><rect x="13.2" y="13.2" width="7.6" height="7.6" rx="2.2"/>',
   events: '<path d="M6 3.6h9.4L19 7.2v13.2H6z"/><path d="M15 3.8V7.4h3.6"/><path d="M9 11h7M9 14.6h7M9 18.2h4.4"/>',
+  bell: '<path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/>',
+  mail: '<rect x="3.2" y="5.2" width="17.6" height="13.6" rx="2.2"/><path d="m4.2 7 7.8 6 7.8-6"/>',
+  send: '<path d="m21 3-7.1 18-3.8-7.2L3 10z"/><path d="M10.1 13.8 21 3"/>',
   globe: '<circle cx="12" cy="12" r="8.6"/><path d="M3.6 12h16.8M12 3.4c2.3 2.3 3.5 5.2 3.5 8.6S14.3 18.3 12 20.6c-2.3-2.3-3.5-5.2-3.5-8.6S9.7 5.7 12 3.4Z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   package: '<path d="m12 3.4 8 4.4v8.4l-8 4.4-8-4.4V7.8l8-4.4Z"/><path d="m4.4 8 7.6 4.2L19.6 8M12 12.2v8.4"/><path d="m8.2 5.7 8 4.4"/>',

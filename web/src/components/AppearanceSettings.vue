@@ -208,8 +208,8 @@ function chooseTheme(mode: ThemeMode): void {
 .wallpaper-thumb {
   position: relative;
   flex: none;
-  width: 116px;
-  height: 72px;
+  width: clamp(180px, 16vw, 220px);
+  height: 118px;
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
@@ -241,6 +241,6 @@ function chooseTheme(mode: ThemeMode): void {
   .theme-card { flex-direction: row; align-items: center; }
   .theme-card-preview { width: 88px; flex: none; }
   .wallpaper-row { flex-direction: column; }
-  .wallpaper-thumb { width: 100%; height: 96px; }
+  .wallpaper-thumb { width: 100%; height: 74px; }
 }
 </style>

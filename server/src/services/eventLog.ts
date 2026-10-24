@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LOG_DIR } from '../core/paths.ts';
 import { createLogger } from '../core/logger.ts';
+import { dispatchNotification, type NotificationTopic } from './notificationService.ts';
 
 const logger = createLogger('events');
 
@@ -12,7 +13,17 @@ const logger = createLogger('events');
  * 存 JSONL（一行一条），读的时候取尾部 N 条 —— 不需要数据库，也不会越读越慢。
  * 文件超过阈值自动裁掉前半段，避免无限增长。
  */
-export type EventKind = 'start' | 'ready' | 'stop' | 'crash' | 'system';
+export type EventKind = 'start' | 'ready' | 'stop' | 'crash' | 'startup_failed' | 'backup_success' | 'backup_failed' | 'player_join' | 'player_leave' | 'disk_low' | 'system';
+
+const EVENT_TOPICS: Partial<Record<EventKind, NotificationTopic>> = {
+  crash: 'server_crash',
+  startup_failed: 'startup_failed',
+  backup_success: 'backup_success',
+  backup_failed: 'backup_failed',
+  player_join: 'player_join',
+  player_leave: 'player_leave',
+  disk_low: 'disk_low',
+};
 
 export interface PanelEvent {
   seq: number;
@@ -61,6 +72,7 @@ export function appendEvent(
   kind: EventKind,
   text: string,
   world?: { id: string; name: string } | null,
+  notificationTopic?: NotificationTopic,
 ): PanelEvent {
   ensureLoaded();
   const ev: PanelEvent = {
@@ -78,6 +90,8 @@ export function appendEvent(
   } catch (err) {
     logger.warn('写事件日志失败', String(err));
   }
+  const topic = notificationTopic ?? EVENT_TOPICS[kind];
+  if (topic) dispatchNotification({ topic, title: text.split('：')[0] ?? text, body: text, worldName: world?.name ?? null });
   return ev;
 }
 
@@ -105,8 +119,8 @@ export function evStart(world: { id: string; name: string }, detail: string): vo
   appendEvent('start', `开始启动（${detail}）`, world);
 }
 
-export function evReady(world: { id: string; name: string }, detail = ''): void {
-  appendEvent('ready', `启动完成，已就绪${detail ? `（${detail}）` : ''}`, world);
+export function evReady(world: { id: string; name: string }, detail = '', topic: NotificationTopic = 'world_start_success'): void {
+  appendEvent('ready', `启动完成，已就绪${detail ? `（${detail}）` : ''}`, world, topic);
 }
 
 export function evStop(world: { id: string; name: string }, detail: string): void {
@@ -115,6 +129,22 @@ export function evStop(world: { id: string; name: string }, detail: string): voi
 
 export function evCrash(world: { id: string; name: string }, reason: string): void {
   appendEvent('crash', `崩溃：${reason}`, world);
+}
+
+export function evStartupFailed(world: { id: string; name: string }, reason: string): void {
+  appendEvent('startup_failed', `启动失败：${reason}`, world);
+}
+
+export function evBackup(world: { id: string; name: string }, success: boolean, detail: string): void {
+  appendEvent(success ? 'backup_success' : 'backup_failed', `${success ? '备份完成' : '备份失败'}：${detail}`, world);
+}
+
+export function evPlayerJoin(world: { id: string; name: string }, player: string): void {
+  appendEvent('player_join', `玩家加入：${player}`, world);
+}
+
+export function evPlayerLeave(world: { id: string; name: string }, player: string): void {
+  appendEvent('player_leave', `玩家退出：${player}`, world);
 }
 
 export function evSystem(text: string): void {

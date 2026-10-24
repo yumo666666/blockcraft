@@ -5,6 +5,9 @@ import { JOBS_DIR } from '../core/paths.ts';
 import { atomicWriteJsonSync, readJsonSync } from '../core/fsx.ts';
 import { conflict, notFound } from '../core/errors.ts';
 import type { Job } from '../types.ts';
+import { evBackup, evStartupFailed } from './eventLog.ts';
+import { dispatchNotification, type NotificationTopic } from './notificationService.ts';
+import * as I from './instanceService.ts';
 
 const bus = new EventEmitter();
 bus.setMaxListeners(100);
@@ -177,6 +180,7 @@ export function setStage(jobId: string, key: string, status: Job['stages'][numbe
 export function finishJob(jobId: string, error?: string): Job {
   const controller = abortControllers.get(jobId);
   const current = getJob(jobId);
+  const wasTerminal = ['cancelled', 'done', 'failed', 'skipped', 'interrupted'].includes(current.status);
   const cancelled = current.status === 'cancelling' || controller?.signal.aborted === true;
   const stages = cancelled
     ? current.stages.map((stage) => stage.status === 'pending' || stage.status === 'running'
@@ -197,6 +201,37 @@ export function finishJob(jobId: string, error?: string): Job {
     progress: cancelled || error ? current.progress : 100,
   });
   abortControllers.delete(jobId);
+  if (!wasTerminal && !cancelled) {
+    const detail = error ?? current.lines.at(-1) ?? '任务已完成';
+    const world = current.instanceId
+      ? (() => {
+          try { return { id: current.instanceId!, name: I.getConfig(current.instanceId!).name }; }
+          catch { return null; }
+        })()
+      : null;
+    if (error) {
+      if (current.kind === 'start' || current.kind === 'restart') {
+        if (world) evStartupFailed(world, error);
+        else dispatchNotification({ topic: 'startup_failed', title: current.title, body: error });
+      } else if (current.kind === 'backup') {
+        if (world) evBackup(world, false, error);
+        else dispatchNotification({ topic: 'backup_failed', title: current.title, body: error });
+      } else {
+        dispatchNotification({ topic: 'task_failed', title: current.title, body: error, worldName: world?.name });
+      }
+    } else {
+      const topic: NotificationTopic | null = current.kind === 'start' || current.kind === 'restart'
+        ? null // Ready notifications come from the server's Done log line.
+        : current.kind === 'stop' ? 'world_stop_success'
+          : current.kind === 'backup' && !/清理/.test(current.title) ? 'backup_success'
+            : current.kind === 'save' ? 'save_success'
+              : current.kind === 'command' ? 'command_success'
+                : current.kind === 'broadcast' ? 'broadcast_success'
+                  : 'task_success';
+      if (current.kind === 'backup' && world && !/清理/.test(current.title)) evBackup(world, true, detail);
+      else if (topic) dispatchNotification({ topic, title: current.title, body: detail, worldName: world?.name });
+    }
+  }
   return result;
 }
 
