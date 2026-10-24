@@ -560,7 +560,7 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
 .task-page-heading .page-heading { min-width: 230px; }
 .task-page-heading .page-heading p { max-width: min(72vw, 920px); }
 .task-filters { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(190px, 1.2fr) minmax(150px, .8fr) auto; align-items: end; gap: var(--sp-3); }
-.task-refresh { min-height: 38px; }
+.task-filters .task-refresh { height: 35px; min-height: 35px; padding-block: 0; }
 .task-schedule-list { display: flex; flex-direction: column; }
 .task-schedule-item { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 20px; border-top: 1px solid var(--border); }
 .task-schedule-item.disabled { opacity: .7; }
@@ -635,6 +635,9 @@ onUnmounted(() => { stopRefresh(); freeWorlds(); });
 }
 @media (max-width: 600px) {
   .task-weekday-options { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .task-filters .task-refresh { height: 44px; min-height: 44px; }
 }
 @media (max-width: 560px) {
   .task-mode-option, .task-weekday-option { height: 44px; min-height: 44px; }
