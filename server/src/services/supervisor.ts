@@ -678,15 +678,24 @@ export async function start(id: string, opts: { wait?: boolean; signal?: AbortSi
     // 3) 生成 JVM 参数。Node 直接启动 Java，Windows 和 Linux 使用同一条路径。
     const agentJar = preparePerformanceAgent(selectedJava.home);
     if (!agentJar) logger.warn(`世界 ${id} 没有可用的 javac/jar，JVM 性能采集器未加载`);
+    const agentArgs = agentJar
+      ? [performanceAgentArgument(agentJar, runtimePerformanceSnapshotFile(id))]
+      : [];
     const launchPlan = agentJar
       ? {
           ...check.plan,
-          jvmArgs: [...check.plan.jvmArgs, performanceAgentArgument(agentJar, runtimePerformanceSnapshotFile(id))],
+          jvmArgs: [...check.plan.jvmArgs, ...agentArgs],
         }
       : check.plan;
-    writeJvmArgsFile(serverDir, launchPlan);
+    // Java's @argfile parser mishandles the -javaagent path in some Windows
+    // installs (especially portable folders with spaces or non-ASCII names).
+    // Keep that option as a direct argv entry; leave heap flags in the argfile.
+    const argFilePlan = agentArgs.length && launchPlan.useArgFile
+      ? { ...launchPlan, jvmArgs: launchPlan.jvmArgs.filter((argument) => !agentArgs.includes(argument)) }
+      : launchPlan;
+    writeJvmArgsFile(serverDir, argFilePlan);
     const javaArgs = launchPlan.useArgFile
-      ? ['@user_jvm_args.txt', ...launchPlan.serverArgs]
+      ? ['@user_jvm_args.txt', ...agentArgs, ...launchPlan.serverArgs]
       : [...launchPlan.jvmArgs, ...launchPlan.serverArgs];
     try {
       fs.unlinkSync(intentFile(id));

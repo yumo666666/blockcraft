@@ -214,10 +214,12 @@ func (t *winTray) measureMenuItem(lParam uintptr) bool {
 		return false
 	}
 	_, separator := t.menuLabel(item.ItemID)
-	item.ItemWidth = 264
-	item.ItemHeight = 44
+	// Keep the custom menu close to the compact size of a standard Windows
+	// tray menu, including on high-DPI displays.
+	item.ItemWidth = 144
+	item.ItemHeight = 26
 	if separator {
-		item.ItemHeight = 13
+		item.ItemHeight = 6
 	}
 	return true
 }
@@ -233,7 +235,7 @@ func (t *winTray) drawMenuItem(lParam uintptr) bool {
 	label, separator := t.menuLabel(item.ItemID)
 	left, top, right, bottom := item.ItemRect.Left, item.ItemRect.Top, item.ItemRect.Right, item.ItemRect.Bottom
 	if separator {
-		line := menuRect{Left: left + 15, Top: (top + bottom) / 2, Right: right - 15, Bottom: (top+bottom)/2 + 1}
+		line := menuRect{Left: left + 10, Top: (top + bottom) / 2, Right: right - 10, Bottom: (top+bottom)/2 + 1}
 		brush, _, _ := pCreateSolidBrush.Call(trayColor(111, 91, 105))
 		if brush != 0 {
 			pFillRect.Call(item.HDC, uintptr(unsafe.Pointer(&line)), brush)
@@ -253,13 +255,13 @@ func (t *winTray) drawMenuItem(lParam uintptr) bool {
 	if item.ItemState&(0x0002|0x0004) != 0 { // ODS_GRAYED | ODS_DISABLED
 		text = trayColor(151, 137, 143)
 	}
-	row := menuRect{Left: left + 4, Top: top + 2, Right: right - 4, Bottom: bottom - 2}
+	row := menuRect{Left: left + 3, Top: top + 1, Right: right - 3, Bottom: bottom - 1}
 	brush, _, _ := pCreateSolidBrush.Call(background)
 	pen, _, _ := pCreatePen.Call(0, 1, trayColor(111, 91, 105))
 	if brush != 0 && pen != 0 {
 		oldBrush, _, _ := pSelectObject.Call(item.HDC, brush)
 		oldPen, _, _ := pSelectObject.Call(item.HDC, pen)
-		pRoundRect.Call(item.HDC, uintptr(row.Left), uintptr(row.Top), uintptr(row.Right), uintptr(row.Bottom), 10, 10)
+		pRoundRect.Call(item.HDC, uintptr(row.Left), uintptr(row.Top), uintptr(row.Right), uintptr(row.Bottom), 8, 8)
 		pSelectObject.Call(item.HDC, oldPen)
 		pSelectObject.Call(item.HDC, oldBrush)
 	}
@@ -271,7 +273,7 @@ func (t *winTray) drawMenuItem(lParam uintptr) bool {
 	}
 
 	fontFace, _ := windows.UTF16FromString("Segoe UI")
-	font, _, _ := pCreateFont.Call(uintptr(uint32(0xfffffff0)), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, uintptr(unsafe.Pointer(&fontFace[0])))
+	font, _, _ := pCreateFont.Call(uintptr(uint32(0xfffffff3)), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, uintptr(unsafe.Pointer(&fontFace[0])))
 	oldFont := uintptr(0)
 	if font != 0 {
 		oldFont, _, _ = pSelectObject.Call(item.HDC, font)
@@ -279,7 +281,7 @@ func (t *winTray) drawMenuItem(lParam uintptr) bool {
 	pSetBkMode.Call(item.HDC, 1)
 	pSetTextColor.Call(item.HDC, text)
 	textValue, _ := windows.UTF16FromString(label)
-	textRect := menuRect{Left: left + 18, Top: top + 2, Right: right - 12, Bottom: bottom - 2}
+	textRect := menuRect{Left: left + 12, Top: top + 1, Right: right - 8, Bottom: bottom - 1}
 	if len(textValue) > 0 {
 		pDrawText.Call(item.HDC, uintptr(unsafe.Pointer(&textValue[0])), uintptr(uint32(len(textValue)-1)), uintptr(unsafe.Pointer(&textRect)), 0x0020|0x0004|0x0800)
 	}
