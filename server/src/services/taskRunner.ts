@@ -91,17 +91,21 @@ function createActionRunner(
         case 'start': {
           await withStartGate(async () => {
             if (sup.isRunning(input.instanceId)) throw new SkipTask('任务执行时世界已在运行状态，已跳过启动操作');
-            const panel = loadConfig();
-            const current = await summarizeAll();
-            const running = current.filter((item) => item.status === 'running' || item.status === 'starting');
-            if (running.length >= panel.limits.maxRunningInstances) throw new Error(`同时运行的世界已达上限（${panel.limits.maxRunningInstances} 个）`);
-            const totalMb = running.reduce((sum, item) => sum + item.memoryMb, 0) + cfg.memoryMb;
-            const budgetMb = panel.limits.memoryBudgetMb === 'auto'
-              ? Math.round((memoryInfo().totalMb || 8192) * 0.6)
-              : panel.limits.memoryBudgetMb;
-            if (totalMb > budgetMb) throw new Error(`启动后总内存需求 ${totalMb} MB 超过预算 ${budgetMb} MB`);
-            const result = await sup.start(input.instanceId, { wait: true });
-            if (!result.ok) throw new Error(result.error ?? '世界启动失败');
+            await sup.withStartupPreparation(input.instanceId, '正在检查启动条件', async () => {
+              const panel = loadConfig();
+              const current = await summarizeAll();
+              // This world's preparing status is already exposed to the overview;
+              // exclude it here because its memory is added explicitly below.
+              const running = current.filter((item) => item.id !== input.instanceId && (item.status === 'running' || item.status === 'starting'));
+              if (running.length >= panel.limits.maxRunningInstances) throw new Error(`同时运行的世界已达上限（${panel.limits.maxRunningInstances} 个）`);
+              const totalMb = running.reduce((sum, item) => sum + item.memoryMb, 0) + cfg.memoryMb;
+              const budgetMb = panel.limits.memoryBudgetMb === 'auto'
+                ? Math.round((memoryInfo().totalMb || 8192) * 0.6)
+                : panel.limits.memoryBudgetMb;
+              if (totalMb > budgetMb) throw new Error(`启动后总内存需求 ${totalMb} MB 超过预算 ${budgetMb} MB`);
+              const result = await sup.start(input.instanceId, { wait: true });
+              if (!result.ok) throw new Error(result.error ?? '世界启动失败');
+            });
           });
           await frp.syncWorlds().catch(() => undefined);
           logJob(jobId, '世界已启动并通过就绪检查');

@@ -14,7 +14,7 @@ import { ensurePaperclipServerCache } from './installService.ts';
 import { createJob, enqueueJob, finishJob, logJob, setStage, waitForJob } from './jobService.ts';
 import { processCommandLine, processStat } from './systemService.ts';
 import { latestCrashReport } from '../core/crashReport.ts';
-import { evCrash, evPlayerJoin, evPlayerLeave, evReady, evStart, evStop } from './eventLog.ts';
+import { evCrash, evPlayerJoin, evPlayerLeave, evReady, evStart, evStop, listEvents } from './eventLog.ts';
 import type { NotificationTopic } from './notificationService.ts';
 import { pingServer, type PingResult } from '../core/mcping.ts';
 import * as systemService from './systemService.ts';
@@ -260,8 +260,18 @@ interface RunningProc {
 
 const procs = new Map<string, RunningProc>();
 const startSuccessTopics = new Map<string, NotificationTopic>();
-const javaPreparing = new Map<string, string>();
+const startupPreparing = new Map<string, string>();
 let panelShutdownRequested = false;
+
+/** Expose the active job's preflight as starting while it checks launch limits. */
+export async function withStartupPreparation<T>(id: string, phase: string, operation: () => Promise<T>): Promise<T> {
+  startupPreparing.set(id, phase);
+  try {
+    return await operation();
+  } finally {
+    startupPreparing.delete(id);
+  }
+}
 
 export function beginPanelShutdown(): boolean {
   if (panelShutdownRequested) return false;
@@ -392,6 +402,24 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
   const cfg = I.getConfig(id);
   const st = I.getState(id);
   const pid = alivePid(id);
+  const preparingPhase = !pid ? startupPreparing.get(id) : undefined;
+  if (preparingPhase) {
+    return {
+      status: 'starting',
+      pid: null,
+      listening: false,
+      phase: preparingPhase,
+      progress: null,
+      players: 0,
+      playersKnown: false,
+      queryLatencyMs: null,
+      uptime: 0,
+      cpu: 0,
+      rss: 0,
+      threads: null,
+      detectedFrom: 'memory',
+    };
+  }
   const listening = pid ? await portOpen(cfg.port) : false;
   let phase = st.phase;
   let progress = st.progress;
@@ -477,10 +505,6 @@ export async function statusOf(id: string): Promise<StatusSnapshot> {
   }
   if (st.status === 'stopping' || st.status === 'crashed') {
     status = st.status === 'stopping' ? 'stopped' : 'crashed';
-  }
-  const javaPhase = javaPreparing.get(id);
-  if (javaPhase) {
-    return { status: 'starting', pid: null, listening: false, phase: javaPhase, progress: null, players: 0, playersKnown: false, queryLatencyMs: null, uptime: 0, cpu: 0, rss: 0, threads: null, detectedFrom: 'memory' };
   }
   return { status, pid: null, listening: false, phase: st.phase || '', progress: null, players: 0, playersKnown: false, queryLatencyMs: null, uptime: 0, cpu: 0, rss: 0, threads: null, detectedFrom: 'memory' };
 }
@@ -621,14 +645,14 @@ export async function start(id: string, opts: { wait?: boolean; signal?: AbortSi
       return { ok: false, error: `世界 ${id} 已经在运行中` };
     }
 
+    // Report startup as soon as the task acquires the instance lock. Java and
+    // optional server components may take over a minute to prepare before the
+    // Minecraft process exists, so PID-only status checks otherwise show stopped.
+    startupPreparing.set(id, '正在检查 Java 环境');
+
     // 1) Java 解析；本机没有兼容版本时自动下载 Temurin 后继续启动。
-    javaPreparing.set(id, '正在检查 Java 环境');
     let java: Awaited<ReturnType<typeof ensureJava>>;
-    try {
-      java = await ensureJava(cfg.mc, cfg.loader, (message) => javaPreparing.set(id, message), { signal: opts.signal });
-    } finally {
-      javaPreparing.delete(id);
-    }
+    java = await ensureJava(cfg.mc, cfg.loader, (message) => startupPreparing.set(id, message), { signal: opts.signal });
     const configuredJava = cfg.javaPath && fs.existsSync(cfg.javaPath) ? inspectJava(cfg.javaPath) : null;
     const selectedJava = selectCompatibleJava(configuredJava, java.runtime ? [java.runtime] : [], java.required);
     if (!selectedJava) {
@@ -645,6 +669,7 @@ export async function start(id: string, opts: { wait?: boolean; signal?: AbortSi
     }
     const javaPath = selectedJava.path;
 
+    startupPreparing.set(id, '正在检查服务端文件');
     // 2) 产物校验
     const check = validateInstall(launchCfg, serverDir);
     if (!check.ok) {
@@ -655,26 +680,31 @@ export async function start(id: string, opts: { wait?: boolean; signal?: AbortSi
     // Minecraft mirror selected in panel settings. Warm and checksum its cache
     // through the same mirror-aware downloader before Java starts.
     if (launchCfg.loader === 'paper') {
+      startupPreparing.set(id, '正在准备 Paper 服务端文件');
       await ensurePaperclipServerCache(launchCfg, (line) => logger.info(`世界 ${id} Paper 依赖：${line}`), opts.signal);
       opts.signal?.throwIfAborted();
     }
 
     // Spark and the bundled skin component may depend on Fabric API even in a
     // newly created, otherwise empty Fabric server.
+    startupPreparing.set(id, '正在检查 Fabric 服务端依赖');
     await ensureFabricApiSupport(id, (line) => logger.info(`世界 ${id} Fabric 依赖：${line}`), { signal: opts.signal });
     opts.signal?.throwIfAborted();
 
     // Retrofit the server-only skin component for worlds created by older
     // BlockCraft versions. The selected loader decides whether this is a MOD,
     // Paper plugin, or unsupported pure Vanilla.
+    startupPreparing.set(id, '正在检查服务端组件');
     await ensureSkinSupport(id, (line) => logger.info(`世界 ${id} 皮肤组件：${line}`), { signal: opts.signal });
     opts.signal?.throwIfAborted();
 
     // Spark exposes loader-neutral TPS/MSPT, player ping and world statistics.
     // Install its official server artifact for mod loaders that do not bundle it.
+    startupPreparing.set(id, '正在准备性能采集组件');
     await ensureSparkSupport(id, (line) => logger.info(`世界 ${id} 性能采集：${line}`), { signal: opts.signal });
     opts.signal?.throwIfAborted();
 
+    startupPreparing.set(id, '正在启动 Minecraft 服务端');
     // 3) 生成 JVM 参数。Node 直接启动 Java，Windows 和 Linux 使用同一条路径。
     const agentJar = preparePerformanceAgent(selectedJava.home);
     if (!agentJar) logger.warn(`世界 ${id} 没有可用的 javac/jar，JVM 性能采集器未加载`);
@@ -741,27 +771,32 @@ export async function start(id: string, opts: { wait?: boolean; signal?: AbortSi
     I.saveState(id, { status: 'starting', pid, startedAt, phase: '正在启动', lastError: null, intentionalStop: false, players: 0 });
     evStart({ id, name: cfg.name }, `${cfg.loader} ${cfg.mc}，Xmx ${cfg.memoryMb}M`);
     logger.info(`世界 ${id} 启动中（PID ${pid}，${check.plan.how}）`);
+    startupPreparing.delete(id);
 
     if (opts.wait === false) return { ok: true, pid };
 
-    // 5) 等待真正就绪（for 40 秒内进程还在且端口监听；之后交给轮询）
-    const deadline = Date.now() + 40000;
+    // A task must stay active until Minecraft emits its per-run Done marker.
+    // Opening the TCP port is not readiness: Forge can bind it over a minute
+    // before finishing mod and world initialization.
+    const deadline = Date.now() + 10 * 60_000;
     while (Date.now() < deadline) {
-      await sleep(2000);
+      await sleep(1000);
       // The importer owns cleanup after this lock is released; it can now call
       // stop() without deadlocking on the per-world operation lock.
       if (opts.signal?.aborted) return { ok: true, pid };
       if (!isAlive(pid)) {
-        const reason = detectFailure(console_(id).text()) ?? '进程启动后很快退出';
+        const reason = detectFailure(console_(id).textSince(logSeqAtStart)) ?? '进程启动后退出';
         I.saveState(id, { status: 'crashed', pid: null, lastError: reason, phase: reason });
         return { ok: false, error: reason };
       }
-      if (await portOpen(cfg.port)) {
-        I.saveState(id, { status: 'starting', phase: '已监听端口，正在加载世界' });
-        break;
-      }
+      const logText = console_(id).textSince(logSeqAtStart);
+      if (detectPhase(logText).status === 'running' || I.getState(id).status === 'running') return { ok: true, pid };
     }
-    return { ok: true, pid };
+    return { ok: false, pid, error: '世界启动超过 10 分钟仍未就绪，请检查控制台日志' };
+  }).finally(() => {
+    // Clean up preparation status on every validation error, thrown exception,
+    // cancellation, or early return before the process is registered.
+    startupPreparing.delete(id);
   });
 }
 
@@ -1100,6 +1135,12 @@ export function reconcile(): void {
     logger.warn('清理主动停止意图失败', String(err));
   }
 
+  const latestLifecycleEvent = new Map<string, ReturnType<typeof listEvents>[number]>();
+  for (const event of listEvents(5000)) {
+    if (!event.worldId || !['start', 'ready', 'stop', 'crash', 'startup_failed'].includes(event.kind)) continue;
+    latestLifecycleEvent.set(event.worldId, event);
+  }
+
   for (const id of I.listInstanceIds()) {
     const pid = readPidFile(id);
     if (pid && isAlive(pid)) {
@@ -1111,6 +1152,7 @@ export function reconcile(): void {
       }
       if (/java/.test(cmdline) && /(nogui|unix_args)/.test(cmdline)) {
         logger.info(`接管已存在的世界进程 ${id}（PID ${pid}，面板外启动）`);
+        const previousState = I.getState(id);
         // 先把磁盘上的控制台历史读回来，再判定状态 —— 否则会一直显示「启动中」
         const logFile = path.join(instanceDir(id), 'logs', 'console.log');
         try {
@@ -1132,10 +1174,22 @@ export function reconcile(): void {
         }
         startTail(id);
         const phaseNow = detectPhase(console_(id).text());
+        const lifecycleEvent = latestLifecycleEvent.get(id);
+        const eventConfirmsReady = Boolean(
+          lifecycleEvent?.kind === 'ready' &&
+          previousState.startedAt !== null &&
+          lifecycleEvent.ts >= previousState.startedAt * 1000 - 5000,
+        );
+        const isStopping = previousState.status === 'stopping';
+        const isReady = !isStopping && (phaseNow.status === 'running' || eventConfirmsReady);
         I.saveState(id, {
-          status: phaseNow.status === 'running' ? 'running' : 'starting',
+          status: isStopping ? 'stopping' : isReady ? 'running' : 'starting',
           pid,
-          phase: phaseNow.status === 'running' ? '服务端已就绪（面板重启前已在运行）' : '运行中（面板重启前已在运行，日志尚未就绪）',
+          phase: isStopping
+            ? '正在保存并关闭'
+            : isReady
+              ? '服务端已就绪（面板重启前已在运行）'
+              : '运行中（面板重启前已在运行，日志尚未就绪）',
         });
         const st = I.getState(id);
         if (!st.startedAt) I.saveState(id, { startedAt: Date.now() / 1000 });

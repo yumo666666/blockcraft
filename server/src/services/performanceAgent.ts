@@ -189,7 +189,10 @@ function sparkTargets(cfg: InstanceConfig): { loader: string; directory: string 
 function hasSpark(serverDir: string): boolean {
   for (const folder of ['mods', 'plugins']) {
     try {
-      if (fs.readdirSync(path.join(serverDir, folder)).some((name) => /^spark(?:[-_].*)?\.jar$/i.test(name))) return true;
+      // Imported mods can keep an upload-generated prefix, for example
+      // "mvmigmc2-spark-1.10.53-forge.jar". Match Spark at a filename token
+      // boundary so we do not retry its network download on every world start.
+      if (fs.readdirSync(path.join(serverDir, folder)).some((name) => /(?:^|[-_])spark(?:[-_].*)?\.jar$/i.test(name))) return true;
     } catch { /* Folder is optional. */ }
   }
   return false;

@@ -50,6 +50,13 @@ const status = ref<'all' | 'enabled' | 'disabled'>(cachedMods?.status ?? 'all');
 /** 世界只要还有进程在，任何 MOD 写操作都先拦下来（服务端也会拒绝） */
 const running = computed(() => (instance.value ? ['running', 'starting', 'stopping', 'stuck'].includes(instance.value.status) : false));
 const worldName = computed(() => instance.value?.name ?? props.id);
+const hasActiveFilters = computed(() => Boolean(q.value.trim()) || source.value !== 'all' || status.value !== 'all');
+const emptyMessage = computed(() => {
+  const query = q.value.trim();
+  if (query) return `没有找到与“${query}”匹配的 MOD`;
+  if (source.value !== 'all' || status.value !== 'all') return '当前筛选条件下没有匹配的 MOD';
+  return 'mods 目录还是空的';
+});
 
 const SOURCE_OPTIONS = [
   { value: 'all', label: '全部来源' },
@@ -81,6 +88,7 @@ let qTimer: number | null = null;
 let disposed = false;
 let loadRevision = 0;
 let restoringMods = false;
+let resettingFilters = false;
 
 function persistModsSnapshot(): void {
   if (!hasSnapshot.value) return;
@@ -179,12 +187,12 @@ onUnmounted(() => {
 });
 
 watch([source, status, pageSize], () => {
-  if (restoringMods) return;
+  if (restoringMods || resettingFilters) return;
   void load(1);
 }, { flush: 'sync' });
 
 watch(q, () => {
-  if (restoringMods) return;
+  if (restoringMods || resettingFilters) return;
   if (qTimer) window.clearTimeout(qTimer);
   qTimer = window.setTimeout(() => load(1), 300);
 }, { flush: 'sync' });
@@ -200,6 +208,17 @@ watch(() => props.id, (id) => {
 function searchNow() {
   if (qTimer) window.clearTimeout(qTimer);
   load(1);
+}
+
+function clearFilters() {
+  if (qTimer) window.clearTimeout(qTimer);
+  resettingFilters = true;
+  q.value = '';
+  source.value = 'all';
+  status.value = 'all';
+  page.value = 1;
+  resettingFilters = false;
+  void load(1);
 }
 
 /* ------------------------------------------------------------ 运行时拦截 */
@@ -424,7 +443,9 @@ function modrinthSearch(modId: string): string {
             <span v-if="running" class="badge badge-warn nowrap">运行中 · 已锁定修改</span>
           </div>
           <div class="text-3 small ellipsis" :title="modsDir">
-            共 {{ total }} 个 MOD<template v-if="modsDir"> · {{ modsDir }}</template>
+            <template v-if="hasActiveFilters">当前结果 {{ total }} 个 MOD</template>
+            <template v-else>共 {{ total }} 个 MOD</template>
+            <template v-if="modsDir"> · {{ modsDir }}</template>
           </div>
         </div>
       </div>
@@ -516,8 +537,9 @@ function modrinthSearch(modId: string): string {
     <div v-else-if="!mods.length" class="card">
       <div class="empty">
         <div class="empty-icon">🧩</div>
-        <div>{{ total ? '没有符合条件的 MOD' : 'mods 目录还是空的' }}</div>
-        <button class="btn btn-primary mt-2" @click="pickFiles">导入第一个 MOD</button>
+        <div>{{ emptyMessage }}</div>
+        <button v-if="hasActiveFilters" class="btn mt-2" @click="clearFilters">清除筛选</button>
+        <button v-else class="btn btn-primary mt-2" @click="pickFiles">导入第一个 MOD</button>
       </div>
     </div>
 
